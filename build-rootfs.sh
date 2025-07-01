@@ -4,29 +4,32 @@
 # https://qubot.org/2023/08/09/h618-%E7%A7%BB%E6%A4%8Dubuntu-22-04-rootfs/
 
 sudo apt-get install qemu-user-static
-if [ ! -e ubuntu-base-24.10-base-arm64.tar.gz ];then
-    wget http://cdimage.ubuntu.com/ubuntu-base/releases/24.10/release/ubuntu-base-24.10-base-arm64.tar.gz
+if [ ! -e ubuntu-base-25.04-base-arm64.tar.gz ];then
+    wget http://cdimage.ubuntu.com/ubuntu-base/releases/25.04/release/ubuntu-base-25.04-base-arm64.tar.gz
 fi
 if [ ! -e rootfs ];then
     mkdir rootfs
-    tar -xzvf ubuntu-base-23.10-base-arm64.tar.gz -C rootfs
+    tar -xzvf ubuntu-base-25.04-base-arm64.tar.gz -C rootfs
 fi
 
-if [ ! -e ca-certificates_20240203_all.deb ];then
-	wget http://ports.ubuntu.com/pool/main/c/ca-certificates/ca-certificates_20240203_all.deb
+ca_certificates=ca-certificates_20250419_all.deb
+if [ ! -e ${ca_certificates} ];then
+	wget http://ports.ubuntu.com/pool/main/c/ca-certificates/${ca_certificates}
 fi
 
-if [ ! -e openssl_3.3.1-2ubuntu2_arm64.deb ];then
-	wget http://ports.ubuntu.com/pool/main/o/openssl/openssl_3.3.1-2ubuntu2_arm64.deb
+openssl=openssl_3.5.0-2ubuntu1_arm64.deb
+if [ ! -e ${openssl} ];then
+	wget http://ports.ubuntu.com/pool/main/o/openssl/${openssl}
 fi
 
-if [ ! -e libssl3t64_3.3.1-2ubuntu2_arm64.deb ];then
-	wget http://ports.ubuntu.com/pool/main/o/openssl/libssl3t64_3.3.1-2ubuntu2_arm64.deb
+libssl=libssl3t64_3.5.0-2ubuntu1_arm64.deb
+if [ ! -e ${libssl} ];then
+	wget http://ports.ubuntu.com/pool/main/o/openssl/${libssl}
 fi 
 
-sudo cp ca-certificates_20240203_all.deb ./rootfs/root/
-sudo cp openssl_3.3.1-2ubuntu2_arm64.deb ./rootfs/root/
-sudo cp libssl3t64_3.3.1-2ubuntu2_arm64.deb ./rootfs/root/
+sudo cp ${ca_certificates} ./rootfs/root/
+sudo cp ${openssl} ./rootfs/root/
+sudo cp ${libssl} ./rootfs/root/
 
 sudo rm -f ./rootfs/etc/resolv.conf
 resolv=$(cat <<"EOF"
@@ -53,20 +56,20 @@ sudo echo "${interfaces}" > ./rootfs/etc/network/interfaces
 
 source_list=$(cat <<"EOF"
 # 默认注释了源码镜像以提高 apt update 速度，如有需要可自行取消注释
-deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ oracular main restricted universe multiverse
-# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ oracular main restricted universe multiverse
-deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ oracular-updates main restricted universe multiverse
-# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ oracular-updates main restricted universe multiverse
-deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ oracular-backports main restricted universe multiverse
-# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ oracular-backports main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ plucky main restricted universe multiverse
+# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ plucky main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ plucky-updates main restricted universe multiverse
+# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ plucky-updates main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ plucky-backports main restricted universe multiverse
+# deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ plucky-backports main restricted universe multiverse
 
 # 以下安全更新软件源包含了官方源与镜像站配置，如有需要可自行修改注释切换
-deb http://ports.ubuntu.com/ubuntu-ports/ oracular-security main restricted universe multiverse
-# deb-src http://ports.ubuntu.com/ubuntu-ports/ oracular-security main restricted universe multiverse
+deb http://ports.ubuntu.com/ubuntu-ports/ plucky-security main restricted universe multiverse
+# deb-src http://ports.ubuntu.com/ubuntu-ports/ plucky-security main restricted universe multiverse
 
 # 预发布软件源，不建议启用
-# deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ oracular-proposed main restricted universe multiverse
-# # deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ oracular-proposed main restricted universe multiverse
+# deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ plucky-proposed main restricted universe multiverse
+# # deb-src https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ plucky-proposed main restricted universe multiverse
 EOF
 )
 sudo echo "${source_list}" > ./rootfs/etc/apt/sources.list
@@ -87,7 +90,17 @@ apt install -y dialog perl-base systemd sudo vim kmod net-tools ethtool ifupdown
 ln -s /lib/systemd/system/getty\@.service /etc/systemd/system/getty.target.wants/getty\@ttyAMA0.service
 EOF
 )
+
+sudo rm -f ./rootfs/etc/systemd/resolved.conf
+resolved=$(cat <<"EOF"
+[Resolve]
+DNS=8.8.8.8
+DNSStubListener=no
+EOF
+)
 sudo echo "${install}" > ./rootfs/root/install.sh
+sudo echo "${resolv}" > ./rootfs/etc/resolv.conf
+sudo echo "${resolved}" > ./rootfs/etc/systemd/resolved.conf
 
 sudo chmod +x ./rootfs/root/install.sh
 sudo cp /usr/bin/qemu-arm-static ./rootfs/usr/bin/
