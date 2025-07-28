@@ -30,22 +30,51 @@
 #include <asm/asm-uaccess.h>
 #include <asm/unistd.h>
 
+/**
+当异常发生时，CPU会自动做如下一些事情。
+
+将处理器状态寄存器PSTATE保存到对应目标异常等级的SPSR_ELx中
+将返回地址保存在对应目标异常等级的ELRELx中
+把PSTATE寄存器里的DAIF域都设置为1，这相当于把调试异常、系统错误 （SError）、IRQ以及FIQ都关闭了。具体异常原因需要查看ESR_ELx
+设置栈指针，指向对应目标异常等级下的栈，自动切换SP到SP_ELx
+CPU处理器会从异常发生现场的异常等级切换到对应目标异常等级，然后跳转到异常向量表并执行
+上述是ARMv8处理器检测到异常发生后自动做的事情。操作系统需要做的事情是从中断向量表开始，根据异常发生的类型，跳转到合适的异常向量表。异常向量表中的每项会保存一个异常处理的跳转函数，然后跳转到恰当的异常处理函数并处理异常。
+
+当操作系统的异常处理完成后，执行一条eret指令即可从异常返回。这条指令会自动完成如下工作
+
+从ELR_ELx中恢复PC指针
+从SPSR_ELx恢复处理器的状态
+**/
+	/*
+	* 宏，把所有通用寄存器清0
+	*/
 	.macro	clear_gp_regs
+	/*
+	* irq伪指令，会生成32个mov指令清零所有寄存器
+	*/
 	.irp	n,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29
 	mov	x\n, xzr
 	.endr
 	.endm
 
+	/*
+	* 定义中断向量entry，一个entry可以达到128字节，
+	* el 异常级别，regsize 寄存器大小 label 跳转入口地址
+	*/
 	.macro kernel_ventry, el:req, ht:req, regsize:req, label:req
+	/* 2^7 对齐，align伪指令在x86和arm不一样 */
 	.align 7
 .Lventry_start\@:
-	.if	\el == 0
+	.if	\el == 0	// 中断来自user space
 	/*
 	 * This must be the first instruction of the EL0 vector entries. It is
 	 * skipped by the trampoline vectors, to trigger the cleanup.
 	 */
-	b	.Lskip_tramp_vectors_cleanup\@
+	b	.Lskip_tramp_vectors_cleanup\@	// 从tramp_vector跳转过来时, 这条指令会被跳过, x30 LR寄存器地址被设置为了下一条指令
 	.if	\regsize == 64
+	/*
+	* tramp_entry中会把x30备份到tpidrro_el0, 此处恢复x30, x30是LR寄存器
+	*/
 	mrs	x30, tpidrro_el0
 	msr	tpidrro_el0, xzr
 	.else
@@ -54,6 +83,7 @@
 .Lskip_tramp_vectors_cleanup\@:
 	.endif
 
+	/*分配需要保存的现场寄存器栈空间，栈必须对齐 THREAD_SHIFT*/
 	sub	sp, sp, #PT_REGS_SIZE
 #ifdef CONFIG_VMAP_STACK
 	/*
@@ -61,12 +91,15 @@
 	 * Task and IRQ stacks are aligned so that SP & (1 << THREAD_SHIFT)
 	 * should always be zero.
 	 */
+	// vmap stack 分配栈，在栈的起始会分配一个保护页，stack是32K对齐，目的是 SP & (1 << THREAD_SHIFT) 这种简单方法检查溢出
+	// 保护页不映射物理内存，但是占用虚地址空间，如果踩到保护页会产生内存错误，进入本中断向量进行检查处理
 	add	sp, sp, x0			// sp' = sp + x0
 	sub	x0, sp, x0			// x0' = sp' - x0 = (sp + x0) - x0 = sp
-	tbnz	x0, #THREAD_SHIFT, 0f
+	tbnz	x0, #THREAD_SHIFT, 0f	// ==THREAD_SHIFT==14, 当sp溢出时,THREAD_SHIFT bit为1,如果没有溢出,这个bit为0
 	sub	x0, sp, x0			// x0'' = sp' - x0' = (sp + x0) - sp = x0
 	sub	sp, sp, x0			// sp'' = sp' - x0 = (sp + x0) - x0 = sp
-	b	el\el\ht\()_\regsize\()_\label
+
+	b	el\el\ht\()_\regsize\()_\label	// entry_handler
 
 0:
 	/*
@@ -76,23 +109,26 @@
 	 */
 
 	/* Stash the original SP (minus PT_REGS_SIZE) in tpidr_el0. */
-	msr	tpidr_el0, x0
+	msr	tpidr_el0, x0			// x0备份到tpidr_el0, 此时x0的值等于sp初始值
 
 	/* Recover the original x0 value and stash it in tpidrro_el0 */
-	sub	x0, sp, x0
-	msr	tpidrro_el0, x0
+	sub	x0, sp, x0				// 恢复x0的原始值
+	msr	tpidrro_el0, x0			// x0备份到tpidrro_el0
 
 	/* Switch to the overflow stack */
-	adr_this_cpu sp, overflow_stack + OVERFLOW_STACK_SIZE, x0
+	adr_this_cpu sp, overflow_stack + OVERFLOW_STACK_SIZE, x0	// 取per-cpu over_flow_stack栈地址,设置到sp，主栈满了，切到备用栈
 
 	/*
 	 * Check whether we were already on the overflow stack. This may happen
 	 * after panic() re-enables interrupts.
 	 */
 	mrs	x0, tpidr_el0			// sp of interrupted context
-	sub	x0, sp, x0			// delta with top of overflow stack
-	tst	x0, #~(OVERFLOW_STACK_SIZE - 1)	// within range?
-	b.ne	__bad_stack			// no? -> bad stack pointer
+	sub	x0, sp, x0			// delta with top of overflow stack, 计算主栈和overflow stack的地址偏移
+	tst	x0, #~(OVERFLOW_STACK_SIZE - 1)	// within range?  判断interrupted sp和overflow_stack sp的偏移是否在overflow stack size内
+										// 为0则说明异常发生时的sp在overflow stack地址范围，正在处理panic时发生中断，否则说明某些代码触发了stack Overflow，
+										// 接下来处理panic
+	b.ne	__bad_stack			// no? -> bad stack pointer 跳转处理stack Overflow流程
+									// yes? -> continue
 
 	/* We were already on the overflow stack. Restore sp/x0 and carry on. */
 	sub	sp, sp, x0
@@ -203,6 +239,7 @@ alternative_cb_end
 	.if	\regsize == 32
 	mov	w0, w0				// zero upper 32 bits of x0
 	.endif
+	// 保存通用寄存器
 	stp	x0, x1, [sp, #16 * 0]
 	stp	x2, x3, [sp, #16 * 1]
 	stp	x4, x5, [sp, #16 * 2]
@@ -220,21 +257,31 @@ alternative_cb_end
 	stp	x28, x29, [sp, #16 * 14]
 
 	.if	\el == 0
+	// 清空通用寄存器
 	clear_gp_regs
+	// el0 sp寄存器
 	mrs	x21, sp_el0
-	ldr_this_cpu	tsk, __entry_task, x20
-	msr	sp_el0, tsk
+	/**
+	arm64 从 EL0 切换进 EL1 的时候保存完上下文之后 sp_el0 就用不到了，所以可以把当前进程的指针保存在 sp_el0 里面快速访问，
+	然后在返回用户态的时候将 sp_el0 保存进 percpu 存储区的 __entry_task，而 percpu 存储区的偏移存在 tpidr_el1 里面，
+	那么下次进入 EL1 的时候就可以用 __entry_task + tpidr_el1 又找到当前 CPU 上的 current，然后存进 sp_el0 里访问
+	**/
+	// 每次任务切换时，将next task放 __entry_task，切换完成后，__entry_task放的就是current task
+	// 用户态到内核态时，把current task放sp el0
+	// tsk .req x28, 所以tsk是x28寄存器，放current thread info
+	ldr_this_cpu	tsk, __entry_task, x20	// 从 __entry_task 获取当前task指针
+	msr	sp_el0, tsk	//sp_el0执行current task
 
 	/*
 	 * Ensure MDSCR_EL1.SS is clear, since we can unmask debug exceptions
 	 * when scheduling.
 	 */
-	ldr	x19, [tsk, #TSK_TI_FLAGS]
-	disable_step_tsk x19, x20
+	ldr	x19, [tsk, #TSK_TI_FLAGS]	// task_struct 中thread_info.flags
+	disable_step_tsk x19, x20		// 关闭单步调试
 
 	/* Check for asynchronous tag check faults in user space */
 	ldr	x0, [tsk, THREAD_SCTLR_USER]
-	check_mte_async_tcf x22, x23, x0
+	check_mte_async_tcf x22, x23, x0	// memory tagged extension功能检查
 
 #ifdef CONFIG_ARM64_PTR_AUTH
 alternative_if ARM64_HAS_ADDRESS_AUTH
@@ -247,20 +294,28 @@ alternative_if ARM64_HAS_ADDRESS_AUTH
 	 * was disabled on kernel exit then we would have left the kernel IA
 	 * installed so there is no need to install it again.
 	 */
-	tbz	x0, SCTLR_ELx_ENIA_SHIFT, 1f
-	__ptrauth_keys_install_kernel_nosync tsk, x20, x22, x23
+	tbz	x0, SCTLR_ELx_ENIA_SHIFT, 1f	// 检查指针认证功能,内核在每个进程execv时分配一个key，这个key随task一起切换
+	__ptrauth_keys_install_kernel_nosync tsk, x20, x22, x23	// 给task开启 PA功能
 	b	2f
 1:
 	mrs	x0, sctlr_el1
 	orr	x0, x0, SCTLR_ELx_ENIA
-	msr	sctlr_el1, x0
+	msr	sctlr_el1, x0			// 开启PA
 2:
 alternative_else_nop_endif
 #endif
 
+	/**
+	apply_ssbd用于启用 Speculative Store Bypass Disable（SSBD）特性。
+	该函数在 Linux 内核中实现，主要用于 Spectre 漏洞的缓解。
+	SSBD 特性是 ARMv8.5-A 架构中引入的一种硬件特性，用于防止 Spectre 漏洞的攻击。
+	当启用 SSBD 特性时，处理器会禁用对 Store Buffer 的 speculative access，
+	从而防止 Spectre 攻击利用 Store Buffer 的 speculative access 进行信息泄露。
+	在 Linux 系统中，启用 SSBD 特性可以通过设置相应的控制寄存器实现。
+	**/
 	apply_ssbd 1, x22, x23
 
-	mte_set_kernel_gcr x22, x23
+	mte_set_kernel_gcr x22, x23	// 设置Global Control Register启用mte
 
 	/*
 	 * Any non-self-synchronizing system register updates required for
@@ -274,11 +329,11 @@ alternative_if ARM64_HAS_ADDRESS_AUTH
 	isb
 alternative_else_nop_endif
 1:
-
+	// shadow call stack功能，防ROP攻击
 	scs_load_current
 	.else
 	add	x21, sp, #PT_REGS_SIZE
-	get_current_task tsk
+	get_current_task tsk	// 取current， sp_el0
 	.endif /* \el == 0 */
 	mrs	x22, elr_el1
 	mrs	x23, spsr_el1
@@ -297,6 +352,8 @@ alternative_else_nop_endif
 	str	x0, [sp, #S_STACKFRAME_TYPE]
 	add	x29, sp, #S_STACKFRAME
 
+// PAN 功能，禁止内核访问用户空间数据，必须使用copy_from_user, copy_to_user才能访问
+// 实现原理是ttbr0寄存器置零, 这样内核就不能访问页表了, 这个是软件模拟实现，不是armv8 硬件PAN功能
 #ifdef CONFIG_ARM64_SW_TTBR0_PAN
 alternative_if_not ARM64_HAS_PAN
 	bl	__swpan_entry_el\el
@@ -336,7 +393,7 @@ alternative_else_nop_endif
 
 	.macro	kernel_exit, el
 	.if	\el != 0
-	disable_daif
+	disable_daif	// 退出到el1需禁用 DAIF
 	.endif
 
 #ifdef CONFIG_ARM64_PSEUDO_NMI
@@ -359,7 +416,7 @@ alternative_else_nop_endif
 
 #ifdef CONFIG_ARM64_SW_TTBR0_PAN
 alternative_if_not ARM64_HAS_PAN
-	bl	__swpan_exit_el\el
+	bl	__swpan_exit_el\el		// 恢复ttbr0_el1
 alternative_else_nop_endif
 #endif
 
@@ -473,6 +530,7 @@ alternative_else_nop_endif
 	 * feature as all TTBR0_EL1 accesses are disabled, not just those to
 	 * user mappings.
 	 */
+	 // 进入内核disable用户空间页表寄存器
 SYM_CODE_START_LOCAL(__swpan_entry_el1)
 	mrs	x21, ttbr0_el1
 	tst	x21, #TTBR_ASID_MASK		// Check for the reserved ASID
@@ -488,6 +546,7 @@ SYM_CODE_END(__swpan_entry_el1)
 	 * Restore access to TTBR0_EL1. If returning to EL0, no need for SPSR
 	 * PAN bit checking.
 	 */
+	 // 软件模拟PAN是通过修改用户态页表阻止内核访问用户空间数据，退出内核态时需要恢复用户空间页表寄存器
 SYM_CODE_START_LOCAL(__swpan_exit_el1)
 	tbnz	x22, #22, 1f			// Skip re-enabling TTBR0 access if the PSR_PAN_BIT is set
 	__uaccess_ttbr0_enable x0, x1
@@ -516,7 +575,22 @@ tsk	.req	x28		// current thread_info
  * Exception vectors.
  */
 	.pushsection ".entry.text", "ax"
-
+/**
+如果发生异常后并没有exception level切换，并且发生异常之前使用的栈指针是SP_EL0，那么使用第一组异常向量表。不知道有什么场景，linux没处理
+如果发生异常后并没有exception level切换，并且发生异常之前使用的栈指针是SP_EL1/2/3，那么使用第二组异常向量表。异常发生在内核态
+如果发生异常导致了exception level切换，并且发生异常之前的exception level运行在AARCH64模式，那么使用第三组异常向量表。系统调用
+如果发生异常导致了exception level切换，并且发生异常之前的exception level运行在AARCH32模式，那么使用第四组异常向量表。用户态跑的aarch32程序，执行了系统调用
+**/
+/**
+el1 sync：当前处于内核态时，发生了指令执行异常、缺页中断（跳转地址或者取地址）。
+el1 irq：当前处于内核态时，发生硬件中断。
+el0 sync：当前处于用户态时，发生了指令执行异常、缺页中断（跳转地址或者取地址）、系统调用。
+el0 irq：当前处于用户态时，发生了硬件中断。
+**/
+/**
+fiq 快速中断在secure world中使用, 即el3
+**/
+// h - handler, t - thread
 	.align	11
 SYM_CODE_START(vectors)
 	kernel_ventry	1, t, 64, sync		// Synchronous EL1t
@@ -556,27 +630,27 @@ SYM_CODE_START_LOCAL(__bad_stack)
 	 * PT_REGS_SIZE) was stashed in tpidr_el0 by kernel_ventry.
 	 */
 	sub	sp, sp, #PT_REGS_SIZE
-	kernel_entry 1
+	kernel_entry 1	// 保存GPRs
 	mrs	x0, tpidr_el0
 	add	x0, x0, #PT_REGS_SIZE
-	str	x0, [sp, #S_SP]
+	str	x0, [sp, #S_SP]	// 保存Overflow sp
 
 	/* Stash the regs for handle_bad_stack */
 	mov	x0, sp
 
 	/* Time to die */
-	bl	handle_bad_stack
+	bl	handle_bad_stack	// 处理bad stack， 栈回溯
 	ASM_BUG()
 SYM_CODE_END(__bad_stack)
 #endif /* CONFIG_VMAP_STACK */
 
 
 	.macro entry_handler el:req, ht:req, regsize:req, label:req
-SYM_CODE_START_LOCAL(el\el\ht\()_\regsize\()_\label)
-	kernel_entry \el, \regsize
+SYM_CODE_START_LOCAL(el\el\ht\()_\regsize\()_\label)		// kernel_ventry会跳转到此处执行
+	kernel_entry \el, \regsize								// 备份通用寄存器, 部分初始化操作
 	mov	x0, sp
-	bl	el\el\ht\()_\regsize\()_\label\()_handler
-	.if \el == 0
+	bl	el\el\ht\()_\regsize\()_\label\()_handler			// 跳转到handler执行
+	.if \el == 0	// 表示系统调用或者用户态触发的异常
 	b	ret_to_user
 	.else
 	b	ret_to_kernel
@@ -587,6 +661,9 @@ SYM_CODE_END(el\el\ht\()_\regsize\()_\label)
 /*
  * Early exception handlers
  */
+ /**
+ 这些 macro 会展开为很多异常入口函数, kernel_ventry会跳转到此处
+ **/
 	entry_handler	1, t, 64, sync
 	entry_handler	1, t, 64, irq
 	entry_handler	1, t, 64, fiq
@@ -613,7 +690,7 @@ SYM_CODE_END(ret_to_kernel)
 
 SYM_CODE_START_LOCAL(ret_to_user)
 	ldr	x19, [tsk, #TSK_TI_FLAGS]	// re-check for single-step
-	enable_step_tsk x19, x2
+	enable_step_tsk x19, x2			// 如果用户态单步调试，需要恢复
 #ifdef CONFIG_GCC_PLUGIN_STACKLEAK
 	bl	stackleak_erase_on_task_stack
 #endif
@@ -624,10 +701,10 @@ SYM_CODE_END(ret_to_user)
 
 	// Move from tramp_pg_dir to swapper_pg_dir
 	.macro tramp_map_kernel, tmp
-	mrs	\tmp, ttbr1_el1
-	add	\tmp, \tmp, #TRAMP_SWAPPER_OFFSET
-	bic	\tmp, \tmp, #USER_ASID_FLAG
-	msr	ttbr1_el1, \tmp
+	mrs	\tmp, ttbr1_el1						// 取出当前内核页表寄存器
+	add	\tmp, \tmp, #TRAMP_SWAPPER_OFFSET	// 偏移到swapper_pg_dir
+	bic	\tmp, \tmp, #USER_ASID_FLAG			// 清掉user asid flag
+	msr	ttbr1_el1, \tmp						// 重置到swapper_pg_dir
 #ifdef CONFIG_QCOM_FALKOR_ERRATUM_1003
 alternative_if ARM64_WORKAROUND_QCOM_FALKOR_E1003
 	/* ASID already in \tmp[63:48] */
@@ -657,12 +734,12 @@ alternative_else_nop_endif
 
 	.macro		tramp_data_read_var	dst, var
 #ifdef CONFIG_RELOCATABLE
-	ldr		\dst, .L__tramp_data_\var
+	ldr		\dst, .L__tramp_data_\var			// 这个label保存了vectors中断向量表的地址
 	.ifndef		.L__tramp_data_\var
 	.pushsection	".entry.tramp.rodata", "a", %progbits
 	.align		3
 .L__tramp_data_\var:
-	.quad		\var
+	.quad		\var							// 声明一个64位变量, 值为vectors
 	.popsection
 	.endif
 #else
@@ -680,10 +757,11 @@ alternative_else_nop_endif
 #endif
 	.endm
 
+// Branch Target Buffer Hardening, 分支预测漏洞会导致缓存穿透
 #define BHB_MITIGATION_NONE	0
-#define BHB_MITIGATION_LOOP	1
-#define BHB_MITIGATION_FW	2
-#define BHB_MITIGATION_INSN	3
+#define BHB_MITIGATION_LOOP	1	// 循环中包含间接分支时,使用循环缓冲器缓解BHB漏洞
+#define BHB_MITIGATION_FW	2	// firmware+hardware修复
+#define BHB_MITIGATION_INSN	3	// 内核指令级修复
 
 	.macro tramp_ventry, vector_start, regsize, kpti, bhb
 	.align	7
@@ -712,16 +790,16 @@ alternative_else_nop_endif
 	 * enter the full-fat kernel vectors.
 	 */
 	bl	2f
-	b	.
+	b	.							// 因为x30返回地址会被修改, 所以此处不会执行
 2:
-	tramp_map_kernel	x30
+	tramp_map_kernel	x30			// 从tramp_pg_dir切换到swapper_pg_dir,cpu处于el0时内核页表是tramp_pg_dir
 alternative_insn isb, nop, ARM64_WORKAROUND_QCOM_FALKOR_E1003
-	tramp_data_read_var	x30, vectors
+	tramp_data_read_var	x30, vectors	// 取中断向量表地址放入x30
 alternative_if_not ARM64_WORKAROUND_CAVIUM_TX2_219_PRFM
 	prfm	plil1strm, [x30, #(1b - \vector_start)]
 alternative_else_nop_endif
 
-	msr	vbar_el1, x30
+	msr	vbar_el1, x30				// 把vectors地址放入中断向量表寄存器
 	isb
 	.else
 	adr_l	x30, vectors
@@ -736,19 +814,19 @@ alternative_else_nop_endif
 	__mitigate_spectre_bhb_fw
 	.endif // \bhb == BHB_MITIGATION_FW
 
-	add	x30, x30, #(1b - \vector_start + 4)
-	ret
+	add	x30, x30, #(1b - \vector_start + 4)		// x30存放当前entry第二条指令相对于generate_tramp_vector起始地址的偏移
+	ret											// 返回到vectors中断向量表, x30地址, 并且会跳过第一条指令, 因为上面加4了
 .org 1b + 128	// Did we overflow the ventry slot?
 	.endm
 
 	.macro	generate_tramp_vector,	kpti, bhb
 .Lvector_start\@:
-	.space	0x400
+	.space	0x400					// 空出8个entry, 这段属于el1t, el1h, 只有el0t, el0t 32才需要,也就是el0切el1才需要tramp_vector
 
-	.rept	4
+	.rept	4						// 此处是el0t的4个entry, repeat 4次
 	tramp_ventry	.Lvector_start\@, 64, \kpti, \bhb
 	.endr
-	.rept	4
+	.rept	4						// 此处是el0t_32的4个entry
 	tramp_ventry	.Lvector_start\@, 32, \kpti, \bhb
 	.endr
 	.endm
@@ -783,6 +861,7 @@ SYM_CODE_END(tramp_exit)
  * Exception vectors for spectre mitigations on entry from EL1 when
  * kpti is not in use.
  */
+ // 未开启内核页表隔离时的缓解幽灵漏洞方案, 对el0系统调用和异常做tramp
 	.macro generate_el1_vector, bhb
 .Lvector_start\@:
 	kernel_ventry	1, t, 64, sync		// Synchronous EL1t
@@ -806,7 +885,7 @@ SYM_CODE_END(tramp_exit)
 /* The order must match tramp_vecs and the arm64_bp_harden_el1_vectors enum. */
 	.pushsection ".entry.text", "ax"
 	.align	11
-SYM_CODE_START(__bp_harden_el1_vectors)
+SYM_CODE_START(__bp_harden_el1_vectors)	// 三张中断向量表
 #ifdef CONFIG_MITIGATE_SPECTRE_BRANCH_HISTORY
 	generate_el1_vector	bhb=BHB_MITIGATION_LOOP
 	generate_el1_vector	bhb=BHB_MITIGATION_FW

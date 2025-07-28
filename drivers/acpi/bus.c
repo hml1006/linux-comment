@@ -1436,6 +1436,9 @@ EXPORT_SYMBOL_GPL(acpi_kobj);
 
 void __weak __init acpi_arch_init(void) { }
 
+/**
+ * acpi初始化，会扫描pci设备
+ */
 static int __init acpi_init(void)
 {
 	int result;

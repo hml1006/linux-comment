@@ -288,6 +288,7 @@ struct nvme_ctrl {
 	struct request_queue *admin_q;
 	struct request_queue *connect_q;
 	struct request_queue *fabrics_q;
+	// PCIe设备父类
 	struct device *dev;
 	int instance;
 	int numa_node;
@@ -297,6 +298,7 @@ struct nvme_ctrl {
 	struct mutex namespaces_lock;
 	struct srcu_struct srcu;
 	struct device ctrl_device;
+	// /dev/nvme0设备对应的字符设备结构体，指向上面的ctrl_device
 	struct device *device;	/* char device */
 #ifdef CONFIG_NVME_HWMON
 	struct device *hwmon_device;

@@ -932,6 +932,7 @@ static int do_dentry_open(struct file *f,
 	if (S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode))
 		f->f_mode |= FMODE_ATOMIC_POS;
 
+	// 获取文件操作函数
 	f->f_op = fops_get(inode->i_fop);
 	if (WARN_ON(!f->f_op)) {
 		error = -ENODEV;
@@ -1428,13 +1429,17 @@ static int do_sys_openat2(int dfd, const char __user *filename,
 	if (unlikely(err))
 		return err;
 
+	// 填充filename
 	tmp = getname(filename);
 	if (IS_ERR(tmp))
 		return PTR_ERR(tmp);
 
+	// 申请一个空闲描述符
 	fd = get_unused_fd_flags(how->flags);
 	if (likely(fd >= 0)) {
+		// 打开文件
 		struct file *f = do_filp_open(dfd, tmp, &op);
+		// 打开文件失败回收描述符
 		if (IS_ERR(f)) {
 			put_unused_fd(fd);
 			fd = PTR_ERR(f);

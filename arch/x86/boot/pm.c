@@ -105,6 +105,7 @@ void go_to_protected_mode(void)
 	/* Hook before leaving real mode, also disables interrupts */
 	realmode_switch_hook();
 
+	// 打开a20地址线，否则内存会有空洞
 	/* Enable the A20 gate */
 	if (enable_a20()) {
 		puts("A20 gate not responding, unable to boot...\n");
@@ -120,6 +121,10 @@ void go_to_protected_mode(void)
 	/* Actual transition to protected mode... */
 	setup_idt();
 	setup_gdt();
+	/**
+	 * 跳转到vmlinux入口, x86/boot/compressed/head_64.S解压内核后跳转到真正内核入口
+	 * 真正内核入口 x86/kernel/head_64.S  startup_64, 完成一些初始化操作后跳转 start_kernel()
+	 */
 	protected_mode_jump(boot_params.hdr.code32_start,
 			    (u32)&boot_params + (ds() << 4));
 }

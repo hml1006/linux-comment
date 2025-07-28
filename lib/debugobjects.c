@@ -1413,9 +1413,12 @@ void __init debug_objects_early_init(void)
 {
 	int i;
 
+	// 16K 个debug hash表
 	for (i = 0; i < ODEBUG_HASH_SIZE; i++)
 		raw_spin_lock_init(&obj_hash[i].lock);
 
+	// debug object pool, 默认数据段有个静态obj pool，初始化时把这个静态obj pool中的obj加到obj pool，
+	// 后续分配debug object从这个obj pool取
 	/* Keep early boot simple and add everything to the boot list */
 	for (i = 0; i < ODEBUG_POOL_SIZE; i++)
 		hlist_add_head(&obj_static_pool[i].node, &pool_boot);

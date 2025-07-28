@@ -139,10 +139,12 @@ getname_flags(const char __user *filename, int flags)
 	char *kname;
 	int len;
 
+	// 如果进程被审计，从审计文件列表查找filename返回
 	result = audit_reusename(filename);
 	if (result)
 		return result;
 
+	// 为filename结构分配内存
 	result = __getname();
 	if (unlikely(!result))
 		return ERR_PTR(-ENOMEM);
@@ -2565,6 +2567,7 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 
 	nd->root.mnt = NULL;
 
+	// 绝对路径，根目录
 	/* Absolute pathname -- fetch the root (LOOKUP_IN_ROOT uses nd->dfd). */
 	if (*s == '/' && !(flags & LOOKUP_IN_ROOT)) {
 		error = nd_jump_root(nd);
@@ -2575,6 +2578,7 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 
 	/* Relative pathname -- get the starting-point it is relative to. */
 	if (nd->dfd == AT_FDCWD) {
+		// 进程工作目录
 		if (flags & LOOKUP_RCU) {
 			struct fs_struct *fs = current->fs;
 			unsigned seq;
@@ -2590,6 +2594,7 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 			nd->inode = nd->path.dentry->d_inode;
 		}
 	} else {
+		// 其他相对路径
 		/* Caller must check execute permissions on the starting path component */
 		CLASS(fd_raw, f)(nd->dfd);
 		struct dentry *dentry;
@@ -3865,6 +3870,7 @@ static int do_open(struct nameidata *nd,
 	}
 	if (!(file->f_mode & FMODE_CREATED))
 		audit_inode(nd->name, nd->path.dentry, 0);
+	// user namespace用于资源划分和权限管理， 该inode的namespace
 	idmap = mnt_idmap(nd->path.mnt);
 	if (open_flag & O_CREAT) {
 		if ((open_flag & O_EXCL) && !(file->f_mode & FMODE_CREATED))
@@ -4038,21 +4044,23 @@ static struct file *path_openat(struct nameidata *nd,
 	struct file *file;
 	int error;
 
+	// 分配file结构体
 	file = alloc_empty_file(op->open_flag, current_cred());
 	if (IS_ERR(file))
 		return file;
 
 	if (unlikely(file->f_flags & __O_TMPFILE)) {
-		error = do_tmpfile(nd, flags, op, file);
+		error = do_tmpfile(nd, flags, op, file); // 临时文件
 	} else if (unlikely(file->f_flags & O_PATH)) {
-		error = do_o_path(nd, flags, file);
+		error = do_o_path(nd, flags, file); // 分配文件描述符但不打开文件
 	} else {
+		// 路径查找
 		const char *s = path_init(nd, flags);
 		while (!(error = link_path_walk(s, nd)) &&
 		       (s = open_last_lookups(nd, file, op)) != NULL)
 			;
 		if (!error)
-			error = do_open(nd, file, op);
+			error = do_open(nd, file, op); // 打开文件
 		terminate_walk(nd);
 	}
 	if (likely(!error)) {
@@ -4078,7 +4086,9 @@ struct file *do_filp_open(int dfd, struct filename *pathname,
 	int flags = op->lookup_flags;
 	struct file *filp;
 
+	// 设置进程文件查找结构,保存旧的
 	set_nameidata(&nd, dfd, pathname, NULL);
+	// 查找path并打开文件
 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
 	if (unlikely(filp == ERR_PTR(-ECHILD)))
 		filp = path_openat(&nd, op, flags);

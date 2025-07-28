@@ -388,6 +388,7 @@ unsigned char vmlinux_build_id[BUILD_ID_SIZE_MAX] __ro_after_init;
  */
 void __init init_vmlinux_build_id(void)
 {
+	// 从 .note 段查找build id
 	extern const void __start_notes;
 	extern const void __stop_notes;
 	unsigned int size = &__stop_notes - &__start_notes;

@@ -321,7 +321,7 @@ static long local_pci_probe(void *_ddi)
 	 */
 	pm_runtime_get_sync(dev);
 	pci_dev->driver = pci_drv;
-	rc = pci_drv->probe(pci_dev, ddi->id);
+	rc = pci_drv->probe(pci_dev, ddi->id); // 调用pci设备驱动probe
 	if (!rc)
 		return rc;
 	if (rc < 0) {
@@ -386,6 +386,7 @@ static int pci_call_probe(struct pci_driver *drv, struct pci_dev *dev,
 		free_cpumask_var(wq_domain_mask);
 	}
 
+	// 执行probe
 	if (cpu < nr_cpu_ids)
 		error = work_on_cpu(cpu, local_pci_probe, &ddi);
 	else
@@ -412,6 +413,7 @@ static int __pci_device_probe(struct pci_driver *drv, struct pci_dev *pci_dev)
 	if (drv->probe) {
 		error = -ENODEV;
 
+		// 检查是否match
 		id = pci_match_device(drv, pci_dev);
 		if (id)
 			error = pci_call_probe(drv, pci_dev, id);
@@ -448,7 +450,7 @@ static int pci_device_probe(struct device *dev)
 		return error;
 
 	pci_dev_get(pci_dev);
-	error = __pci_device_probe(drv, pci_dev);
+	error = __pci_device_probe(drv, pci_dev);	// probe
 	if (error) {
 		pcibios_free_irq(pci_dev);
 		pci_dev_put(pci_dev);
@@ -1505,6 +1507,7 @@ static int pci_bus_match(struct device *dev, const struct device_driver *drv)
 		return 0;
 
 	pci_drv = (struct pci_driver *)to_pci_driver(drv);
+	// 判断设备id是否在驱动支持的id列表
 	found_id = pci_match_device(pci_drv, pci_dev);
 	if (found_id)
 		return 1;
@@ -1722,6 +1725,9 @@ const struct bus_type pcie_port_bus_type = {
 };
 #endif
 
+/**
+ * 注册pci总线驱动
+ */
 static int __init pci_driver_init(void)
 {
 	int ret;

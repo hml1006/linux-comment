@@ -980,11 +980,11 @@ UNHANDLED(el0t, 32, error)
 #ifdef CONFIG_VMAP_STACK
 asmlinkage void noinstr __noreturn handle_bad_stack(struct pt_regs *regs)
 {
-	unsigned long esr = read_sysreg(esr_el1);
-	unsigned long far = read_sysreg(far_el1);
+	unsigned long esr = read_sysreg(esr_el1);	// 错误原因
+	unsigned long far = read_sysreg(far_el1);	// 错误地址
 
 	arm64_enter_nmi(regs);
-	panic_bad_stack(regs, esr, far);
+	panic_bad_stack(regs, esr, far);	// 打印panic信息
 }
 #endif /* CONFIG_VMAP_STACK */
 

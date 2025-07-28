@@ -574,7 +574,7 @@ static int call_driver_probe(struct device *dev, const struct device_driver *drv
 	int ret = 0;
 
 	if (dev->bus->probe)
-		ret = dev->bus->probe(dev);
+		ret = dev->bus->probe(dev); // 总线probe设备
 	else if (drv->probe)
 		ret = drv->probe(dev);
 
@@ -654,6 +654,7 @@ re_probe:
 			goto probe_failed;
 	}
 
+	// 调用probe
 	ret = call_driver_probe(dev, drv);
 	if (ret) {
 		/*
@@ -924,6 +925,7 @@ static int __device_attach_driver(struct device_driver *drv, void *_data)
 	bool async_allowed;
 	int ret;
 
+	// 检查device和driver是否match，调用match函数
 	ret = driver_match_device(drv, dev);
 	if (ret == 0) {
 		/* no match */
@@ -954,7 +956,7 @@ static int __device_attach_driver(struct device_driver *drv, void *_data)
 	 * Ignore errors returned by ->probe so that the next driver can try
 	 * its luck.
 	 */
-	ret = driver_probe_device(drv, dev);
+	ret = driver_probe_device(drv, dev); // 调用驱动probe
 	if (ret < 0)
 		return ret;
 	return ret == 0;
@@ -1026,6 +1028,7 @@ static int __device_attach(struct device *dev, bool allow_async)
 		if (dev->parent)
 			pm_runtime_get_sync(dev->parent);
 
+		// 调用probe
 		ret = bus_for_each_drv(dev->bus, NULL, &data,
 					__device_attach_driver);
 		if (!ret && allow_async && data.have_async) {

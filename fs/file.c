@@ -241,6 +241,7 @@ static int expand_fdtable(struct files_struct *files, unsigned int nr)
 	struct fdtable *new_fdt, *cur_fdt;
 
 	spin_unlock(&files->file_lock);
+	// 分配新的描述符表
 	new_fdt = alloc_fdtable(nr + 1);
 
 	/* make sure all fd_install() have seen resize_in_progress
@@ -254,8 +255,11 @@ static int expand_fdtable(struct files_struct *files, unsigned int nr)
 		return PTR_ERR(new_fdt);
 	cur_fdt = files_fdtable(files);
 	BUG_ON(nr < cur_fdt->max_fds);
+	// 旧表拷贝到新表
 	copy_fdtable(new_fdt, cur_fdt);
 	rcu_assign_pointer(files->fdt, new_fdt);
+
+	// 释放旧表
 	if (cur_fdt != &files->fdtab)
 		call_rcu(&cur_fdt->rcu, free_fdtable_rcu);
 	/* coupled with smp_rmb() in fd_install() */
@@ -284,8 +288,10 @@ repeat:
 	if (nr < fdt->max_fds)
 		return 0;
 
+	// 正在扩容
 	if (unlikely(files->resize_in_progress)) {
 		spin_unlock(&files->file_lock);
+		// 加入等待队列
 		wait_event(files->resize_wait, !files->resize_in_progress);
 		spin_lock(&files->file_lock);
 		goto repeat;
@@ -297,9 +303,11 @@ repeat:
 
 	/* All good, so we try */
 	files->resize_in_progress = true;
+	// 真正扩容文件描述符表
 	error = expand_fdtable(files, nr);
 	files->resize_in_progress = false;
 
+	// 唤醒等待扩容的进程
 	wake_up_all(&files->resize_wait);
 	return error;
 }
@@ -561,6 +569,7 @@ static int alloc_fd(unsigned start, unsigned end, unsigned flags)
 
 	spin_lock(&files->file_lock);
 repeat:
+	// 文件描述符表
 	fdt = files_fdtable(files);
 	fd = start;
 	if (fd < files->next_fd)
@@ -577,6 +586,7 @@ repeat:
 	if (unlikely(fd >= end))
 		goto out;
 
+	// 文件描述符表扩容
 	if (unlikely(fd >= fdt->max_fds)) {
 		error = expand_files(files, fd);
 		if (error < 0)
