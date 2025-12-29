@@ -1,5 +1,15 @@
 import os
-from clang.cindex import Index, CompilationDatabase
+from clang.cindex import Index, CompilationDatabase, TokenKind
+
+def find_comments(node):
+    """
+    遍历节点及其子节点的所有Token,筛选出注释
+    """
+    for token in node.get_tokens():
+        if token.kind == TokenKind.COMMENT:
+            print(f"注释: {token.spelling} 在 [行:{token.location.line}, 列:{token.location.column}]")
+    for child in node.get_children():
+        find_comments(child)
 
 def traverse_ast(node, depth=0):
         """
@@ -47,5 +57,5 @@ if __name__ == "__main__":
         print(good_args)
 
         tu = index.parse(source_file, good_args) 
-
+        find_comments(tu.cursor)
         traverse_ast(tu.cursor)
