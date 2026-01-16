@@ -19,70 +19,54 @@ identity mapping主要是打开MMU的过度阶段，因此对于identity mapping
 
 # head.S启动过程
 
-```mermaid
-flowchart LR
-primary_entry[primary_entry]
-primary_entry--> rms[record_mmu_state<br/>从系统控制寄存器提取mmu开启关闭状态放入x19]
-primary_entry--> pbr[preserve_boot_args<br/>把BootLoader传递的x0-x3寄存器放入boot_args数组]
-primary_entry--> cim[__pi_create_init_idmap<br/>map_range.c:create_init_idmap<br/>创建虚地址到物理地址的一一映射,开启MMU要用到<br/>VA等于PA]
-cim--> mrt[map_range<br/> init text section映射<br/>初始化完成后释放内存]
-cim--> mrd[map_range<br/> init data section映射<br/>初始化完成后释放内存]
-primary_entry-->dc[dcache_clean_poc<br/> 刷cache]
-primary_entry--> ik[init_kernel_el<br/>初始化CPU boot mode,EL1还是EL2,<br/>]
-primary_entry--> cs[__cpu_setup<br/>enable FP/SIMD,debug pmu访问权限<br/>mair寄存器内存属性设置,<br/>页表和内存调试功能Feature设置<br/>虚地址物理地址bit长度设置]
-cs--> 清TLB
-cs--> 禁止FPU和SIMD
-cs--> 禁止debug功能
-cs--> 禁止从EL0访问PMU,AMU
-cs--> 配置MAIR寄存器内存属性
-cs--> 计算设置地址宽度
-cs--> 准备SCTLR寄存器内容放x0
-primary_entry--> ps[__primary_switch]
-
-```
-
-# head.S启动子流程
-
-## __primary_switch 流程
-
-```mermaid
-flowchart LR
-ps[__primary_switch] 
-ps--> em[__enable_mmu 使能mmu>ttbr0_el1设置为init_idmap_pg_dir]
-ps--> emk[__pi_early_map_kernel<br/>传入FDT地址,从FDT读取seed并生成一个offset]
-ps--> psd[__primary_switched]
-```
-
-### early map kernel
-
-```mermaid
-flowchart LR
-emk[__pi_early_map_kernel<br/>传入FDT地址,从FDT读取seed并生成一个offset]
-emk--> mf[map_fdt<br/>把FDT映射到idmap]
-emk--> clr_bss[clear_bss<br/>清bss段]
-emk--> ki[kaslr_early_init<br/>从FDT读取seed并<br/>计算一个kaslr seed]
-emk--> va_base[根据kaslr seed计算va_base地址]
-emk--> mp[map_kernel<br/>创建kernel映射,VA和PA不相等]
-mp--> mst[map_segment<br/>.text section]
-mp--> msr[map_segment<br/>.rodata section]
-mp--> msit[map_segment<br/>.init.text section]
-mp--> msid[map_segment<br/>.init.data section]
-mp--> msd[map_segment<br/>.data section]
-mp--> idmap_cpu_replace_ttbr1[idmap_cpu_replace_ttbr1<br/>把init_pg_dir设置到ttbr1]
-mp--> mk[relocate_kernel<br/>重定位内核kaslr feature<br/>R_AARCH64_RELATIVE重定位类型]
-mp--> remap[把text section取消write权限重新map]
-mp--> cp[把init_pg_dir拷贝到swapper_pg_dir并更新ttbr1_el1]
-```
-
-### _primary_switched流程
-
-```mermaid
-flowchart LR
-psd[__primary_switched]
-psd--> ict[init_cpu_task<br/>初始化一个task struct,用来做栈回溯]
-psd--> ifdt[设置中断向量表,取__fdt_pointer和内核镜像地址]
-psd--> scbm[set_cpu_boot_mode_flag<br/>把CPU boot mode保存到全局变量]
-psd--> kei[kasan_early_init<br/>kasan功能初步初始化,arm64 MTE Feature可硬件支持kasan]
-psd--> vhe[finalise_el2VHE虚拟化扩展设置]
-psd--> sk[start_kernel]
+```plantuml
+@startsalt
+{
+{T
+    + primary_entry
+    ++ record_mmu_state     | 从系统控制寄存器提取mmu开启关闭状态放入x19
+    ++ preserve_boot_args   | 把BootLoader传递的x0-x3寄存器放入boot_args数组
+    ++ 把sp设置为early_init_stack
+    ++ __pi_create_init_idmap| map_range.c:create_init_idmap,创建虚地址到物理地址的一一映射,开启MMU要用到,VA等于PA
+    +++ map_range           | init text section映射,初始化完成后释放内存
+    +++ map_range           | init data section映射,初始化完成后释放内存
+    ++ dcache_inval_poc     | 如果MMU disable,invalidate __pi_init_idmap_pg_dir
+    ++ init_kernel_el       | 初始化CPU boot mode,EL1还是EL2
+    ++ __cpu_setup          | enable FP/SIMD,debug pmu访问权限,mair寄存器内存属性设置,页表和内存调试功能Feature设置,虚地址物理地址bit长度设置
+    +++ 清TLB
+    +++ 禁止FPU和SIMD
+    +++ 禁止debug功能
+    +++ 禁止从EL0访问PMU,AMU
+    +++ 配置MAIR寄存器内存属性
+    +++ 计算设置地址宽度
+    +++ 准备SCTLR寄存器内容放x0
+    ++ __primary_switch
+    +++ __enable_mmu         | 使能mmu,ttbr0_el1设置为init_idmap_pg_dir
+    +++ 把sp设置为early_init_stack
+    +++ __pi_early_map_kernel| 传入FDT地址,从FDT读取seed并生成一个offset
+    ++++ map_fdt             | 把FDT映射到idmap
+    ++++ clear_bss           | 清bss段
+    ++++ kaslr_early_init    | 从FDT读取seed并计算一个kaslr seed
+    ++++ 计算va_base地址
+    ++++ map_kernel          | 创建kernel映射,VA和PA不相等
+    +++++ map_segment         | .text section
+    +++++ map_segment         | .rodata section
+    +++++ map_segment         | .init.text section
+    +++++ map_segment         | .init.data section
+    +++++ map_segment         | .data section
+    +++++ idmap_cpu_replace_ttbr1| 把init_pg_dir设置到ttbr1
+    +++++ relocate_kernel     | 重定位内核kaslr feature,R_AARCH64_RELATIVE重定位类型
+    +++++ 把text section取消write权限重新map
+    +++++ 把init_pg_dir拷贝到swapper_pg_dir
+    +++++ idmap_cpu_replace_ttbr1| 把swapper_pg_dir设置到ttbr1
+    +++ __primary_switched   | 初始化task struct,设置中断向量表,设置CPU boot mode,初始化kasan功能,设置VHE虚拟化扩展,启动内核
+    ++++ init_cpu_task       | 初始化一个task struct,用来做栈回溯
+    ++++ 设置中断向量表,取__fdt_pointer和内核镜像地址
+    ++++ set_cpu_boot_mode_flag | 把CPU boot mode保存到全局变量
+    ++++ kasan_early_init    | kasan功能初步初始化,arm64 MTE Feature可硬件支持kasan
+    ++++ finalise_el2VHE 虚拟化扩展设置
+    ++++ start_kernel        | 启动内核
+}
+}
+@endsalt
 ```

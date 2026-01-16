@@ -120,7 +120,6 @@ SYM_CODE_START(primary_entry)
 	 * of the primary boot code to the PoC so we can safely execute it with
 	 * the MMU off.
 	 */
-	 // 正常情况MMU是关闭的，所以会跳转到标签 0
 0:	adrp	x0, __idmap_text_start
 	adr_l	x1, __idmap_text_end
 	adr_l	x2, dcache_clean_poc
