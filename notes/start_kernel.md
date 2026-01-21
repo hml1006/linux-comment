@@ -26,6 +26,8 @@
 ++ setup_arch                   | 体系结构相关初始化
 +++ setup_initial_init_mm       | 初始化init 内存管理器
 +++ kaslr_init                  | Kernel Address Space Layout Random 内核地址随机化初始化
+++++ kaslr_disabled_cmdline    | 检查cmdline是否禁用kaslr
+++++ 检查kaslr_offset是否小于MIN_KIMG_ALIGN，小于则无法开启
 +++ early_fixmap_init           | 初始化L0, L1, L2 fixmap区域对应的页表entry
 ++++ early_fixmap_init_pud       | 初始化Page Upper Directory
 +++++ __p4d_populate             | 启用5级页表则初始化p4d,p4d在pgd和pud之间
@@ -58,6 +60,7 @@
 ++++ memblock_reserve            | memblock reserve fdt物理地址
 +++++ memblock_add_range          | 添加fdt range, 添加的内存如果存在重叠,需要处理合并
 ++++++ memblock_insert_region
+++++ early_init_dt_scan
 ++++ fixmap_remap_fdt              | 映射完成后页表设置read only,防止fdt被修改
 ++++ of_flat_dt_get_machine_name | 从 fdt 查找 machine 信息
 ++++ dump_stack_set_arch_desc    | 设置arch描述信息
@@ -73,7 +76,7 @@
 ++++ parse_early_options        | 解析early options
 +++++ parse_args                 | 解析启动参数
 +++ dynamic_scs_init            | Shadow Call Stack, 影子调用栈,栈保护功能,把FP和LR放影子调用栈,防止缓冲区溢出攻击等,需要编译器支持
-+++ local_daif_restore          | mask irq,fiq
++++ local_daif_restore          | mask irq,fiq，unmask debug，SError
 +++ cpu_uninstall_idmap         | 取消idmap ttbr0映射,避免旁路攻击
 ++++ cpu_set_reserved_ttbr0      | ttbr0设置空页
 ++++ local_flush_tlb_all         | 刷tlb
@@ -90,19 +93,26 @@
 ++++++ early_memremap
 +++++++ early_memremap_pgprot_adjust
 ++++++++ __early_ioremap
-+++ uefi_init
-++++ early_memremap_ro           | 设置readonly 权限
-+++++ early_memremap_pgprot_adjust
-+++++++ __early_ioremap
-++++ efi_systab_check_header     | 校验签名
-++++ efi_systab_report_header    | 打印efi header信息
-++++ efi_config_parse_tables     | 解析efi table
-+++++ early_memunmap             | 取消fdt中efi数据映射
-++++++ early_iounmap
-+++++++ __late_clear_fixmap
-++++++++ __set_fixmap
-+++++++++ __pte_clear
-++++++++++ flush_tlb_kernel_range
+++++ uefi_init
++++++ early_memremap_ro           | readonly模式映射header
+++++++ early_memremap_pgprot_adjust
+++++++++ __early_ioremap
++++++ efi_systab_check_header     | 校验签名
++++++ efi_systab_report_header    | 打印efi header信息
++++++ early_memremap_ro           | readonly模式映射body
++++++ efi_config_parse_tables     | 解析efi table
+++++++ early_memunmap             | 取消fdt中efi数据映射
++++++++ early_iounmap
+++++++++ __late_clear_fixmap
++++++++++ __set_fixmap
+++++++++++ __pte_clear
++++++++++++ flush_tlb_kernel_range
+++++ reserve_regions
+++++ early_init_dt_check_for_usable_mem_range
+++++ efi_find_mirror
+++++ efi_esrt_init
+++++ efi_mokvar_table_init
+++++ memblock_reserve
 +++ arm64_memblock_init         | 内存块初始化,remove一些no-map区域, reserve一些如kernel,fdt,ramdisk,device等内存空间
 ++++ memblock_remove  | 从memblock中remove超过支持范围的物理地址
 ++++ memblock_remove  | 从memblock中remove linear region外的物理地址
@@ -137,7 +147,13 @@
 +++ kasan_init                  | KASAN初始化,内存检测工具,编译器支持
 +++ request_standard_resources  | 请求标准资源,比如PCI,USB等
 +++ early_ioremap_reset         | 重置early ioremap的slot
-++ jump_label_init             | 初始化jump table,替换static key指令
++++ psci_dt_init             | 如果acpi_disabled,psci初始化
++++ psci_acpi_init              | 如果acpi_enabled,psci初始化
++++ arm64_rsi_init
++++ init_bootcpu_ops
+++ smp_init_cpus
+++ smp_build_mpidr_hash
+++ jump_label_init             | 根据static_key_initialized判断是否需要初始化jump table,替换static key指令，setup_arch已经调用过就不在重新初始化
 +++ jump_label_sort_entries      | 排序jump table的entries
 ++++ sort                       | 堆排序
 +++ for循环遍历jump table
@@ -147,9 +163,94 @@
 ++++ static_key_set_entries       | 初始化static_key字段
 ++ static_call_init
 ++ early_security_init          | 初期安全模块初始化
-
-
-
+++ setup_boot_config
+++ setup_command_line
+++ setup_nr_cpu_ids
+++ setup_per_cpu_areas
+++ smp_prepare_boot_cpu
+++ early_numa_node_init
+++ boot_cpu_hotplug_init
+++ parse_early_param
+++ parse_args
+++ print_unknown_bootoptions
+++ parse_args			| setting init args
+++ parse_args			| setting extra init args
+++ random_init_early
+++ setup_log_buf
+++ vfs_caches_init_early
+++ sort_main_extable
+++ trap_init
+++ mm_core_init
+++ maple_tree_init
+++ poking_init
+++ ftrace_init
+++ early_trace_init
+++ sched_init
+++ radix_tree_init
+++ housekeeping_init
+++ workqueue_init_early
+++ rcu_init
+++ kvfree_rcu_init
+++ trace_init
+++ initcall_debug_enable
+++ context_tracking_init
+++ early_irq_init
+++ init_IRQ
+++ tick_init
+++ rcu_init_nohz
+++ timers_init
+++ srcu_init
+++ hrtimers_init
+++ softirq_init
+++ timekeeping_init
+++ time_init
+++ random_init
+++ kfence_init
+++ boot_init_stack_canary
+++ perf_event_init
+++ profile_init
+++ call_function_init
+++ local_irq_enable
+++ kmem_cache_init_late
+++ console_init
+++ lockdep_init
+++ locking_selftest
+++ 检测initrd override writtern
+++ setup_per_cpu_pageset
+++ numa_policy_init
+++ acpi_early_init
+++ late_time_init
+++ sched_clock_init
+++ calibrate_delay
+++ arch_cpu_finalize_init
+++ pid_idr_init
+++ anon_vma_init
+++ thread_stack_cache_init
+++ cred_init
+++ fork_init
+++ proc_caches_init
+++ uts_ns_init
+++ time_ns_init
+++ key_init
+++ security_init
+++ dbg_late_init
+++ net_ns_init
+++ vfs_caches_init
+++ pagecache_init
+++ signals_init
+++ seq_file_init
+++ proc_root_init
+++ nsfs_init
+++ pidfs_init
+++ cpuset_init
+++ mem_cgroup_init
+++ cgroup_init
+++ taskstats_init_early
+++ delayacct_init
+++ acpi_subsystem_init
+++ arch_post_acpi_subsys_init
+++ kcsan_init
+++ rest_init
 }
 }
 @endsalt
