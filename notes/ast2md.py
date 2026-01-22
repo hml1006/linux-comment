@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 import argparse
 
+struct = None
 @dataclass
 class FieldInfo:
     """字段信息"""
@@ -266,6 +267,11 @@ class Field:
         def set_line(self, line):
                 self.line = line
 
+class Arg:
+        def __init__(self, name, type):
+                self.name = name
+                self.type = type
+
 class Method:
         def __init__(self, name, return_type):
                 self.name = name
@@ -280,7 +286,7 @@ class Method:
         def set_line(self, line):
                 self.line = line
         
-        def add_arg(self, arg):
+        def add_arg(self, arg: Arg):
                 self.args.append(arg)
 
 class Struct:
@@ -303,16 +309,7 @@ class Struct:
         def set_line(self, line):
                 self.line = line
 
-def find_comments(node):
-        """
-        遍历节点及其子节点的所有Token,筛选出注释
-        """
-        for token in node.get_tokens():
-                if token.kind == TokenKind.COMMENT:
-                        print(f"注释: {token.spelling} 在 [行:{token.location.line}, 列:{token.location.column}]")
-        #     for child in node.get_children():
-        #         find_comments(child)
-
+source_file_name = None
 struct_name = ''
 struct_found = False
 
@@ -328,53 +325,71 @@ def parse_field(node, depth = 0):
                 return
         field_type = node.type.spelling
         field_name = node.spelling
-        # 打印当前节点的基本信息：缩进、节点类型、名称、位置
-        indent = '  ' * depth
-        node_name = node.spelling or node.displayname or ''  # 优先使用拼写名，其次显示名
-        kind_str = str(node.kind).split('.')[-1]  # 提取枚举类型名
-        # 获取源代码位置（行:列）
-        loc = node.location
-        pos_info = f"[{loc.line}:{loc.column}]" if loc.file else "[系统文件]"
+        field = Field(field_name, field_type)
+        struct.add_field(field)
 
-        print(f"{indent}{field_name}: {field_type} {pos_info}")
+def struct2plantuml(struct):
+        print('```plantuml')
+        print('@startuml')
+        print(f'Struct {struct.name} {{')
+        for field in struct.fields:
+                print(f'  {field.name}: {field.type}')
+        print('--')
+        for method in struct.methods:
+                print(f'  {method.name}({", ".join([arg.name + ": " + arg.type for arg in method.args])}): {method.return_type}')
+        print('}')
+        print('@enduml')
+        print('```')
+
+def parse_function_arg(node, method: Method, depth = 0):
+        loc = node.location
+        if os.path.basename(loc.file.name) != source_file_name:
+                return
+        node_name = node.spelling or node.displayname or ''  # 优先使用拼写名，其次显示名
+        if node_name.startswith('_'):
+              return
+        if node.kind == CursorKind.PARM_DECL:
+                arg = Arg(node.spelling, node.type.spelling)
+                method.add_arg(arg)
+
+def parse_function(node, depth = 0):
+        loc = node.location
+        if os.path.basename(loc.file.name) != source_file_name:
+                return
+        node_name = node.spelling or node.displayname or ''  # 优先使用拼写名，其次显示名
+        if node_name.startswith('_'):
+              return
+        method = Method(node_name, node.result_type.spelling)
         for child in node.get_children():
-                parse_field(child, depth + 1)
+              parse_function_arg(child, method, depth + 1)
+        if len(method.args) > 0:
+              arg = method.args[0]
+              if arg.type == f"struct {struct_name} *":
+                      struct.add_method(method)
 
 def parse_struct(node, depth = 0):
         if not node.is_definition():
                 return
-        # 打印当前节点的基本信息：缩进、节点类型、名称、位置
-        indent = '     ' * depth
-        node_name = node.spelling or node.displayname or ''  # 优先使用拼写名，其次显示名
-        kind_str = str(node.kind).split('.')[-1]  # 提取枚举类型名
-        # 获取源代码位置（行:列）
         loc = node.location
-        pos_info = f"[{loc.line}:{loc.column}]" if loc.file else "[系统文件]"
-
-        print(f"{indent}{kind_str}: '{node_name}' {pos_info}")
+        if os.path.basename(loc.file.name) != source_file_name:
+                return
         for child in node.get_children():
                 parse_field(child, depth + 1)
-
+        
 def traverse_ast(node, depth=0):
         """
         递归遍历AST节点。
         node: 当前游标节点。
         depth: 当前深度，用于缩进显示。
         """
-        indent = '  ' * depth
-        node_name = node.spelling or node.displayname or ''  # 优先使用拼写名，其次显示名
-        kind_str = str(node.kind).split('.')[-1]  # 提取枚举类型名
-        # 获取源代码位置（行:列）
-        loc = node.location
-        pos_info = f"[{loc.line}:{loc.column}]" if loc.file else "[系统文件]"
-
-        # pointer = 'None'
-        # if node.kind.type:
-        #         pointer = str(node.kind.type)
-        print(f"{indent}{kind_str}  '{node_name}' {pos_info}")
+        global struct
+        struct = Struct(struct_name)
         for child in node.get_children():
                 if child.kind == CursorKind.STRUCT_DECL and child.spelling == struct_name:
                         parse_struct(child)
+                elif child.kind == CursorKind.FUNCTION_DECL:
+                        parse_function(child)
+        struct2plantuml(struct)
 
 def parse_comment_file(comment_file):
         # 解析
@@ -389,11 +404,12 @@ if __name__ == "__main__":
         parser.add_argument('--directory', type=str, help='compile_commands.json directory', default='/home/louis/code/linux')
         parser.add_argument('--header', type=str, help='Header file path', default='/home/louis/code/linux/include/linux/device.h')
         parser.add_argument('--struct', type=str, help='Struct name', default='device')
-        parser.add_argument('--comment', type=str, help='Linux kernel doxygen struct comment file', default='/home/louis/code/comment.c')
+        parser.add_argument('--comment', type=str, help='Linux kernel doxygen struct comment file', required=False)
         args = parser.parse_args()
         struct_name = args.struct
         source_file = args.header
-        # source_file = '/home/louis/code/linux/drivers/base/core.c'
+        source_file_name = os.path.basename(source_file)
+
         remove = {'--', 'aarch64-linux-gnu-gcc', '-mabi=lp64', '-fno-allow-store-data-races',
                   '-fmin-function-alignment=4', '-fconserve-stack', '-femit-struct-debug-baseonly',
                   '-fzero-init-padding-bits=all', '-Wno-dangling-pointer', '-Wno-unterminated-string-initialization',
@@ -403,8 +419,6 @@ if __name__ == "__main__":
         compdb = CompilationDatabase.fromDirectory(args.directory)
         index = Index.create()
         cmds = compdb.getCompileCommands(source_file)
-        # print(cmds[0].arguments)
-        # print(os.path.basename(cmds[0].filename))
         args = [arg for arg in cmds[0].arguments]
 
         good_args = []
@@ -417,8 +431,8 @@ if __name__ == "__main__":
                                 continue
                         good_args.append(arg)
         argstr = ' '.join(good_args)
-        # print(good_args)
 
         tu = index.parse(source_file, good_args) 
         traverse_ast(tu.cursor)
-        # find_comments(tu.cursor)
+        if hasattr(args, 'comment'):
+                parse_comment_file(args.comment)
