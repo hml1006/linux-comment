@@ -34,6 +34,8 @@
 
 [SMP启动过程](./notes/smp_start.md)
 
+[pci初始化](./notes/device.md)
+
 # 中断过程
 
 [中断向量运行流程](./notes/entry.S.md)

@@ -651,7 +651,6 @@ int bus_add_driver(struct device_driver *drv)
 	struct driver_private *priv;
 	int error = 0;
 
-	// 增加bus_type引用计数
 	if (!sp)
 		return -EINVAL;
 

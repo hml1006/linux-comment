@@ -1,7 +1,178 @@
+# pci bus probe过程
+
+宏 module_platform_driver(gen_pci_driver) 会展开两个函数，并放到initcall
+
+* gen_pci_driver_init, 该函数调用下面的register函数注册 gen_pci_driver
+
+```c
+#define platform_driver_register(drv) \
+	__platform_driver_register(drv, THIS_MODULE)
+
+static struct platform_driver gen_pci_driver = {
+	.driver = {
+		.name = "pci-host-generic",
+		.of_match_table = gen_pci_of_match,
+	},
+	.probe = pci_host_common_probe,
+	.remove = pci_host_common_remove,
+};
+```
+
+* gen_pci_driver_exit
+
+```plantuml
+@startsalt
+{{T
++ kernel_init
+++ kernel_init_freeable
++++ do_basic_setup
+++++ do_initcalls
++++++ do_initcall_level
+++++++ do_one_initcall
++++++++ gen_pci_driver_init
+++++++++ __platform_driver_register
++++++++++ driver_register
+++++++++++ bus_add_driver
++++++++++++ driver_attach
+++++++++++++ bus_for_each_dev
++++++++++++++ __driver_attach
+++++++++++++++ driver_probe_device
++++++++++++++++ __driver_probe_device
++++++++++++++++++ really_probe
+++++++++++++++++++ call_driver_probe
++++++++++++++++++++ platform_probe
+++++++++++++++++++++ pci_host_common_probe
++++++++++++++++++++++ pci_host_common_init
+++++++++++++++++++++++ pci_host_probe
+}}
+@endsalt
+```
+
+# device_driver结构体
+
+```plantuml
+@startuml device_driver类图
+
+' 设备驱动类图 - Linux内核
+' 基于 include/linux/device/driver.h
+
+struct device_driver {
+    ' 成员变量
+    - const char *name {设备驱动名称}
+    - const struct bus_type *bus {驱动所属的总线类型}
+    - struct module *owner {模块所有者}
+    - const char *mod_name {用于内置模块的名称}
+    - bool suppress_bind_attrs {是否禁用通过sysfs的绑定/解绑定}
+    - enum probe_type probe_type {探测类型(同步或异步)}
+    - const struct of_device_id *of_match_table {开放固件匹配表}
+    - const struct acpi_device_id *acpi_match_table {ACPI匹配表}
+    - const struct attribute_group **groups {驱动核心自动创建的默认属性组}
+    - const struct attribute_group **dev_groups {绑定到驱动后附加到设备实例的属性组}
+    - const struct dev_pm_ops *pm {电源管理操作}
+    - struct driver_private *p {驱动核心的私有数据}
+
+    ' 成员函数
+    + int (*probe)(struct device *dev) {探测设备并绑定驱动}
+    + void (*sync_state)(struct device *dev) {同步设备状态到软件状态}
+    + int (*remove)(struct device *dev) {从系统中移除设备时解绑驱动}
+    + void (*shutdown)(struct device *dev) {关机时使设备静默}
+    + int (*suspend)(struct device *dev, pm_message_t state) {将设备置于睡眠模式}
+    + int (*resume)(struct device *dev) {从睡眠模式唤醒设备}
+    + void (*coredump)(struct device *dev) {处理核心转储}
+}
+
+' 枚举类型
+enum probe_type {
+    PROBE_DEFAULT_STRATEGY {默认策略}
+    PROBE_PREFER_ASYNCHRONOUS {首选异步}
+    PROBE_FORCE_SYNCHRONOUS {强制同步}
+}
+
+' 关联关系
+device_driver "1" --> "1" bus_type : 属于 >
+device_driver "1" --> "0..*" probe_type : 使用 >
+
+note right of device_driver
+  设备驱动模型跟踪系统中所有已知的驱动。
+  主要目的是使驱动核心能够将驱动与新设备匹配。
+end note
+
+@enduml
+```
+
+# bus_type结构体
+
+```plantuml
+@startuml bus_type类图
+
+' 总线类型类图 - Linux内核
+' 基于 include/linux/device/bus.h
+
+class bus_type {
+    ' 成员变量
+    - const char *name {总线名称}
+    - const char *dev_name {用于子系统枚举设备的名称格式}
+    - const struct attribute_group **bus_groups {总线的默认属性组}
+    - const struct attribute_group **dev_groups {总线上设备的默认属性组}
+    - const struct attribute_group **drv_groups {总线上驱动的默认属性组}
+    - const struct dev_pm_ops *pm {电源管理操作}
+    - bool need_parent_lock {探测或移除设备时是否需要锁定父设备}
+
+    ' 成员函数 - 设备和驱动匹配与生命周期管理
+    + int (*match)(struct device *dev, const struct device_driver *drv) {匹配设备和驱动}
+    + int (*uevent)(const struct device *dev, struct kobj_uevent_env *env) {处理uevent事件}
+    + int (*probe)(struct device *dev) {探测并初始化设备}
+    + void (*sync_state)(struct device *dev) {同步设备状态到软件状态}
+    + void (*remove)(struct device *dev) {从总线移除设备}
+    + void (*shutdown)(struct device *dev) {关机时使设备静默}
+    + const struct cpumask *(*irq_get_affinity)(struct device *dev, unsigned int irq_vec) {获取IRQ亲和性掩码}
+
+    ' 成员函数 - 设备在线/离线管理
+    + int (*online)(struct device *dev) {使设备上线}
+    + int (*offline)(struct device *dev) {使设备离线(用于热插拔)}
+
+    ' 成员函数 - 电源管理
+    + int (*suspend)(struct device *dev, pm_message_t state) {将设备置于睡眠模式}
+    + int (*resume)(struct device *dev) {从睡眠模式唤醒设备}
+
+    ' 成员函数 - 设备功能管理
+    + int (*num_vf)(struct device *dev) {获取设备支持的虚拟函数数量}
+    + int (*dma_configure)(struct device *dev) {配置设备的DMA设置}
+    + void (*dma_cleanup)(struct device *dev) {清理设备的DMA配置}
+}
+
+' 枚举类型 - 总线通知事件
+enum bus_notifier_event {
+    BUS_NOTIFY_ADD_DEVICE {设备添加到总线}
+    BUS_NOTIFY_DEL_DEVICE {设备即将从总线移除}
+    BUS_NOTIFY_REMOVED_DEVICE {设备已成功从总线移除}
+    BUS_NOTIFY_BIND_DRIVER {驱动即将绑定到设备}
+    BUS_NOTIFY_BOUND_DRIVER {驱动已成功绑定到设备}
+    BUS_NOTIFY_UNBIND_DRIVER {驱动即将从设备解绑}
+    BUS_NOTIFY_UNBOUND_DRIVER {驱动已成功从设备解绑}
+    BUS_NOTIFY_DRIVER_NOT_BOUND {驱动绑定到设备失败}
+}
+
+' 关联关系
+bus_type "1" *-- "*" device : 管理设备 >
+bus_type "1" *-- "*" device_driver : 管理驱动 >
+bus_type "1" --> "0..*" bus_notifier_event : 触发通知事件 >
+
+note right of bus_type
+  总线是处理器和一个或多个设备之间的通道。
+  在设备模型中，所有设备都通过总线连接，
+  即使是内部的、虚拟的、"平台"总线。
+  总线可以相互插入，例如USB控制器通常是PCI设备。
+end note
+
+@enduml
+
+
+```
+
 # device结构体
 
 ```plantuml
-
 
 @startuml
 

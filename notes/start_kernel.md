@@ -251,7 +251,18 @@
 ++ arch_post_acpi_subsys_init
 ++ kcsan_init
 ++ rest_init
++++ user_mode_thread_init| 创建kernel_init进程
++++ kernel_thread       | 创建kthreadd进程，该线程作用是接收其他模块创建线程请求，统一管理内核线程创建销毁
 }
 }
 @endsalt
 ```
+
+## 当前状态
+
+此时存在3个进程，分别是：
+
+- init进程              -- pid=0
+- kthreadd进程          -- pid=2
+- kernel_init进程       -- pid=1
+
