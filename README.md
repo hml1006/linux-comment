@@ -36,6 +36,8 @@
 
 [pci初始化](./notes/device.md)
 
+[文件系统](./notes/fs.md)
+
 # 中断过程
 
-[中断向量运行流程](./notes/entry.S.md)
+[中断向量运行流程](./notes/linux-interrupt.md)

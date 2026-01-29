@@ -1,3 +1,5 @@
+# 中断跳转过程
+
 **中断向量表vectors**
 
 ```
@@ -111,3 +113,40 @@ SYM_CODE_END(el\el\ht\()_\regsize\()_\label)
 ```
 
 > entry_handler先执行kernel_entry, kernel_entry主要功能是保存通用寄存器和切堆栈，然后是MTE和ptr auth设置。之后跳转到c代码el\el\ht()_\regsize()_\label()_handler
+
+# 系统调用过程
+
+```plantuml
+@startsalt
+
+{{T
++ tramp_ventry  | 为防止旁路漏洞，先进tramp vector，tram vector页表受限
+++ tramp_map_kernel  | 恢复内核页表
+++  tramp_data_read_var  | 恢复中断向量表
+++  修改x30寄存器地址, 指向对应vectors entry的第二条指令地址
+++  ret返回到vectors的entry
++ kernel_ventry
+++ el0t_64_sync         | 备份通用寄存器
++++ el0t_64_sync_handler
+++++ switch (ESR_ELx_EC(esr))    | 检查异常类型SVC64系统调用
++++++ el0_svc
+++++++ arm64_enter_from_user_mode
++++++++ __enter_from_user_mode
+++++++++ enter_from_user_mode   | arm64都是空的
+++++++ cortex_a76_erratum_1463225_svc_handler   | a76 cpu bug workaround
+++++++ fpsimd_syscall_enter | 浮点和simd功能状态保存并关闭，内核态默认禁用
+++++++ local_daif_restore   | 检查系统配置，恢复部分DAIF flag，比如abort
+++++++ do_el0_svc
++++++++ el0_svc_common      | x8传递系统调用号，sys_call_table[x8]获取系统调用函数指针
+++++++++ invoke_syscall     | 根据系统调用号查找系统调用函数
++++++++++ __invoke_syscall  | 执行系统调用函数
+++++++++++ syscall_fn       | 执行系统调用函数，系统调用函数名规则 __arm64_sys_##sname
+++++++ arm64_exit_to_user_mode
+++++++ fpsimd_syscall_exit | 浮点和simd功能状态恢复
++++ ret_to_user
+
+
+}}
+
+@endsalt
+```
