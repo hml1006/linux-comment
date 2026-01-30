@@ -1,4 +1,4 @@
-# open
+# ***open***
 
 open相关的系统调用有open，openat，openat2，creat，creat会调用open
 
@@ -600,6 +600,8 @@ if (security_critical || untrusted_paths || sandbox || future_proof) {
 
 ## **代码执行flow**
 
+path lookup过程是顺着dentry树从上到下查找的，如果遇到符号链接，会沿着符号链接进入下一级目录，如果遇到挂载点，会进入挂载点，如果遇到文件，则打开文件。
+
 ```plantuml
 @startsalt
 {{T
@@ -623,7 +625,17 @@ if (security_critical || untrusted_paths || sandbox || future_proof) {
 +++++ do_tmpfile | if __O_TMPFILE标识查找临时文件
 +++++ do_o_path | if O_PATH方式打开，可以查看文件描述信息，但是不真正打开文件
 +++++ path_init | else 初始化path结构体，开始path walk
-+++++ link_path_walk
++++++ link_path_walk    | 开头跳过连续的 /
+++++++ for循环处理每个路径分量
++++++++ mnt_idmap        | 获取mnt的uid，gid map
++++++++ may_lookup | 检查权限
++++++++ hash_name
++++++++ walk_component
+++++++++ handle_dots    | 处理.和..
+++++++++ lookup_fast | 快速查找，从dcache中找
+++++++++ lookup_slow | 慢速查找，从inode中找
++++++++++ d_alloc_parallel | 分配新的dentry，并添加到dcache中，同时处理好多进程同时访问的问题
+++++++++ step_into | 查找到当前路径分量，进入下一级，如果dentry是挂载点，会进入挂载点
 +++++ open_last_lookups
 +++++ do_open | 打开文件
 +++++ terminate_walk | 结束path walk
@@ -633,5 +645,28 @@ if (security_critical || untrusted_paths || sandbox || future_proof) {
 +++ putname             | 释放struct filename结构体
 
 }}
+@endsalt
+```
+
+# ***write***
+
+```plantuml
+@startsalt
+{{T
++ write
+++ ksys_write
++++ file_ppos | 获取当前文件偏移
++++ vfs_write
+++++ rw_verify_area | 检查文件偏移是否合法
+++++ file_start_write | 通知文件系统superblock写开始，避免写的时候freeze
+++++ file_write_and_wait_range | 写文件
+++++ new_sync_write | 调用文件系统的write函数，现代文件系统使用f_op->write_iter
+++++ fsnotify_modify    | 通知机制，文件被修改
+++++ add_wchar  | 更新进程写字符数
+++++ inc_syscw  | 更新进程write系统调用数
+++++ file_end_write | 通知文件系统superblock，写结束
+}}
+
+
 @endsalt
 ```
