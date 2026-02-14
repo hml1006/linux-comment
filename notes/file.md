@@ -635,6 +635,19 @@ path lookup过程是顺着dentry树从上到下查找的，如果遇到符号链
 ++++++++ lookup_fast | 快速查找，从dcache中找
 ++++++++ lookup_slow | 慢速查找，从inode中找
 +++++++++ d_alloc_parallel | 分配新的dentry，并添加到dcache中，同时处理好多进程同时访问的问题
++++++++++ __lookup_slow
+++++++++++ inode->i_op->lookup == ext4_lookup | 调用文件系统的lookup函数，比如ext4_lookup
++++++++++++ 检查文件名长度
++++++++++++ ext4_lookup_entry | 查找文件名对应的inode
+++++++++++++ ext4_fname_prepare_lookup | 准备查找，初始化struct ext4_filename fname
+++++++++++++ __ext4_find_entry | 查找文件名对应的inode
++++++++++++++ ext4_has_inline_data | 检查文件是否有内联数据, 文件内容很少的情况下, 直接inline到inode剩余空间
++++++++++++++ ext4_find_inline_entry | 查找内联数据
+++++++++++++++ ext4_get_inode_loc | 获取inode位置
++++++++++++++++ __ext4_get_inode_loc | 获取inode位置，buffer_head指向inode所在block
+++++++++++++++ ext4_raw_inode | 获取inode中inline起始位置
+++++++++++++++ ext4_search_dir | 从inline数据中查找目录
+++++++++++++ ext4_fname_free_filename | 释放fname，未开加密为空
 ++++++++ step_into | 查找到当前路径分量，进入下一级，如果dentry是挂载点，会进入挂载点
 +++++ open_last_lookups
 +++++ do_open | 打开文件
