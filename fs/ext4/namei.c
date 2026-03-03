@@ -25,6 +25,7 @@
  *	Theodore Ts'o, 2002
  */
 
+#include "linux/printk.h"
 #include <linux/fs.h>
 #include <linux/pagemap.h>
 #include <linux/time.h>
@@ -1767,7 +1768,8 @@ static struct dentry *ext4_lookup(struct inode *dir, struct dentry *dentry, unsi
 
 	if (dentry->d_name.len > EXT4_NAME_LEN)
 		return ERR_PTR(-ENAMETOOLONG);
-
+	pr_debug("[%s] parent inode path %s, search for %s\n",
+		__func__, d_find_alias(dir)->d_name.name, dentry->d_name.name);
 	bh = ext4_lookup_entry(dir, dentry, &de);
 	if (IS_ERR(bh))
 		return ERR_CAST(bh);

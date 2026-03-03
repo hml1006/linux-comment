@@ -285,3 +285,8 @@ path lookup过程是顺着dentry树从上到下查找的，如果遇到符号链
 
 @endsalt
 ```
+
+# pr debug 文件
+
+open.c
+namei.c

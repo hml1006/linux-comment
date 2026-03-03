@@ -24,7 +24,6 @@ echo "add-auto-load-safe-path ${cur_dir}" >> .gdbinit
 
 echo "set architecture aarch64" >> .gdbinit
 echo "file vmlinux" >> .gdbinit
-echo "lx-symbols" >> .gdbinit
 echo "b start_kernel" >> .gdbinit
 
 br0_exists=`ifconfig | grep br0 | wc -l`

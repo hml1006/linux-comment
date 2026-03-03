@@ -2335,7 +2335,6 @@ struct dentry *d_lookup(const struct dentry *parent, const struct qstr *name)
 	struct dentry *dentry;
 	unsigned seq;
 
-	pr_debug("[d_lookup] parent->d_name.name = %s, name->name = %s\n", parent->d_name.name, name->name);
 	do {
 		seq = read_seqbegin(&rename_lock);
 		dentry = __d_lookup(parent, name);
@@ -2406,7 +2405,6 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 			goto next;
 
 		dentry->d_lockref.count++;
-		pr_debug("[__d_lookup] found dentry->d_name.name = %s\n", dentry->d_name.name);
 		found = dentry;
 		spin_unlock(&dentry->d_lock);
 		break;

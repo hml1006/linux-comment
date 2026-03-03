@@ -15,8 +15,8 @@
 /* [Feb-Apr 2000, AV] Rewrite to the new namespace architecture.
  */
 
-#include "linux/kern_levels.h"
 #include "linux/printk.h"
+#include <linux/dbg.h>
 #include <linux/init.h>
 #include <linux/export.h>
 #include <linux/slab.h>
@@ -1744,7 +1744,8 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 {
 	struct dentry *dentry, *parent = nd->path.dentry;
 	int status = 1;
-
+	vfs_dbg(nd->name->name, "nd->last=%s\n",
+		nd->last.name);
 	/*
 	 * Rename seqlock is not required here because in the off chance
 	 * of a false negative due to a concurrent rename, the caller is
@@ -1757,7 +1758,6 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 				return ERR_PTR(-ECHILD);
 			return NULL;
 		}
-		pr_debug("[lookup_fast] __d_lookup_rcu nd->last=%s\n", nd->last.name);
 		/*
 		 * This sequence count validates that the parent had no
 		 * changes while we did the lookup of the dentry above.
@@ -1778,7 +1778,7 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 		dentry = __d_lookup(parent, &nd->last);
 		if (unlikely(!dentry))
 			return NULL;
-		pr_debug("[lookup_fast] __d_lookup nd->last=%s\n", nd->last.name);
+		vfs_dbg(nd->name->name, "__d_lookup nd->last=%s\n", nd->last.name);
 		status = d_revalidate(nd->inode, &nd->last, dentry, nd->flags);
 	}
 	if (unlikely(status <= 0)) {
@@ -1787,6 +1787,8 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 		dput(dentry);
 		return ERR_PTR(status);
 	}
+	vfs_dbg(nd->name->name, "nd->last=%s, dentry->d_name.name = %s, dentry->d_inode->i_ino = %lu\n",
+		nd->last.name, dentry->d_name.name, dentry->d_inode->i_ino);
 	return dentry;
 }
 
@@ -1799,6 +1801,7 @@ static struct dentry *__lookup_slow(const struct qstr *name,
 	struct inode *inode = dir->d_inode;
 	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
 
+	pr_debug("[%s] dir->d_name.name = %s, name->name = %s\n", __func__, dir->d_name.name, name->name);
 	/* Don't go there if it's already dead */
 	if (unlikely(IS_DEADDIR(inode)))
 		return ERR_PTR(-ENOENT);
@@ -1818,6 +1821,7 @@ again:
 			dentry = ERR_PTR(error);
 		}
 	} else {
+		// 例如 ext4_lookup 函数
 		old = inode->i_op->lookup(inode, dentry, flags);
 		d_lookup_done(dentry);
 		if (unlikely(old)) {
@@ -1835,7 +1839,7 @@ static struct dentry *lookup_slow(const struct qstr *name,
 	struct inode *inode = dir->d_inode;
 	struct dentry *res;
 	inode_lock_shared(inode);
-	pr_debug("[lookup_slow] name = %s, dir->d_iname = %s, dir->d_name.name = %s\n", name->name, dir->d_iname, dir->d_name.name);
+	pr_debug("[%s] name = %s, dir->d_iname = %s, dir->d_name.name = %s, dir->d_inode->i_ino = %lu\n", __func__, name->name, dir->d_iname, dir->d_name.name, dir->d_inode->i_ino);
 	res = __lookup_slow(name, dir, flags);
 	inode_unlock_shared(inode);
 	return res;
@@ -2150,7 +2154,7 @@ static const char *walk_component(struct nameidata *nd, int flags)
 			put_link(nd);
 		return handle_dots(nd, nd->last_type);
 	}
-	pr_debug("[walk_component] nd->pathname = %s\n", nd->pathname);
+	vfs_dbg(nd->name->name, "nd->pathname = %s\n", nd->pathname);
 	dentry = lookup_fast(nd);
 	if (IS_ERR(dentry))
 		return ERR_CAST(dentry);
@@ -2159,7 +2163,7 @@ static const char *walk_component(struct nameidata *nd, int flags)
 		if (IS_ERR(dentry))
 			return ERR_CAST(dentry);
 		if (dentry) {
-			pr_debug("[walk_component] lookup_slow dentry->d_name = %s\n", dentry->d_name.name);
+			vfs_dbg(nd->name->name, "lookup_slow dentry->d_name = %s\n", dentry->d_name.name);
 		}
 	}
 	if (!(flags & WALK_MORE) && nd->depth)
@@ -2464,10 +2468,10 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 	}
 	if (unlikely(!*name)) {
 		nd->dir_mode = 0; // short-circuit the 'hardening' idiocy
-		pr_debug("[link_path_walk] return 0, name = %s\n", name);
+		vfs_dbg(nd->name->name, "return 0, name = %s\n", name);
 		return 0;
 	}
-	pr_debug("[link_path_walk] name = %s\n", name);
+	vfs_dbg(nd->name->name, " name = %s\n", name);
 
 	/* At this point we know we have a real path component. */
 	for(;;) {
@@ -2482,7 +2486,7 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 
 		nd->last.name = name;
 		name = hash_name(nd, name, &lastword);
-		pr_debug("[link_path_walk] hash name = %s\n", name);
+		vfs_dbg(nd->name->name, "hash name = %s\n", name);
 
 		switch(lastword) {
 		case LAST_WORD_IS_DOTDOT:
@@ -2522,7 +2526,7 @@ OK:
 				nd->dir_vfsuid = i_uid_into_vfsuid(idmap, nd->inode);
 				nd->dir_mode = nd->inode->i_mode;
 				nd->flags &= ~LOOKUP_PARENT;
-				pr_debug("[link_path_walk] return 0 && depth == 0, name = %s\n", name);
+				vfs_dbg(nd->name->name, "return 0 && depth == 0, name = %s\n", name);
 				return 0;
 			}
 			/* last component of nested symlink */
@@ -3725,7 +3729,7 @@ static struct dentry *lookup_open(struct nameidata *nd, struct file *file,
 	umode_t mode = op->mode;
 	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
 
-	pr_debug("[lookup_open] nd->last.name = %s, nd->pathname = %s, nd->name->name = %s\n", nd->last.name, nd->pathname, nd->name->name);
+	vfs_dbg(nd->name->name, "nd->last.name = %s, nd->pathname = %s\n", nd->last.name, nd->pathname);
 
 	if (unlikely(IS_DEADDIR(dir_inode)))
 		return ERR_PTR(-ENOENT);
@@ -3752,7 +3756,7 @@ static struct dentry *lookup_open(struct nameidata *nd, struct file *file,
 	}
 	if (dentry->d_inode) {
 		/* Cached positive dentry: will open in f_op->open */
-		pr_debug("[lookup_open] dentry->d_name.name = %s, dentry->d_inode->i_ino = %lu\n", dentry->d_name.name, dentry->d_inode->i_ino);
+		vfs_dbg(nd->name->name, "dentry->d_name.name = %s, dentry->d_inode->i_ino = %lu\n", dentry->d_name.name, dentry->d_inode->i_ino);
 		return dentry;
 	}
 
@@ -3787,6 +3791,7 @@ static struct dentry *lookup_open(struct nameidata *nd, struct file *file,
 		dentry = atomic_open(nd, dentry, file, open_flag, mode);
 		if (unlikely(create_error) && dentry == ERR_PTR(-ENOENT))
 			dentry = ERR_PTR(create_error);
+		vfs_dbg(nd->name->name, "after atomic_open dentry->d_name.name = %s, dentry->d_inode->i_ino = %lu\n", dentry->d_name.name, dentry->d_inode->i_ino);
 		return dentry;
 	}
 
@@ -3822,6 +3827,7 @@ static struct dentry *lookup_open(struct nameidata *nd, struct file *file,
 		error = create_error;
 		goto out_dput;
 	}
+	vfs_dbg(nd->name->name, "lookup_open finish => dentry->d_name.name = %s, dentry->d_inode->i_ino = %lu\n", dentry->d_name.name, dentry->d_inode->i_ino);
 	return dentry;
 
 out_dput:
@@ -3838,7 +3844,7 @@ static struct dentry *lookup_fast_for_open(struct nameidata *nd, int open_flag)
 {
 	struct dentry *dentry;
 
-	pr_debug("[lookup_fast_for_open] nd->last.name = %s, nd->name->name = %s, nd->pathname = %s\n", nd->last.name, nd->name->name, nd->pathname);
+	vfs_dbg(nd->name->name, "nd->last.name = %s, nd->pathname = %s\n", nd->last.name, nd->pathname);
 
 	if (open_flag & O_CREAT) {
 		if (trailing_slashes(nd))
@@ -3855,7 +3861,7 @@ static struct dentry *lookup_fast_for_open(struct nameidata *nd, int open_flag)
 	dentry = lookup_fast(nd);
 	if (IS_ERR_OR_NULL(dentry))
 		return dentry;
-	pr_debug("[lookup_fast_for_open] lookup_fast found, dentry->d_name.name = %s\n", dentry->d_name.name);
+	vfs_dbg(nd->name->name, "lookup_fast found, dentry->d_name.name = %s, dentry->d_inode->i_ino = %lu\n", dentry->d_name.name, dentry->d_inode->i_ino);
 
 	if (open_flag & O_CREAT) {
 		/* Discard negative dentries. Need inode_lock to do the create */
@@ -3885,7 +3891,7 @@ static const char *open_last_lookups(struct nameidata *nd,
 		return handle_dots(nd, nd->last_type);
 	}
 
-	pr_debug("[open_last_lookups] nd->last.name = %s, nd->name->name = %s, nd->pathname = %s\n", nd->last.name, nd->name->name, nd->pathname);
+	vfs_dbg(nd->name->name, "nd->last.name = %s, nd->pathname = %s\n", nd->last.name, nd->pathname);
 
 	/* We _can_ be in RCU mode here */
 	dentry = lookup_fast_for_open(nd, open_flag);
@@ -3944,7 +3950,7 @@ static const char *open_last_lookups(struct nameidata *nd,
 finish_lookup:
 	if (nd->depth)
 		put_link(nd);
-	pr_debug("[open_last_lookups] finish_lookup dentry->d_name.name = %s\n", dentry->d_name.name);
+	vfs_dbg(nd->name->name, "finish_lookup dentry->d_name.name = %s\n", dentry->d_name.name);
 	res = step_into(nd, WALK_TRAILING, dentry);
 	if (unlikely(res))
 		nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
@@ -4149,6 +4155,7 @@ static struct file *path_openat(struct nameidata *nd,
 	if (IS_ERR(file))
 		return file;
 
+	vfs_dbg(nd->name->name, "nd->name->name = %s\n", nd->name->name);
 	if (unlikely(file->f_flags & __O_TMPFILE)) {
 		error = do_tmpfile(nd, flags, op, file); // 临时文件
 	} else if (unlikely(file->f_flags & O_PATH)) {
@@ -4188,7 +4195,7 @@ struct file *do_filp_open(int dfd, struct filename *pathname,
 
 	// 设置进程文件查找结构,保存旧的
 	set_nameidata(&nd, dfd, pathname, NULL);
-	pr_debug("[do_filp_open] %s\n", pathname->name);
+	vfs_dbg(nd.name->name, "%s\n", pathname->name);
 	// 查找path并打开文件
 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
 	if (unlikely(filp == ERR_PTR(-ECHILD)))
