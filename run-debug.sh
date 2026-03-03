@@ -25,7 +25,8 @@ echo "add-auto-load-safe-path ${cur_dir}" >> .gdbinit
 echo "set architecture aarch64" >> .gdbinit
 echo "file vmlinux" >> .gdbinit
 echo "b start_kernel" >> .gdbinit
-
+echo "source vmlinux-gdb.py" >> .gdbinit
+echo "lx-symbols" >> .gdbinit
 br0_exists=`ifconfig | grep br0 | wc -l`
 if [ ${br0_exists} -eq 1 ];then
   sudo brctl delbr br0 # 删除网桥设备 br0

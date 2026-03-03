@@ -1694,7 +1694,8 @@ static struct buffer_head *ext4_lookup_entry(struct inode *dir,
 	int err;
 	struct ext4_filename fname;
 	struct buffer_head *bh;
-
+	pr_debug("[%s] parent inode path %s, search for %s\n",
+		__func__, d_find_alias(dir)->d_name.name, dentry->d_name.name);
 	err = ext4_fname_prepare_lookup(dir, dentry, &fname);
 	if (err == -ENOENT)
 		return NULL;
