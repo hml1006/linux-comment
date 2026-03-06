@@ -69,7 +69,7 @@ chmod 777 /tmp/
 dpkg -i *.deb
 apt update
 apt upgrade -y
-apt install -y sudo systemd vim net-tools ethtool ifupdown rsyslog htop iputils-ping ssh iputils-ping resolvconf
+apt install -y sudo systemd vim net-tools ethtool ifupdown rsyslog htop iputils-ping ssh iputils-ping resolvconf pciutils nvme-cli
 apt clean
 ln -s /lib/systemd/system/getty\@.service /etc/systemd/system/getty.target.wants/getty\@ttyAMA0.service
 EOF
