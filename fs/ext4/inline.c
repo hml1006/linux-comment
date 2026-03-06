@@ -4,6 +4,7 @@
  * Written by Tao Ma <boyu.mt@taobao.com>
  */
 
+#include <linux/dbg.h>
 #include <linux/iomap.h>
 #include <linux/fiemap.h>
 #include <linux/namei.h>
@@ -1587,6 +1588,8 @@ struct buffer_head *ext4_find_inline_entry(struct inode *dir,
 	void *inline_start;
 	int inline_size;
 
+	vfs_dbg("[%s] parent: %s, search for %s\n",
+		__func__, d_find_alias(dir)->d_name.name, fname->usr_fname->name);
 	ret = ext4_get_inode_loc(dir, &is.iloc);
 	if (ret)
 		return ERR_PTR(ret);

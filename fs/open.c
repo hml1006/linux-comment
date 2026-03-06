@@ -1434,8 +1434,7 @@ static int do_sys_openat2(int dfd, const char __user *filename,
 	tmp = getname(filename);
 	if (IS_ERR(tmp))
 		return PTR_ERR(tmp);
-
-	vfs_dbg(tmp->name, "filename = %s\n", tmp->name);
+	vfs_dbg("filename = %s\n", tmp->name);
 	// 申请一个空闲描述符
 	fd = get_unused_fd_flags(how->flags);
 	if (likely(fd >= 0)) {

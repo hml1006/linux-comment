@@ -17,6 +17,7 @@
 #ifndef _EXT4_H
 #define _EXT4_H
 
+#include <linux/dbg.h>
 #include <linux/refcount.h>
 #include <linux/types.h>
 #include <linux/blkdev.h>
@@ -3683,6 +3684,8 @@ extern int ext4_convert_inline_data(struct inode *inode);
 
 static inline int ext4_has_inline_data(struct inode *inode)
 {
+	vfs_dbg("[%s] %s has inline data: %d\n", __func__, d_find_alias(inode)->d_name.name,
+		ext4_test_inode_flag(inode, EXT4_INODE_INLINE_DATA) && EXT4_I(inode)->i_inline_off);
 	return ext4_test_inode_flag(inode, EXT4_INODE_INLINE_DATA) &&
 	       EXT4_I(inode)->i_inline_off;
 }

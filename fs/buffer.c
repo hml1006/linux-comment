@@ -19,6 +19,7 @@
  * async buffer flushing, 1999 Andrea Arcangeli <andrea@suse.de>
  */
 
+#include <linux/dbg.h>
 #include <linux/kernel.h>
 #include <linux/sched/signal.h>
 #include <linux/syscalls.h>
@@ -1401,6 +1402,7 @@ static struct buffer_head *
 find_get_block_common(struct block_device *bdev, sector_t block,
 			unsigned size, bool atomic)
 {
+	// 从LRU中查找，找到则会更新LRU
 	struct buffer_head *bh = lookup_bh_lru(bdev, block, size);
 
 	if (bh == NULL) {
@@ -1417,6 +1419,7 @@ find_get_block_common(struct block_device *bdev, sector_t block,
 struct buffer_head *
 __find_get_block(struct block_device *bdev, sector_t block, unsigned size)
 {
+	vfs_dbg("[%s] bdev %pg\n", __func__, bdev);
 	return find_get_block_common(bdev, block, size, true);
 }
 EXPORT_SYMBOL(__find_get_block);
@@ -1426,6 +1429,7 @@ struct buffer_head *
 __find_get_block_nonatomic(struct block_device *bdev, sector_t block,
 			   unsigned size)
 {
+	vfs_dbg("[%s] bdev %pg\n", __func__, bdev);
 	return find_get_block_common(bdev, block, size, false);
 }
 EXPORT_SYMBOL(__find_get_block_nonatomic);
@@ -1449,6 +1453,7 @@ struct buffer_head *bdev_getblk(struct block_device *bdev, sector_t block,
 {
 	struct buffer_head *bh;
 
+	vfs_dbg("[%s] bdev %pg, block %llu, size %u, gfp %x\n", __func__, bdev, block, size, gfp);
 	if (gfpflags_allow_blocking(gfp))
 		bh = __find_get_block_nonatomic(bdev, block, size);
 	else
