@@ -69,7 +69,7 @@ sudo qemu-system-aarch64 -cpu cortex-a710 -machine virt \
   -device virtio-9p-device,fsdev=kmod_dev,mount_tag=kmod_mount \
   -drive file=ubuntu-rootfs.img,format=raw,if=none,id=nvme0 \
   -device nvme,serial=87654321,drive=nvme0 \
-  --append "root=/dev/nvme0n1 rootwait rootfstype=ext4 rw loglevel=8 console=ttyAMA0 nokaslr"  \
+  --append "root=/dev/nvme0n1 rootfstype=ext4 rw loglevel=8 console=ttyAMA0 nokaslr"  \
   -serial stdio \
   -S -s
 
