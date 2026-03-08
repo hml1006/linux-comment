@@ -1539,7 +1539,7 @@ static struct buffer_head *__ext4_find_entry(struct inode *dir,
 		return NULL;
 
 	vfs_dbg("parent: %s, search for %s\n",
-		d_find_alias(dir)->d_name.name, fname->usr_fname->name);
+		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
 	if (ext4_has_inline_data(dir)) {
 		int has_inline_data = 1;
 		ret = ext4_find_inline_entry(dir, fname, res_dir,
@@ -1697,7 +1697,7 @@ static struct buffer_head *ext4_lookup_entry(struct inode *dir,
 	struct ext4_filename fname;
 	struct buffer_head *bh;
 	vfs_dbg("parent inode path %s, search for %s\n",
-		d_find_alias(dir)->d_name.name, dentry->d_name.name);
+		d_find_alias_rcu(dir)->d_name.name, dentry->d_name.name);
 	err = ext4_fname_prepare_lookup(dir, dentry, &fname);
 	if (err == -ENOENT)
 		return NULL;
@@ -1772,7 +1772,7 @@ static struct dentry *ext4_lookup(struct inode *dir, struct dentry *dentry, unsi
 	if (dentry->d_name.len > EXT4_NAME_LEN)
 		return ERR_PTR(-ENAMETOOLONG);
 	vfs_dbg("parent inode path %s, search for %s\n",
-		d_find_alias(dir)->d_name.name, dentry->d_name.name);
+		d_find_alias_rcu(dir)->d_name.name, dentry->d_name.name);
 	bh = ext4_lookup_entry(dir, dentry, &de);
 	if (IS_ERR(bh))
 		return ERR_CAST(bh);

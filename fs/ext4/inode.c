@@ -4808,8 +4808,8 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	struct blk_plug		plug;
 	int			inodes_per_block, inode_offset;
 
-	vfs_dbg("[%s] parent: %s\n",
-		__func__, d_find_alias(inode)->d_name.name);
+	vfs_dbg("inode addr = %p, inode = %lu\n",
+		inode, ino);
 	iloc->bh = NULL;
 	if (ino < EXT4_ROOT_INO ||
 	    ino > le32_to_cpu(EXT4_SB(sb)->s_es->s_inodes_count))
@@ -4845,8 +4845,8 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	// 计算inode在第几个block
 	block += (inode_offset / inodes_per_block);
 
-	vfs_dbg("[%s] inode: %lu, block_group: %u, block: %llu, offset: %lu\n",
-		__func__, ino, iloc->block_group, block, iloc->offset);
+	vfs_dbg("inode: %lu, block_group: %u, block: %llu, offset: %lu\n",
+		ino, iloc->block_group, block, iloc->offset);
 	// 找到这个block的buffer_head
 	bh = sb_getblk(sb, block);
 	if (unlikely(!bh))
@@ -4976,8 +4976,8 @@ int ext4_get_inode_loc(struct inode *inode, struct ext4_iloc *iloc)
 	ext4_fsblk_t err_blk = 0;
 	int ret;
 
-	vfs_dbg("[%s] parent: %s\n",
-		__func__, d_find_alias(inode)->d_name.name);
+	vfs_dbg("name: %s\n",
+		d_find_alias_rcu(inode)->d_name.name);
 	ret = __ext4_get_inode_loc(inode->i_sb, inode->i_ino, inode, iloc,
 					&err_blk);
 

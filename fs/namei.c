@@ -1801,7 +1801,7 @@ static struct dentry *__lookup_slow(const struct qstr *name,
 	struct inode *inode = dir->d_inode;
 	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
 
-	pr_debug("[%s] dir->d_name.name = %s, name->name = %s\n", __func__, dir->d_name.name, name->name);
+	vfs_dbg("dir->d_name.name = %s, name->name = %s\n", dir->d_name.name, name->name);
 	/* Don't go there if it's already dead */
 	if (unlikely(IS_DEADDIR(inode)))
 		return ERR_PTR(-ENOENT);
@@ -1839,7 +1839,7 @@ static struct dentry *lookup_slow(const struct qstr *name,
 	struct inode *inode = dir->d_inode;
 	struct dentry *res;
 	inode_lock_shared(inode);
-	pr_debug("[%s] name = %s, dir->d_iname = %s, dir->d_name.name = %s, dir->d_inode->i_ino = %lu\n", __func__, name->name, dir->d_iname, dir->d_name.name, dir->d_inode->i_ino);
+	vfs_dbg("name = %s, dir->d_iname = %s, dir->d_name.name = %s, dir->d_inode->i_ino = %lu\n", name->name, dir->d_iname, dir->d_name.name, dir->d_inode->i_ino);
 	res = __lookup_slow(name, dir, flags);
 	inode_unlock_shared(inode);
 	return res;

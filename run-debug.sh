@@ -62,14 +62,13 @@ stty intr ^]
 sudo qemu-system-aarch64 -cpu cortex-a710 -machine virt \
   -m 4096 -smp 2 \
   -net nic -net tap,ifname=tap0,script=no,downscript=no \
-  -drive file=nvme.img,format=raw,if=none,id=nvme1 \
-  -device nvme,serial=12345678,drive=nvme1 \
+  -drive file=nvme.img,format=raw,if=none,id=nvme0 \
+  -device nvme,serial=12345678,drive=nvme0 \
   -kernel arch/arm64/boot/Image \
   --fsdev local,id=kmod_dev,path=$PWD/k_shared,security_model=none \
   -device virtio-9p-device,fsdev=kmod_dev,mount_tag=kmod_mount \
-  -drive file=ubuntu-rootfs.img,format=raw,if=none,id=nvme0 \
-  -device nvme,serial=87654321,drive=nvme0 \
-  --append "root=/dev/nvme0n1 rootfstype=ext4 rw loglevel=8 console=ttyAMA0 nokaslr"  \
+  -drive file=ubuntu-rootfs.img,index=0,media=disk,format=raw \
+  --append "root=/dev/vda rootfstype=ext4 rw loglevel=8 console=ttyAMA0 nokaslr"  \
   -serial stdio \
   -S -s
 
