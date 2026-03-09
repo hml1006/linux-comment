@@ -4976,8 +4976,7 @@ int ext4_get_inode_loc(struct inode *inode, struct ext4_iloc *iloc)
 	ext4_fsblk_t err_blk = 0;
 	int ret;
 
-	vfs_dbg("name: %s\n",
-		d_find_alias_rcu(inode)->d_name.name);
+	vfs_dbg("inode: %lu\n", inode->i_ino);
 	ret = __ext4_get_inode_loc(inode->i_sb, inode->i_ino, inode, iloc,
 					&err_blk);
 

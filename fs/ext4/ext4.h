@@ -3684,7 +3684,7 @@ extern int ext4_convert_inline_data(struct inode *inode);
 
 static inline int ext4_has_inline_data(struct inode *inode)
 {
-	vfs_dbg(" %s has inline data: %d\n", d_find_alias_rcu(inode)->d_name.name,
+	vfs_dbg(" inode: %lu has inline data: %d\n", inode->i_ino,
 		ext4_test_inode_flag(inode, EXT4_INODE_INLINE_DATA) && EXT4_I(inode)->i_inline_off);
 	return ext4_test_inode_flag(inode, EXT4_INODE_INLINE_DATA) &&
 	       EXT4_I(inode)->i_inline_off;

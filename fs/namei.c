@@ -1778,7 +1778,7 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 		dentry = __d_lookup(parent, &nd->last);
 		if (unlikely(!dentry))
 			return NULL;
-		vfs_dbg("__d_lookup nd->last=%s\n", nd->last.name);
+		vfs_dbg("__d_lookup nd->last=%s, dentry %p\n", nd->last.name, dentry);
 		status = d_revalidate(nd->inode, &nd->last, dentry, nd->flags);
 	}
 	if (unlikely(status <= 0)) {
@@ -1787,8 +1787,8 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 		dput(dentry);
 		return ERR_PTR(status);
 	}
-	vfs_dbg("nd->last=%s, dentry->d_name.name = %s, dentry->d_inode->i_ino = %lu\n",
-		nd->last.name, dentry->d_name.name, dentry->d_inode->i_ino);
+	vfs_dbg("nd->last=%s, dentry = %p, dentry->d_name.name = %s\n",
+		nd->last.name, dentry, dentry->d_name.name);
 	return dentry;
 }
 
