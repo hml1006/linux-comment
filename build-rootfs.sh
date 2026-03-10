@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -x
 
 # 创建Ubuntu ARM64 rootfs 方法
 # https://qubot.org/2023/08/09/h618-%E7%A7%BB%E6%A4%8Dubuntu-22-04-rootfs/

@@ -1434,6 +1434,10 @@ static int do_sys_openat2(int dfd, const char __user *filename,
 	tmp = getname(filename);
 	if (IS_ERR(tmp))
 		return PTR_ERR(tmp);
+	if (!strncmp("/mnt/", tmp->name, strlen("/mnt/")) &&
+		!strncmp(current->comm, "cat", strlen("cat"))) {
+		vfs_dbg_enable();
+	}
 	vfs_dbg("filename = %s\n", tmp->name);
 	// 申请一个空闲描述符
 	fd = get_unused_fd_flags(how->flags);
@@ -1449,6 +1453,10 @@ static int do_sys_openat2(int dfd, const char __user *filename,
 		}
 	}
 	putname(tmp);
+	if (!strncmp("/mnt/", tmp->name, strlen("/mnt/")) &&
+		!strncmp(current->comm, "vim", strlen("cat"))) {
+		vfs_dbg_disable();
+	}
 	return fd;
 }
 

@@ -132,6 +132,7 @@ static struct buffer_head *__ext4_read_dirblock(struct inode *inode,
 	struct ext4_dir_entry *dirent;
 	int is_dx_block = 0;
 
+	vfs_dbg("parent: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
 	if (block >= inode->i_size >> inode->i_blkbits) {
 		ext4_error_inode(inode, func, line, block,
 		       "Attempting to read directory block (%u) that is past i_size (%llu)",
@@ -787,7 +788,8 @@ dx_probe(struct ext4_filename *fname, struct inode *dir,
 	u32 hash;
 	ext4_lblk_t block;
 	ext4_lblk_t blocks[EXT4_HTREE_LEVEL];
-
+	vfs_dbg("parent: %s, search for %s\n",
+		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
 	memset(frame_in, 0, EXT4_HTREE_LEVEL * sizeof(frame_in[0]));
 	frame->bh = ext4_read_dirblock(dir, 0, INDEX);
 	if (IS_ERR(frame->bh))
@@ -1723,6 +1725,8 @@ static struct buffer_head * ext4_dx_find_entry(struct inode *dir,
 #ifdef CONFIG_FS_ENCRYPTION
 	*res_dir = NULL;
 #endif
+	vfs_dbg("parent: %s, search for %s\n",
+		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
 	frame = dx_probe(fname, dir, NULL, frames);
 	if (IS_ERR(frame))
 		return ERR_CAST(frame);

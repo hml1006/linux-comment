@@ -974,6 +974,7 @@ struct buffer_head *ext4_getblk(handle_t *handle, struct inode *inode,
 		    || handle != NULL || create == 0);
 	ASSERT(create == 0 || !nowait);
 
+	vfs_dbg("parent: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
 	map.m_lblk = block;
 	map.m_len = 1;
 	err = ext4_map_blocks(handle, inode, &map, map_flags);
@@ -1039,6 +1040,7 @@ struct buffer_head *ext4_bread(handle_t *handle, struct inode *inode,
 	struct buffer_head *bh;
 	int ret;
 
+	vfs_dbg("parent: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
 	bh = ext4_getblk(handle, inode, block, map_flags);
 	if (IS_ERR(bh))
 		return bh;

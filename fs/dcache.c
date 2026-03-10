@@ -15,7 +15,7 @@
  * the dcache entry is deleted or garbage collected.
  */
 
-#include "linux/printk.h"
+#include <linux/dbg.h>
 #include <linux/ratelimit.h>
 #include <linux/string.h>
 #include <linux/mm.h>
@@ -2270,6 +2270,7 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 
 	if (unlikely(parent->d_flags & DCACHE_OP_COMPARE))
 		return __d_lookup_rcu_op_compare(parent, name, seqp);
+	vfs_dbg("parent: %s, search for: %s\n", parent->d_iname, str);
 
 	/*
 	 * The hash list is protected using RCU.
@@ -2314,6 +2315,7 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 		if (dentry_cmp(dentry, str, hashlen_len(hashlen)) != 0)
 			continue;
 		*seqp = seq;
+		vfs_dbg("parent: %s, found: %s\n", parent->d_iname, str);
 		return dentry;
 	}
 	return NULL;
@@ -2368,6 +2370,7 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 	struct dentry *found = NULL;
 	struct dentry *dentry;
 
+	vfs_dbg("parent: %s, search for: %s\n", parent->d_iname, name->name);
 	/*
 	 * Note: There is significant duplication with __d_lookup_rcu which is
 	 * required to prevent single threaded performance regressions
@@ -2405,6 +2408,7 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 			goto next;
 
 		dentry->d_lockref.count++;
+		vfs_dbg("parent: %s, found: %s\n", parent->d_iname, name->name);
 		found = dentry;
 		spin_unlock(&dentry->d_lock);
 		break;
