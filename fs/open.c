@@ -1438,7 +1438,7 @@ static int do_sys_openat2(int dfd, const char __user *filename,
 		!strncmp(current->comm, "cat", strlen("cat"))) {
 		vfs_dbg_enable();
 	}
-	vfs_dbg("filename = %s\n", tmp->name);
+	vfs_dbg(tmp->name, "will open\n");
 	// 申请一个空闲描述符
 	fd = get_unused_fd_flags(how->flags);
 	if (likely(fd >= 0)) {

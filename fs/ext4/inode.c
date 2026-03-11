@@ -974,7 +974,7 @@ struct buffer_head *ext4_getblk(handle_t *handle, struct inode *inode,
 		    || handle != NULL || create == 0);
 	ASSERT(create == 0 || !nowait);
 
-	vfs_dbg("parent: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
+	inode_dbg(inode, "name: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
 	map.m_lblk = block;
 	map.m_len = 1;
 	err = ext4_map_blocks(handle, inode, &map, map_flags);
@@ -1040,7 +1040,7 @@ struct buffer_head *ext4_bread(handle_t *handle, struct inode *inode,
 	struct buffer_head *bh;
 	int ret;
 
-	vfs_dbg("parent: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
+	inode_dbg(inode, "name: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
 	bh = ext4_getblk(handle, inode, block, map_flags);
 	if (IS_ERR(bh))
 		return bh;
@@ -4810,7 +4810,7 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	struct blk_plug		plug;
 	int			inodes_per_block, inode_offset;
 
-	vfs_dbg("inode addr = %p, inode = %lu\n",
+	inode_dbg(inode, "inode addr = %p, inode = %lu\n",
 		inode, ino);
 	iloc->bh = NULL;
 	if (ino < EXT4_ROOT_INO ||
@@ -4847,7 +4847,7 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	// 计算inode在第几个block
 	block += (inode_offset / inodes_per_block);
 
-	vfs_dbg("inode: %lu, block_group: %u, block: %llu, offset: %lu\n",
+	sb_dbg(sb, "inode: %lu, block_group: %u, block: %llu, offset: %lu\n",
 		ino, iloc->block_group, block, iloc->offset);
 	// 找到这个block的buffer_head
 	bh = sb_getblk(sb, block);
@@ -4978,7 +4978,7 @@ int ext4_get_inode_loc(struct inode *inode, struct ext4_iloc *iloc)
 	ext4_fsblk_t err_blk = 0;
 	int ret;
 
-	vfs_dbg("inode: %lu\n", inode->i_ino);
+	inode_dbg(inode, "\n");
 	ret = __ext4_get_inode_loc(inode->i_sb, inode->i_ino, inode, iloc,
 					&err_blk);
 

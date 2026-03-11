@@ -1588,7 +1588,7 @@ struct buffer_head *ext4_find_inline_entry(struct inode *dir,
 	void *inline_start;
 	int inline_size;
 
-	vfs_dbg("search for %s\n",
+	inode_dbg(dir, "search for %s\n",
 		fname->usr_fname->name);
 	ret = ext4_get_inode_loc(dir, &is.iloc);
 	if (ret)

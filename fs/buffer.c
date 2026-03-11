@@ -1419,7 +1419,7 @@ find_get_block_common(struct block_device *bdev, sector_t block,
 struct buffer_head *
 __find_get_block(struct block_device *bdev, sector_t block, unsigned size)
 {
-	vfs_dbg("[%s] bdev %pg\n", __func__, bdev);
+	blk_dbg(bdev, "block %llu, size %u\n", block, size);
 	return find_get_block_common(bdev, block, size, true);
 }
 EXPORT_SYMBOL(__find_get_block);
@@ -1429,7 +1429,7 @@ struct buffer_head *
 __find_get_block_nonatomic(struct block_device *bdev, sector_t block,
 			   unsigned size)
 {
-	vfs_dbg("bdev %pg\n", bdev);
+	blk_dbg(bdev, "block %llu, size %u\n", block, size);
 	return find_get_block_common(bdev, block, size, false);
 }
 EXPORT_SYMBOL(__find_get_block_nonatomic);
@@ -1453,7 +1453,7 @@ struct buffer_head *bdev_getblk(struct block_device *bdev, sector_t block,
 {
 	struct buffer_head *bh;
 
-	vfs_dbg("bdev %pg, block %llu, size %u, gfp %x\n", bdev, block, size, gfp);
+	blk_dbg(bdev, "block %llu, size %u, gfp %x\n", block, size, gfp);
 	if (gfpflags_allow_blocking(gfp))
 		bh = __find_get_block_nonatomic(bdev, block, size);
 	else

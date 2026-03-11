@@ -132,7 +132,7 @@ static struct buffer_head *__ext4_read_dirblock(struct inode *inode,
 	struct ext4_dir_entry *dirent;
 	int is_dx_block = 0;
 
-	vfs_dbg("parent: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
+	inode_dbg(inode, "name: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
 	if (block >= inode->i_size >> inode->i_blkbits) {
 		ext4_error_inode(inode, func, line, block,
 		       "Attempting to read directory block (%u) that is past i_size (%llu)",
@@ -788,7 +788,7 @@ dx_probe(struct ext4_filename *fname, struct inode *dir,
 	u32 hash;
 	ext4_lblk_t block;
 	ext4_lblk_t blocks[EXT4_HTREE_LEVEL];
-	vfs_dbg("parent: %s, search for %s\n",
+	inode_dbg(dir, "name: %s, search for %s\n",
 		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
 	memset(frame_in, 0, EXT4_HTREE_LEVEL * sizeof(frame_in[0]));
 	frame->bh = ext4_read_dirblock(dir, 0, INDEX);
@@ -1540,7 +1540,7 @@ static struct buffer_head *__ext4_find_entry(struct inode *dir,
 	if (namelen > EXT4_NAME_LEN)
 		return NULL;
 
-	vfs_dbg("parent: %s, search for %s\n",
+	inode_dbg(dir, "name: %s, search for %s\n",
 		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
 	if (ext4_has_inline_data(dir)) {
 		int has_inline_data = 1;
@@ -1698,7 +1698,7 @@ static struct buffer_head *ext4_lookup_entry(struct inode *dir,
 	int err;
 	struct ext4_filename fname;
 	struct buffer_head *bh;
-	vfs_dbg("parent inode path %s, search for %s\n",
+	inode_dbg(dir, "parent inode path %s, search for %s\n",
 		d_find_alias_rcu(dir)->d_name.name, dentry->d_name.name);
 	err = ext4_fname_prepare_lookup(dir, dentry, &fname);
 	if (err == -ENOENT)
@@ -1725,7 +1725,7 @@ static struct buffer_head * ext4_dx_find_entry(struct inode *dir,
 #ifdef CONFIG_FS_ENCRYPTION
 	*res_dir = NULL;
 #endif
-	vfs_dbg("parent: %s, search for %s\n",
+	inode_dbg(dir, "name: %s, search for %s\n",
 		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
 	frame = dx_probe(fname, dir, NULL, frames);
 	if (IS_ERR(frame))
@@ -1775,7 +1775,7 @@ static struct dentry *ext4_lookup(struct inode *dir, struct dentry *dentry, unsi
 
 	if (dentry->d_name.len > EXT4_NAME_LEN)
 		return ERR_PTR(-ENAMETOOLONG);
-	vfs_dbg("parent inode path %s, search for %s\n",
+	inode_dbg(dir, "name: %s, search for %s\n",
 		d_find_alias_rcu(dir)->d_name.name, dentry->d_name.name);
 	bh = ext4_lookup_entry(dir, dentry, &de);
 	if (IS_ERR(bh))
