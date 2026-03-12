@@ -2270,7 +2270,10 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 
 	if (unlikely(parent->d_flags & DCACHE_OP_COMPARE))
 		return __d_lookup_rcu_op_compare(parent, name, seqp);
-	dentry_dbg(parent, "search for: %s\n", str);
+
+	char search_name[32] = {0};
+	strncpy(search_name, str, hashlen_len(hashlen) >=31 ? 31 : hashlen_len(hashlen));
+	dentry_dbg(parent, "search for: %s\n", search_name);
 
 	/*
 	 * The hash list is protected using RCU.
@@ -2315,7 +2318,7 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 		if (dentry_cmp(dentry, str, hashlen_len(hashlen)) != 0)
 			continue;
 		*seqp = seq;
-		dentry_dbg(parent, "found: %s\n", str);
+		dentry_dbg(parent, "found: %s\n", search_name);
 		return dentry;
 	}
 	return NULL;

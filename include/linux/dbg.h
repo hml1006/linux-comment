@@ -41,7 +41,7 @@ static inline bool is_vfs_dbg_enabled(void)
         if (is_vfs_dbg_enabled() && ((unsigned long long)dentry & (~0xFFULL)) && \
                 !(strncmp(dentry->d_sb->s_type->name, FILTER_FS_TYPE1, strlen(FILTER_FS_TYPE1))) && \
                 !(strncmp(dentry->d_sb->s_bdev->bd_disk->disk_name, FILTER_BLK_DEV, strlen(FILTER_BLK_DEV)))){ \
-                printk(KERN_INFO "[%s] dentry: %p => "fmt, \
+                printk(KERN_INFO "[%s] dentry: %s => "fmt, \
                         __func__, dentry->d_name.name, ##__VA_ARGS__); \
         } \
 } while (0)
@@ -58,8 +58,8 @@ static inline bool is_vfs_dbg_enabled(void)
 #define sb_dbg(sb, fmt, ...)       do { \
         if (is_vfs_dbg_enabled() && !(strncmp(sb->s_type->name, FILTER_FS_TYPE1, strlen(FILTER_FS_TYPE1))) && \
                 !(strncmp(sb->s_bdev->bd_disk->disk_name, FILTER_BLK_DEV, strlen(FILTER_BLK_DEV)))){ \
-                printk(KERN_INFO "[%s] => "fmt, \
-                        __func__, ##__VA_ARGS__); \
+                printk(KERN_INFO "[%s] s_bdev %s => "fmt, \
+                        __func__, sb->s_bdev->bd_disk->disk_name, ##__VA_ARGS__); \
         } \
 } while (0)
 
