@@ -8,6 +8,7 @@
  * Heavily rewritten.
  */
 
+#include "linux/dbg.h"
 #include <linux/syscalls.h>
 #include <linux/export.h>
 #include <linux/capability.h>
@@ -797,6 +798,7 @@ struct mount *__lookup_mnt(struct vfsmount *mnt, struct dentry *dentry)
 	struct hlist_head *head = m_hash(mnt, dentry);
 	struct mount *p;
 
+	dentry_dbg(dentry, "hash search\n");
 	hlist_for_each_entry_rcu(p, head, mnt_hash)
 		if (&p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
 			return p;

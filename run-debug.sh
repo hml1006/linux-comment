@@ -60,7 +60,7 @@ sudo iptables -t nat -A POSTROUTING -s 192.168.5.0/24 -o ${used_nic} -j MASQUERA
 stty intr ^]
 
 sudo qemu-system-aarch64 -cpu cortex-a710 -machine virt \
-  -m 4096 -smp 2 \
+  -m 128 -smp 2 \
   -net nic -net tap,ifname=tap0,script=no,downscript=no \
   -drive file=nvme.img,format=raw,if=none,id=nvme0 \
   -device nvme,serial=12345678,drive=nvme0 \

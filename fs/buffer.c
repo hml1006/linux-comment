@@ -190,6 +190,7 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 	int all_mapped = 1;
 	static DEFINE_RATELIMIT_STATE(last_warned, HZ, 1);
 
+	blk_dbg(bdev, "block: %llu\n", block);
 	index = ((loff_t)block << blkbits) / PAGE_SIZE;
 	folio = __filemap_get_folio(bd_mapping, index, FGP_ACCESSED, 0);
 	if (IS_ERR(folio))
@@ -1129,6 +1130,7 @@ __getblk_slow(struct block_device *bdev, sector_t block,
 		return NULL;
 	}
 
+	blk_dbg(bdev, "block: %llu, size: %d\n", block, size);
 	for (;;) {
 		struct buffer_head *bh;
 
@@ -1389,6 +1391,7 @@ lookup_bh_lru(struct block_device *bdev, sector_t block, unsigned size)
 		}
 	}
 	bh_lru_unlock();
+	blk_dbg(bdev, "buffer_head lru: %p\n", ret);
 	return ret;
 }
 
@@ -1404,6 +1407,7 @@ find_get_block_common(struct block_device *bdev, sector_t block,
 {
 	// 从LRU中查找，找到则会更新LRU
 	struct buffer_head *bh = lookup_bh_lru(bdev, block, size);
+	blk_dbg(bdev, "block: %llu, size: %d, lru bh %p\n", block, size, bh);
 
 	if (bh == NULL) {
 		/* __find_get_block_slow will mark the page accessed */
@@ -1412,7 +1416,7 @@ find_get_block_common(struct block_device *bdev, sector_t block,
 			bh_lru_install(bh);
 	} else
 		touch_buffer(bh);
-
+	blk_dbg(bdev, "return buffer_head %p\n", bh);
 	return bh;
 }
 
@@ -2831,6 +2835,7 @@ static void submit_bh_wbc(blk_opf_t opf, struct buffer_head *bh,
 
 void submit_bh(blk_opf_t opf, struct buffer_head *bh)
 {
+	blk_dbg(bh->b_bdev, "bh %p\n", bh);
 	submit_bh_wbc(opf, bh, WRITE_LIFE_NOT_SET, NULL);
 }
 EXPORT_SYMBOL(submit_bh);

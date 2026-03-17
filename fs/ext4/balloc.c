@@ -312,7 +312,7 @@ struct ext4_group_desc * ext4_get_group_desc(struct super_block *sb,
 		offset * EXT4_DESC_SIZE(sb));
 	if (bh)
 		*bh = bh_p;
-	sb_dbg(sb, "found group desc: %p\n", desc);
+	sb_dbg(sb, "found group desc: %p, group number: %d\n", desc, block_group);
 	return desc;
 }
 

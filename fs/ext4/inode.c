@@ -1040,7 +1040,7 @@ struct buffer_head *ext4_bread(handle_t *handle, struct inode *inode,
 	struct buffer_head *bh;
 	int ret;
 
-	inode_dbg(inode, "name: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
+	inode_dbg(inode, "block: %u\n", block);
 	bh = ext4_getblk(handle, inode, block, map_flags);
 	if (IS_ERR(bh))
 		return bh;

@@ -15,6 +15,7 @@
 /* [Feb-Apr 2000, AV] Rewrite to the new namespace architecture.
  */
 
+#include "linux/dcache.h"
 #include "linux/printk.h"
 #include <linux/dbg.h>
 #include <linux/init.h>
@@ -1476,6 +1477,7 @@ static int __traverse_mounts(struct path *path, unsigned flags, bool *jumped,
 	bool need_mntput = false;
 	int ret = 0;
 
+	dentry_dbg(path->dentry, "mnt->mnt_root.d_name.name %s\n", mnt->mnt_root->d_name.name);
 	while (flags & DCACHE_MANAGED_DENTRY) {
 		/* Allow the filesystem to manage the transit without i_rwsem
 		 * being held. */
@@ -1535,6 +1537,7 @@ static inline int traverse_mounts(struct path *path, bool *jumped,
 {
 	unsigned flags = smp_load_acquire(&path->dentry->d_flags);
 
+	dentry_dbg(path->dentry, "traverse\n");
 	/* fastpath */
 	if (likely(!(flags & DCACHE_MANAGED_DENTRY))) {
 		*jumped = false;
@@ -1587,6 +1590,7 @@ static bool __follow_mount_rcu(struct nameidata *nd, struct path *path)
 	struct dentry *dentry = path->dentry;
 	unsigned int flags = dentry->d_flags;
 
+	dentry_dbg(dentry, "dentry->d_flags: %x\n", flags);
 	if (likely(!(flags & DCACHE_MANAGED_DENTRY)))
 		return true;
 
@@ -1610,6 +1614,7 @@ static bool __follow_mount_rcu(struct nameidata *nd, struct path *path)
 			if (mounted) {
 				path->mnt = &mounted->mnt;
 				dentry = path->dentry = mounted->mnt.mnt_root;
+				dentry_dbg(dentry, "found mnt\n");
 				nd->state |= ND_JUMPED;
 				nd->next_seq = read_seqcount_begin(&dentry->d_seq);
 				flags = dentry->d_flags;
@@ -1632,6 +1637,7 @@ static inline int handle_mounts(struct nameidata *nd, struct dentry *dentry,
 	bool jumped;
 	int ret;
 
+	dentry_dbg(dentry, "nd->last.name: %s\n", nd->last.name);
 	path->mnt = nd->path.mnt;
 	path->dentry = dentry;
 	if (nd->flags & LOOKUP_RCU) {
@@ -1996,6 +2002,7 @@ static const char *step_into(struct nameidata *nd, int flags,
 {
 	struct path path;
 	struct inode *inode;
+	dentry_dbg(dentry, "nd->last.name: %s\n", nd->last.name);
 	int err = handle_mounts(nd, dentry, &path);
 
 	if (err < 0)

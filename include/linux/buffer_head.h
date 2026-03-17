@@ -418,6 +418,7 @@ map_bh(struct buffer_head *bh, struct super_block *sb, sector_t block)
 
 static inline void wait_on_buffer(struct buffer_head *bh)
 {
+	blk_dbg(bh->b_bdev, "wait for io complete, block start %llu, size %lu\n", bh->b_blocknr, bh->b_size);
 	might_sleep();
 	if (buffer_locked(bh))
 		__wait_on_buffer(bh);

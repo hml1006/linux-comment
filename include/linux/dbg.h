@@ -5,6 +5,7 @@
 #include <linux/printk.h>
 #include <linux/sched.h>
 #include <linux/blkdev.h>
+#include <linux/string.h>
 
 extern bool vfs_dbg_enabled;
 static inline void vfs_dbg_enable(void)
@@ -28,19 +29,24 @@ static inline bool is_vfs_dbg_enabled(void)
         return vfs_dbg_enabled;
 }
 
-#define FILTER_DIR      "/mnt/"
+#define FILTER_PATH      "/mnt/"
 #define vfs_dbg(pathname, fmt, ...)       do { \
-        if (is_vfs_dbg_enabled() && !strncmp(pathname, FILTER_DIR, strlen(FILTER_DIR))) { \
+        if (is_vfs_dbg_enabled() && !strncmp(pathname, FILTER_PATH, strlen(FILTER_PATH))) { \
                 printk(KERN_INFO "[%s] path: %s => "fmt, __func__, pathname, ##__VA_ARGS__); \
         } \
 } while (0)
 
-#define FILTER_FS_TYPE1 "ext4"
-#define FILTER_BLK_DEV  "nvme0n1"
+#define FILTER_FS_TYPE1         "ext4"
+#define FILTER_BLK_DEV          "nvme0n1"
+#define FILTER_DIR0             "/"
+#define FILTER_DIR1             "mnt"
+#define FILTER_DIR2             "nvme"
 #define dentry_dbg(dentry, fmt, ...)       do { \
         if (is_vfs_dbg_enabled() && ((unsigned long long)dentry & (~0xFFULL)) && \
                 !(strncmp(dentry->d_sb->s_type->name, FILTER_FS_TYPE1, strlen(FILTER_FS_TYPE1))) && \
-                !(strncmp(dentry->d_sb->s_bdev->bd_disk->disk_name, FILTER_BLK_DEV, strlen(FILTER_BLK_DEV)))){ \
+                (!(strncmp(dentry->d_sb->s_bdev->bd_disk->disk_name, FILTER_BLK_DEV, strlen(FILTER_BLK_DEV))) || \
+                (!strncmp(dentry->d_name.name, FILTER_DIR1, strlen(FILTER_DIR1))) || \
+                (!strncmp(dentry->d_name.name, FILTER_DIR2, strlen(FILTER_DIR2))))) { \
                 printk(KERN_INFO "[%s] dentry: %s => "fmt, \
                         __func__, dentry->d_name.name, ##__VA_ARGS__); \
         } \
