@@ -3976,6 +3976,7 @@ static int do_open(struct nameidata *nd,
 	int acc_mode;
 	int error;
 
+	dentry_dbg(nd->path.dentry, "file %p\n", file);
 	if (!(file->f_mode & (FMODE_OPENED | FMODE_CREATED))) {
 		error = complete_walk(nd);
 		if (error)

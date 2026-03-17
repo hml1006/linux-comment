@@ -974,7 +974,7 @@ struct buffer_head *ext4_getblk(handle_t *handle, struct inode *inode,
 		    || handle != NULL || create == 0);
 	ASSERT(create == 0 || !nowait);
 
-	inode_dbg(inode, "name: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
+	inode_dbg(inode, "block: %u\n", block);
 	map.m_lblk = block;
 	map.m_len = 1;
 	err = ext4_map_blocks(handle, inode, &map, map_flags);

@@ -404,6 +404,7 @@ sb_find_get_block(struct super_block *sb, sector_t block)
 static inline struct buffer_head *
 sb_find_get_block_nonatomic(struct super_block *sb, sector_t block)
 {
+	sb_dbg(sb, "block %llu\n", block);
 	return __find_get_block_nonatomic(sb->s_bdev, block, sb->s_blocksize);
 }
 
