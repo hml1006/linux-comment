@@ -845,6 +845,7 @@ static int ext4_sample_last_mounted(struct super_block *sb,
 	handle_t *handle;
 	int err;
 
+	sb_dbg(sb, "vfsmount %s\n", mnt->mnt_root->d_name.name);
 	if (likely(ext4_test_mount_flag(sb, EXT4_MF_MNTDIR_SAMPLED)))
 		return 0;
 
@@ -871,6 +872,7 @@ static int ext4_sample_last_mounted(struct super_block *sb,
 	err = PTR_ERR(handle);
 	if (IS_ERR(handle))
 		goto out;
+	sb_dbg(sb, "journal handle %p\n", handle);
 	BUFFER_TRACE(sbi->s_sbh, "get_write_access");
 	err = ext4_journal_get_write_access(handle, sb, sbi->s_sbh,
 					    EXT4_JTR_NONE);

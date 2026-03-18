@@ -98,6 +98,7 @@ handle_t *__ext4_journal_start_sb(struct inode *inode,
 {
 	journal_t *journal;
 	int err;
+	sb_dbg(sb, "inode %p, blocks %d\n", inode, blocks);
 	if (inode)
 		trace_ext4_journal_start_inode(inode, blocks, rsv_blocks,
 					revoke_creds, type,

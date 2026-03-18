@@ -3868,7 +3868,7 @@ static struct dentry *lookup_fast_for_open(struct nameidata *nd, int open_flag)
 	dentry = lookup_fast(nd);
 	if (IS_ERR_OR_NULL(dentry))
 		return dentry;
-	dentry_dbg(dentry, "lookup_fast found dentry->d_inode = %p\n", dentry->d_inode);
+	dentry_dbg(dentry, "lookup_fast found name: %s, inode: %lu\n", dentry->d_name.name, dentry->d_inode->i_ino);
 
 	if (open_flag & O_CREAT) {
 		/* Discard negative dentries. Need inode_lock to do the create */
