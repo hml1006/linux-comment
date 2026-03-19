@@ -1270,6 +1270,7 @@ int jbd2_journal_get_create_access(handle_t *handle, struct buffer_head *bh)
 {
 	transaction_t *transaction = handle->h_transaction;
 	journal_t *journal;
+	blk_dbg(bh->b_bdev, "handle %p\n", handle);
 	struct journal_head *jh = jbd2_journal_add_journal_head(bh);
 	int err;
 
