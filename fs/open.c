@@ -1451,6 +1451,7 @@ static int do_sys_openat2(int dfd, const char __user *filename,
 			put_unused_fd(fd);
 			fd = PTR_ERR(f);
 		} else {
+			// 把file指针和fd关联起来，file地址填充到fdt[fd]
 			fd_install(fd, f);
 		}
 	}

@@ -678,6 +678,10 @@ static void __set_nameidata(struct nameidata *p, int dfd, struct filename *name)
 	current->nameidata = p;
 }
 
+/**
+ * 保存当前查找上下文，目的是遇到相对路径的符号链接，可以返回到之前的查找路径，
+ * 如果只有一个全局的nameidata，那么在遇到相对路径的符号链接时，无法返回到之前的查找路径。
+ */
 static inline void set_nameidata(struct nameidata *p, int dfd, struct filename *name,
 			  const struct path *root)
 {
@@ -2468,6 +2472,8 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 	nd->flags |= LOOKUP_PARENT;
 	if (IS_ERR(name))
 		return PTR_ERR(name);
+
+	// 跳过重复的 '/'
 	if (*name == '/') {
 		do {
 			name++;
@@ -2480,6 +2486,7 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 	}
 	dentry_dbg(nd->path.dentry, "name = %s\n", name);
 
+	// 循环遍历路径中的每一个分量
 	/* At this point we know we have a real path component. */
 	for(;;) {
 		struct mnt_idmap *idmap;
@@ -2495,6 +2502,7 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 		name = hash_name(nd, name, &lastword);
 		dentry_dbg(nd->path.dentry, "hash name = %s\n", name);
 
+		// 判断目录是 '..' 还是 '.'
 		switch(lastword) {
 		case LAST_WORD_IS_DOTDOT:
 			nd->last_type = LAST_DOTDOT;
@@ -4210,6 +4218,8 @@ struct file *do_filp_open(int dfd, struct filename *pathname,
 		filp = path_openat(&nd, op, flags);
 	if (unlikely(filp == ERR_PTR(-ESTALE)))
 		filp = path_openat(&nd, op, flags | LOOKUP_REVAL);
+
+	// 恢复进程文件查找结构
 	restore_nameidata();
 	return filp;
 }
