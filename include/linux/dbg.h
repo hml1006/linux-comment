@@ -36,6 +36,13 @@ static inline bool is_vfs_dbg_enabled(void)
         } \
 } while (0)
 
+#define nd_dbg(nd, fmt, ...)       do { \
+        if (is_vfs_dbg_enabled() && ((unsigned long long)nd & (~0xFFULL)) && \
+                !strncmp(nd->pathname, FILTER_PATH, strlen(FILTER_PATH))) { \
+                printk(KERN_INFO "[%s] path: %s => "fmt, __func__, nd->pathname, ##__VA_ARGS__); \
+        } \
+} while (0)
+
 #define FILTER_FS_TYPE1         "ext4"
 #define FILTER_BLK_DEV          "nvme0n1"
 #define FILTER_DIR0             "/"

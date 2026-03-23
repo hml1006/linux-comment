@@ -1700,6 +1700,8 @@ static struct buffer_head *ext4_lookup_entry(struct inode *dir,
 	struct buffer_head *bh;
 	inode_dbg(dir, "parent inode path %s, search for %s\n",
 		d_find_alias_rcu(dir)->d_name.name, dentry->d_name.name);
+	
+	// 填充要查找的数据结构
 	err = ext4_fname_prepare_lookup(dir, dentry, &fname);
 	if (err == -ENOENT)
 		return NULL;
@@ -1767,6 +1769,9 @@ success:
 	return bh;
 }
 
+/**
+* dir为父目录的inode，dentry为要查找的目录项，内放要查找的文件名
+*/
 static struct dentry *ext4_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 {
 	struct inode *inode;

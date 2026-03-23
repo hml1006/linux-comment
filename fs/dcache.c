@@ -2658,6 +2658,7 @@ retry:
 	}
 	rcu_read_unlock();
 	new->d_wait = wq;
+	// 第一个并行的lookup，直接加入in_lookup_hash表并返回
 	hlist_bl_add_head(&new->d_u.d_in_lookup_hash, b);
 	hlist_bl_unlock(b);
 	return new;

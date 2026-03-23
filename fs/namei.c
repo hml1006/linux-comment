@@ -1754,7 +1754,7 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 {
 	struct dentry *dentry, *parent = nd->path.dentry;
 	int status = 1;
-	dentry_dbg(parent, "nd->last=%s\n",
+	nd_dbg(nd, "nd->last=%s\n",
 		nd->last.name);
 	/*
 	 * Rename seqlock is not required here because in the off chance
@@ -1853,6 +1853,8 @@ static struct dentry *lookup_slow(const struct qstr *name,
 {
 	struct inode *inode = dir->d_inode;
 	struct dentry *res;
+
+	// 信号量
 	inode_lock_shared(inode);
 	dentry_dbg(dir, "search for name = %s\n", name->name);
 	res = __lookup_slow(name, dir, flags);
@@ -2170,7 +2172,7 @@ static const char *walk_component(struct nameidata *nd, int flags)
 			put_link(nd);
 		return handle_dots(nd, nd->last_type);
 	}
-	dentry_dbg(nd->path.dentry, "nd->pathname = %s, nd->last_name = %s\n", nd->pathname, nd->last.name);
+	nd_dbg(nd, "nd->last_name = %s\n", nd->last.name);
 	// 从dentry_cache中查找dentry
 	dentry = lookup_fast(nd);
 	if (IS_ERR(dentry))
@@ -2488,10 +2490,10 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 	}
 	if (unlikely(!*name)) {
 		nd->dir_mode = 0; // short-circuit the 'hardening' idiocy
-		dentry_dbg(nd->path.dentry, "return 0, name = %s\n", name);
+		nd_dbg(nd, "return 0, name = %p\n", name);
 		return 0;
 	}
-	dentry_dbg(nd->path.dentry, "name = %s\n", name);
+	nd_dbg(nd, "name = %s\n", name);
 
 	// 循环遍历路径中的每一个分量
 	/* At this point we know we have a real path component. */
@@ -2506,8 +2508,9 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 			return err;
 
 		nd->last.name = name;
+		nd_dbg(nd, "before hash name = %s\n", name);
 		name = hash_name(nd, name, &lastword);
-		dentry_dbg(nd->path.dentry, "hash name = %s\n", name);
+		nd_dbg(nd, "after hash name = %s\n", name);
 
 		// 判断目录是 '..' 还是 '.'
 		switch(lastword) {
@@ -2549,7 +2552,7 @@ OK:
 				nd->dir_vfsuid = i_uid_into_vfsuid(idmap, nd->inode);
 				nd->dir_mode = nd->inode->i_mode;
 				nd->flags &= ~LOOKUP_PARENT;
-				dentry_dbg(nd->path.dentry, "return 0 && depth == 0, name = %s\n", name);
+				nd_dbg(nd, "return 0 && depth == 0, name = %s\n", name);
 				return 0;
 			}
 			/* last component of nested symlink */
@@ -4028,6 +4031,7 @@ static int do_open(struct nameidata *nd,
 		do_truncate = true;
 	}
 	error = may_open(idmap, &nd->path, acc_mode, open_flag);
+	// 打开文件
 	if (!error && !(file->f_mode & FMODE_OPENED))
 		error = vfs_open(&nd->path, file);
 	if (!error)
@@ -4179,7 +4183,7 @@ static struct file *path_openat(struct nameidata *nd,
 	if (IS_ERR(file))
 		return file;
 
-	vfs_dbg(nd->name->name, "will open\n");
+	nd_dbg(nd, "will open\n");
 	if (unlikely(file->f_flags & __O_TMPFILE)) {
 		error = do_tmpfile(nd, flags, op, file); // 临时文件
 	} else if (unlikely(file->f_flags & O_PATH)) {
