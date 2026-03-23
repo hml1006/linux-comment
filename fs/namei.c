@@ -1762,6 +1762,7 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 	 * going to fall back to non-racy lookup.
 	 */
 	if (nd->flags & LOOKUP_RCU) {
+		// rcu_read_lock已经在path_init中调用
 		dentry = __d_lookup_rcu(parent, &nd->last, &nd->next_seq);
 		if (unlikely(!dentry)) {
 			if (!try_to_unlazy(nd))
@@ -1775,6 +1776,7 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 		if (read_seqcount_retry(&parent->d_seq, nd->seq))
 			return ERR_PTR(-ECHILD);
 
+		// 验证目录是否还有效，FUSE，NFS等文件系统会用到
 		status = d_revalidate(nd->inode, &nd->last, dentry, nd->flags);
 		if (likely(status > 0))
 			return dentry;
@@ -1792,6 +1794,7 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 		status = d_revalidate(nd->inode, &nd->last, dentry, nd->flags);
 	}
 	if (unlikely(status <= 0)) {
+		// 如果无效，把目录invalidate掉
 		if (!status)
 			d_invalidate(dentry);
 		dput(dentry);
@@ -1820,6 +1823,7 @@ again:
 	if (IS_ERR(dentry))
 		return dentry;
 	if (unlikely(!d_in_lookup(dentry))) {
+		//非查找状态，校验目录，如果目录无效，重新查找
 		int error = d_revalidate(inode, name, dentry, flags);
 		if (unlikely(error <= 0)) {
 			if (!error) {
@@ -1833,6 +1837,7 @@ again:
 	} else {
 		// 例如 ext4_lookup 函数
 		old = inode->i_op->lookup(inode, dentry, flags);
+		// 唤醒等待在这个dentry wq的查找进程
 		d_lookup_done(dentry);
 		if (unlikely(old)) {
 			dput(dentry);
@@ -2166,10 +2171,12 @@ static const char *walk_component(struct nameidata *nd, int flags)
 		return handle_dots(nd, nd->last_type);
 	}
 	dentry_dbg(nd->path.dentry, "nd->pathname = %s, nd->last_name = %s\n", nd->pathname, nd->last.name);
+	// 从dentry_cache中查找dentry
 	dentry = lookup_fast(nd);
 	if (IS_ERR(dentry))
 		return ERR_CAST(dentry);
 	if (unlikely(!dentry)) {
+		// 缓存中不存在，则从磁盘查找
 		dentry = lookup_slow(&nd->last, nd->path.dentry, nd->flags);
 		if (IS_ERR(dentry))
 			return ERR_CAST(dentry);
@@ -2535,6 +2542,7 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 			name++;
 		} while (unlikely(*name == '/'));
 		if (unlikely(!*name)) {
+			// 最后一个分量
 OK:
 			/* pathname or trailing symlink, done */
 			if (!depth) {
@@ -4178,12 +4186,15 @@ static struct file *path_openat(struct nameidata *nd,
 		error = do_o_path(nd, flags, file); // 分配文件描述符但不打开文件
 	} else {
 		// 路径查找
+		// path_init会调用rcu_read_lock()
 		const char *s = path_init(nd, flags);
 		while (!(error = link_path_walk(s, nd)) &&
 		       (s = open_last_lookups(nd, file, op)) != NULL)
 			;
 		if (!error)
 			error = do_open(nd, file, op); // 打开文件
+
+		// 调用rcu_read_unlock()
 		terminate_walk(nd);
 	}
 	if (likely(!error)) {
