@@ -1590,6 +1590,8 @@ struct buffer_head *ext4_find_inline_entry(struct inode *dir,
 
 	inode_dbg(dir, "search for %s\n",
 		fname->usr_fname->name);
+
+	// 查找inode位置
 	ret = ext4_get_inode_loc(dir, &is.iloc);
 	if (ret)
 		return ERR_PTR(ret);

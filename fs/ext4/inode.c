@@ -4853,6 +4853,7 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	bh = sb_getblk(sb, block);
 	if (unlikely(!bh))
 		return -ENOMEM;
+	// 检查buffer是否最新，如果有io error，则需要设置buffer为最新
 	if (ext4_buffer_uptodate(bh))
 		goto has_buffer;
 
@@ -4942,9 +4943,11 @@ make_io:
 	 * Read the block from disk.
 	 */
 	trace_ext4_load_inode(sb, ino);
+	// 从磁盘读取block到buffer
 	ext4_read_bh_nowait(bh, REQ_META | REQ_PRIO, NULL,
 			    ext4_simulate_fail(sb, EXT4_SIM_INODE_EIO));
 	blk_finish_plug(&plug);
+	// 等待io完成被唤醒
 	wait_on_buffer(bh);
 	if (!buffer_uptodate(bh)) {
 		if (ret_block)
@@ -4979,6 +4982,7 @@ int ext4_get_inode_loc(struct inode *inode, struct ext4_iloc *iloc)
 	int ret;
 
 	inode_dbg(inode, "\n");
+	// 根据super block，inode number查找
 	ret = __ext4_get_inode_loc(inode->i_sb, inode->i_ino, inode, iloc,
 					&err_blk);
 

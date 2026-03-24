@@ -1536,12 +1536,16 @@ static struct buffer_head *__ext4_find_entry(struct inode *dir,
 
 	*res_dir = NULL;
 	sb = dir->i_sb;
+
+	// 文件名校验
 	namelen = fname->usr_fname->len;
 	if (namelen > EXT4_NAME_LEN)
 		return NULL;
 
 	inode_dbg(dir, "name: %s, search for %s\n",
 		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
+
+	// 检查目录中是否有inline数据，如果有，从inline中查找
 	if (ext4_has_inline_data(dir)) {
 		int has_inline_data = 1;
 		ret = ext4_find_inline_entry(dir, fname, res_dir,
@@ -1708,6 +1712,7 @@ static struct buffer_head *ext4_lookup_entry(struct inode *dir,
 	if (err)
 		return ERR_PTR(err);
 
+	// 从dir中查找文件名
 	bh = __ext4_find_entry(dir, &fname, res_dir, NULL);
 
 	ext4_fname_free_filename(&fname);

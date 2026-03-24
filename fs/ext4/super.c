@@ -164,6 +164,7 @@ static inline void __ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 				  bh_end_io_t *end_io, bool simu_fail)
 {
 	blk_dbg(bh->b_bdev, "end_io %p, simu_fail %d\n", end_io, simu_fail);
+	// 模拟fail，用于开发测试
 	if (simu_fail) {
 		clear_buffer_uptodate(bh);
 		unlock_buffer(bh);
@@ -179,6 +180,7 @@ static inline void __ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 
 	bh->b_end_io = end_io ? end_io : end_buffer_read_sync;
 	get_bh(bh);
+	// 提交buffer到block层，读取数据
 	submit_bh(REQ_OP_READ | op_flags, bh);
 }
 
@@ -188,10 +190,12 @@ void ext4_read_bh_nowait(struct buffer_head *bh, blk_opf_t op_flags,
 	BUG_ON(!buffer_locked(bh));
 
 	blk_dbg(bh->b_bdev, "end_io %p\n", end_io);
+	// 如果当前buffer是最新，说明其他task已经访问过，直接用这个buffer
 	if (ext4_buffer_uptodate(bh)) {
 		unlock_buffer(bh);
 		return;
 	}
+	// 否则，重新读取
 	__ext4_read_bh(bh, op_flags, end_io, simu_fail);
 }
 

@@ -375,10 +375,12 @@ static inline struct buffer_head *__getblk(struct block_device *bdev,
 {
 	gfp_t gfp;
 
+	// 获取address_sapce的flag
 	gfp = mapping_gfp_constraint(bdev->bd_mapping, ~__GFP_FS);
 	gfp |= __GFP_MOVABLE | __GFP_NOFAIL;
 
 	blk_dbg(bdev, "block: %llu, size: %u, gfp: %x\n", block, size, gfp);
+	// 根据块设备获取buffer_head
 	return bdev_getblk(bdev, block, size, gfp);
 }
 
@@ -386,6 +388,7 @@ static inline struct buffer_head *sb_getblk(struct super_block *sb,
 		sector_t block)
 {
 	sb_dbg(sb, "sb: %p, block: %llu\n", sb, (unsigned long long)block);
+	// 会从块设备的address_space中找到对应的buffer_head
 	return __getblk(sb->s_bdev, block, sb->s_blocksize);
 }
 
