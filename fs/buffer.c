@@ -2818,13 +2818,18 @@ static void submit_bh_wbc(blk_opf_t opf, struct buffer_head *bh,
 	if (buffer_prio(bh))
 		opf |= REQ_PRIO;
 
+	// 分配bio
 	bio = bio_alloc(bh->b_bdev, 1, opf, GFP_NOIO);
 
 	fscrypt_set_bio_crypt_ctx_bh(bio, bh, GFP_NOIO);
 
+	// 文件系统block number转换为块设备sector number，比如 b_blocknr 单位4096, 
+	// b_size为4096, 转换成512的扇区号需要乘以8
 	bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
 	bio->bi_write_hint = write_hint;
 
+	// bio和page绑定， bio->bi_io_vec->bv_page指向page
+	// bh_offset 计算data在page中的偏移，page可能是一个大的连续页
 	bio_add_folio_nofail(bio, bh->b_folio, bh->b_size, bh_offset(bh));
 
 	bio->bi_end_io = end_bio_bh_io_sync;
@@ -2834,10 +2839,12 @@ static void submit_bh_wbc(blk_opf_t opf, struct buffer_head *bh,
 	guard_bio_eod(bio);
 
 	if (wbc) {
+		// cgroup控制
 		wbc_init_bio(wbc, bio);
 		wbc_account_cgroup_owner(wbc, bh->b_folio, bh->b_size);
 	}
 
+	// 提交bio
 	submit_bio(bio);
 }
 

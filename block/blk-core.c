@@ -631,9 +631,11 @@ static void __submit_bio(struct bio *bio)
 	if (unlikely(!blk_crypto_bio_prep(&bio)))
 		return;
 
+	// 用plug提示批量提交bio
 	blk_start_plug(&plug);
 
 	if (!bdev_test_flag(bio->bi_bdev, BD_HAS_SUBMIT_BIO)) {
+		// nvme走这里
 		blk_mq_submit_bio(bio);
 	} else if (likely(bio_queue_enter(bio) == 0)) {
 		struct gendisk *disk = bio->bi_bdev->bd_disk;
@@ -720,7 +722,9 @@ static void __submit_bio_noacct_mq(struct bio *bio)
 
 	current->bio_list = bio_list;
 
+	// mapped device提交一个bio可能会产生新的bio
 	do {
+		// 普通nvme设备调用一次
 		__submit_bio(bio);
 	} while ((bio = bio_list_pop(&bio_list[0])));
 
@@ -747,11 +751,13 @@ void submit_bio_noacct_nocheck(struct bio *bio, bool split)
 	 * it is active, and then process them after it returned.
 	 */
 	if (current->bio_list) {
+		// mapped device走这里
 		if (split)
 			bio_list_add_head(&current->bio_list[0], bio);
 		else
 			bio_list_add(&current->bio_list[0], bio);
 	} else if (!bdev_test_flag(bio->bi_bdev, BD_HAS_SUBMIT_BIO)) {
+		// nvme盘会走这里，有自定义submit_io
 		__submit_bio_noacct_mq(bio);
 	} else {
 		__submit_bio_noacct(bio);
@@ -796,10 +802,15 @@ void submit_bio_noacct(struct bio *bio)
 
 	if (should_fail_bio(bio))
 		goto end_io;
+	// read only检查
 	bio_check_ro(bio);
+	// 检查sector有没有重新映射，多个分区会重新映射
 	if (!bio_flagged(bio, BIO_REMAPPED)) {
+		// 检查bio是否超过了块设备的最大扇区范围
 		if (unlikely(bio_check_eod(bio)))
 			goto end_io;
+		// 如果块设备是分区，需要重新映射
+		// LBA需要加上分区偏移量
 		if (bdev_is_partition(bdev) &&
 		    unlikely(blk_partition_remap(bio)))
 			goto end_io;
@@ -813,6 +824,7 @@ void submit_bio_noacct(struct bio *bio)
 		if (WARN_ON_ONCE(bio_op(bio) != REQ_OP_WRITE &&
 				 bio_op(bio) != REQ_OP_ZONE_APPEND))
 			goto end_io;
+		// 检测块设备是否有内部cache feature，没有就不支持flush
 		if (!bdev_write_cache(bdev)) {
 			bio->bi_opf &= ~(REQ_PREFLUSH | REQ_FUA);
 			if (!bio_sectors(bio)) {
@@ -827,6 +839,7 @@ void submit_bio_noacct(struct bio *bio)
 		break;
 	case REQ_OP_WRITE:
 		if (bio->bi_opf & REQ_ATOMIC) {
+			// 检查是否匹配原子写
 			status = blk_validate_atomic_write_op_size(q, bio);
 			if (status != BLK_STS_OK)
 				goto end_io;
@@ -876,6 +889,7 @@ void submit_bio_noacct(struct bio *bio)
 
 	if (blk_throtl_bio(bio))
 		return;
+	// 向块设备提交bio
 	submit_bio_noacct_nocheck(bio, false);
 	return;
 
@@ -910,6 +924,7 @@ static void bio_set_ioprio(struct bio *bio)
  */
 void submit_bio(struct bio *bio)
 {
+	// 更新统计信息
 	if (bio_op(bio) == REQ_OP_READ) {
 		task_io_account_read(bio->bi_iter.bi_size);
 		count_vm_events(PGPGIN, bio_sectors(bio));
@@ -917,7 +932,9 @@ void submit_bio(struct bio *bio)
 		count_vm_events(PGPGOUT, bio_sectors(bio));
 	}
 
+	// 设置bio优先级
 	bio_set_ioprio(bio);
+	// 提交bio，不再进行统计
 	submit_bio_noacct(bio);
 }
 EXPORT_SYMBOL(submit_bio);

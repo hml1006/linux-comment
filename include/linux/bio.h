@@ -369,6 +369,7 @@ extern struct bio_set fs_bio_set;
 static inline struct bio *bio_alloc(struct block_device *bdev,
 		unsigned short nr_vecs, blk_opf_t opf, gfp_t gfp_mask)
 {
+	// 从 bio pool中分配一个 bio
 	return bio_alloc_bioset(bdev, nr_vecs, opf, gfp_mask, &fs_bio_set);
 }
 

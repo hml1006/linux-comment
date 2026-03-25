@@ -3164,12 +3164,14 @@ void blk_mq_submit_bio(struct bio *bio)
 		goto queue_exit;
 	}
 
+	// 检查盘是否支持poll，nvme支持
 	if ((bio->bi_opf & REQ_POLLED) && !blk_mq_can_poll(q)) {
 		bio->bi_status = BLK_STS_NOTSUPP;
 		bio_endio(bio);
 		goto queue_exit;
 	}
 
+	// 如果bio的扇区数大于io允许的大小，则拆分bio，拆分后的bio和原始bio构成链表
 	bio = __bio_split_to_limits(bio, &q->limits, &nr_segs);
 	if (!bio)
 		goto queue_exit;
@@ -3177,7 +3179,9 @@ void blk_mq_submit_bio(struct bio *bio)
 	if (!bio_integrity_prep(bio))
 		goto queue_exit;
 
+	// 发射时间设置
 	blk_mq_bio_issue_init(q, bio);
+	// 尝试merge bio
 	if (blk_mq_attempt_bio_merge(q, bio, nr_segs))
 		goto queue_exit;
 

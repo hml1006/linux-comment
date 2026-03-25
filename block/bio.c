@@ -448,8 +448,10 @@ static struct bio *bio_alloc_percpu_cache(struct block_device *bdev,
 	struct bio_alloc_cache *cache;
 	struct bio *bio;
 
+	// 根据cpu id找到该cpu对应的cache，如果free list中有bio，则直接分配
 	cache = per_cpu_ptr(bs->cache, get_cpu());
 	if (!cache->free_list) {
+		// free_list为空的情况下，把free_list_irq搬到free_list
 		if (READ_ONCE(cache->nr_irq) >= ALLOC_CACHE_THRESHOLD)
 			bio_alloc_irq_cache_splice(cache);
 		if (!cache->free_list) {
@@ -463,6 +465,7 @@ static struct bio *bio_alloc_percpu_cache(struct block_device *bdev,
 	put_cpu();
 
 	if (nr_vecs)
+		// bio_vec和bio一起分配，内存连续的，每个bio_vec记录page，offset，len
 		bio_init_inline(bio, bdev, nr_vecs, opf);
 	else
 		bio_init(bio, bdev, NULL, nr_vecs, opf);
@@ -516,6 +519,7 @@ struct bio *bio_alloc_bioset(struct block_device *bdev, unsigned short nr_vecs,
 	if (WARN_ON_ONCE(!mempool_initialized(&bs->bvec_pool) && nr_vecs > 0))
 		return NULL;
 
+	// 如果flag中包含REQ_ALLOC_CACHE，并且cache不为空，并且nr_vecs小于等于BIO_INLINE_VECS，则从cache中分配bio
 	if (opf & REQ_ALLOC_CACHE) {
 		if (bs->cache && nr_vecs <= BIO_INLINE_VECS) {
 			bio = bio_alloc_percpu_cache(bdev, nr_vecs, opf,
@@ -549,12 +553,14 @@ struct bio *bio_alloc_bioset(struct block_device *bdev, unsigned short nr_vecs,
 	 * blocking to the rescuer workqueue before we retry with the original
 	 * gfp_flags.
 	 */
+	 // bio_list是DM（Device Mapper）、MD（Multiple Device）这种设备使用的，比如RAID
 	if (current->bio_list &&
 	    (!bio_list_empty(&current->bio_list[0]) ||
 	     !bio_list_empty(&current->bio_list[1])) &&
 	    bs->rescue_workqueue)
 		gfp_mask &= ~__GFP_DIRECT_RECLAIM;
 
+	// 从内存池分配
 	p = mempool_alloc(&bs->bio_pool, gfp_mask);
 	if (!p && gfp_mask != saved_gfp) {
 		punt_bios_to_rescuer(bs);
@@ -563,13 +569,25 @@ struct bio *bio_alloc_bioset(struct block_device *bdev, unsigned short nr_vecs,
 	}
 	if (unlikely(!p))
 		return NULL;
+	// 检查内存池备用空间是否低于水位线
 	if (!mempool_is_saturated(&bs->bio_pool))
 		opf &= ~REQ_ALLOC_CACHE;
 
+	/**
+	* front_pad 作用示例：
+	┌─────────────────────┐
+	│   struct dm_io      │ ← front_pad 区域
+	├─────────────────────┤
+	│   struct bio        │ ← bio 指针指向这里
+	├─────────────────────┤
+	│   bio_vec[]         │
+	└─────────────────────┘
+	*/
 	bio = p + bs->front_pad;
 	if (nr_vecs > BIO_INLINE_VECS) {
 		struct bio_vec *bvl = NULL;
 
+		// bio_vec inline数量不够的话，从pool中分配
 		bvl = bvec_alloc(&bs->bvec_pool, &nr_vecs, gfp_mask);
 		if (!bvl && gfp_mask != saved_gfp) {
 			punt_bios_to_rescuer(bs);
@@ -984,9 +1002,11 @@ void __bio_add_page(struct bio *bio, struct page *page,
 	WARN_ON_ONCE(bio_flagged(bio, BIO_CLONED));
 	WARN_ON_ONCE(bio_full(bio, len));
 
+	// 判断是否是p2p dma设备使用的内存，比如GPU和nvme绕过cpu直连的内存
 	if (is_pci_p2pdma_page(page))
 		bio->bi_opf |= REQ_NOMERGE;
 
+	// 填充bio_vec
 	bvec_set_page(&bio->bi_io_vec[bio->bi_vcnt], page, len, off);
 	bio->bi_iter.bi_size += len;
 	bio->bi_vcnt++;
@@ -1049,9 +1069,11 @@ EXPORT_SYMBOL(bio_add_page);
 void bio_add_folio_nofail(struct bio *bio, struct folio *folio, size_t len,
 			  size_t off)
 {
+	// 计算page号
 	unsigned long nr = off / PAGE_SIZE;
 
 	WARN_ON_ONCE(len > UINT_MAX);
+	// folio是连续页，folio_page是取folio中的第nr页
 	__bio_add_page(bio, folio_page(folio, nr), len, off % PAGE_SIZE);
 }
 EXPORT_SYMBOL_GPL(bio_add_folio_nofail);
