@@ -506,7 +506,9 @@ static struct request *__blk_mq_alloc_requests(struct blk_mq_alloc_data *data)
 		data->flags |= BLK_MQ_REQ_NOWAIT;
 
 retry:
+	// 获取软件队列上下文
 	data->ctx = blk_mq_get_ctx(q);
+	// 获取硬件队列上下文
 	data->hctx = blk_mq_map_queue(data->cmd_flags, data->ctx);
 
 	if (q->elevator) {
@@ -531,6 +533,7 @@ retry:
 				ops->limit_depth(data->cmd_flags, data);
 		}
 	} else {
+		// tags增加活跃用户计数
 		blk_mq_tag_busy(data->hctx);
 	}
 
@@ -554,6 +557,7 @@ retry:
 	 * case just retry the hctx assignment and tag allocation as CPU hotplug
 	 * should have migrated us to an online CPU by now.
 	 */
+	// 获取 queue中的一个tag，tag是nvme queue中的command索引
 	tag = blk_mq_get_tag(data);
 	if (tag == BLK_MQ_NO_TAG) {
 		if (data->flags & BLK_MQ_REQ_NOWAIT)
@@ -3039,6 +3043,7 @@ static struct request *blk_mq_get_new_requests(struct request_queue *q,
 	};
 	struct request *rq;
 
+	// 限流
 	rq_qos_throttle(q, bio);
 
 	if (plug) {
@@ -3047,6 +3052,7 @@ static struct request *blk_mq_get_new_requests(struct request_queue *q,
 		data.cached_rqs = &plug->cached_rqs;
 	}
 
+	// 从队列中获取一个request，一个request对应一条nvme command
 	rq = __blk_mq_alloc_requests(&data);
 	if (unlikely(!rq))
 		rq_qos_cleanup(q, bio);
@@ -3192,8 +3198,10 @@ void blk_mq_submit_bio(struct bio *bio)
 
 new_request:
 	if (rq) {
+		// 更新rq时间戳，限流睡眠
 		blk_mq_use_cached_rq(rq, plug, bio);
 	} else {
+		// 创建新的request
 		rq = blk_mq_get_new_requests(q, plug, bio);
 		if (unlikely(!rq)) {
 			if (bio->bi_opf & REQ_NOWAIT)
@@ -3206,6 +3214,7 @@ new_request:
 
 	rq_qos_track(q, rq, bio);
 
+	// 绑定bio到request
 	blk_mq_bio_to_request(rq, bio, nr_segs);
 
 	ret = blk_crypto_rq_get_keyslot(rq);
@@ -3230,6 +3239,7 @@ new_request:
 	hctx = rq->mq_hctx;
 	if ((rq->rq_flags & RQF_USE_SCHED) ||
 	    (hctx->dispatch_busy && (q->nr_hw_queues == 1 || !is_sync))) {
+		// 把request插入软件队列
 		blk_mq_insert_request(rq, 0);
 		blk_mq_run_hw_queue(hctx, true);
 	} else {

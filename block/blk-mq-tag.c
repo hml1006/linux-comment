@@ -136,6 +136,7 @@ unsigned long blk_mq_get_tags(struct blk_mq_alloc_data *data, int nr_tags,
 
 unsigned int blk_mq_get_tag(struct blk_mq_alloc_data *data)
 {
+	// 从硬件队列获取tags
 	struct blk_mq_tags *tags = blk_mq_tags_from_data(data);
 	struct sbitmap_queue *bt;
 	struct sbq_wait_state *ws;
@@ -155,6 +156,7 @@ unsigned int blk_mq_get_tag(struct blk_mq_alloc_data *data)
 		tag_offset = tags->nr_reserved_tags;
 	}
 
+	// 从bitmap中查找可用的tag
 	tag = __blk_mq_get_tag(data, bt);
 	if (tag != BLK_MQ_NO_TAG)
 		goto found_tag;
