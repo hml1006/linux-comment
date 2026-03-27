@@ -254,7 +254,7 @@ path lookup过程是顺着dentry树从上到下查找的，如果遇到符号链
 +++++ open_last_lookups
 +++++ do_open | 打开文件
 ++++++ vfs_open
-+++++++ do_dentry_open
++++++++ do_dentry_open  | 将 inode->i_fop 赋给 file->f_op
 ++++++++ f->f_op->open | 通过函数指针调用ext4_file_open
 +++++ terminate_walk | 结束path walk
 ++++ restore_nameidata | 恢复nameidata结构体
