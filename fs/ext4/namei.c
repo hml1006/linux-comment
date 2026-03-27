@@ -143,6 +143,7 @@ static struct buffer_head *__ext4_read_dirblock(struct inode *inode,
 	if (ext4_simulate_fail(inode->i_sb, EXT4_SIM_DIRBLOCK_EIO))
 		bh = ERR_PTR(-EIO);
 	else
+		// 读取block
 		bh = ext4_bread(NULL, inode, block, 0);
 	if (IS_ERR(bh)) {
 		__ext4_warning(inode->i_sb, func, line,
@@ -1547,6 +1548,8 @@ static struct buffer_head *__ext4_find_entry(struct inode *dir,
 
 	// 检查目录中是否有inline数据，如果有，从inline中查找
 	if (ext4_has_inline_data(dir)) {
+		inode_dbg(dir, "name: %s, inline found!\n",
+			d_find_alias_rcu(dir)->d_name.name);
 		int has_inline_data = 1;
 		ret = ext4_find_inline_entry(dir, fname, res_dir,
 					     &has_inline_data);
@@ -1567,6 +1570,7 @@ static struct buffer_head *__ext4_find_entry(struct inode *dir,
 		goto restart;
 	}
 	if (is_dx(dir)) {
+		// HTree查找
 		ret = ext4_dx_find_entry(dir, fname, res_dir);
 		/*
 		 * On success, or if the error was file not found,
@@ -1607,6 +1611,7 @@ restart:
 			else
 				ra_max = nblocks - block;
 			ra_max = min(ra_max, ARRAY_SIZE(bh_use));
+			// 预读一批block，提交后不等待
 			retval = ext4_bread_batch(dir, block, ra_max,
 						  false /* wait */, bh_use);
 			if (retval) {
@@ -1617,6 +1622,7 @@ restart:
 		}
 		if ((bh = bh_use[ra_ptr++]) == NULL)
 			goto next;
+		// 等待IO完成
 		wait_on_buffer(bh);
 		if (!buffer_uptodate(bh)) {
 			EXT4_ERROR_INODE_ERR(dir, EIO,
@@ -1734,6 +1740,7 @@ static struct buffer_head * ext4_dx_find_entry(struct inode *dir,
 #endif
 	inode_dbg(dir, "name: %s, search for %s\n",
 		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
+	// 查找dx frame
 	frame = dx_probe(fname, dir, NULL, frames);
 	if (IS_ERR(frame))
 		return ERR_CAST(frame);

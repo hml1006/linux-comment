@@ -3887,7 +3887,8 @@ static struct dentry *lookup_fast_for_open(struct nameidata *nd, int open_flag)
 	dentry = lookup_fast(nd);
 	if (IS_ERR_OR_NULL(dentry))
 		return dentry;
-	dentry_dbg(dentry, "lookup_fast found name: %s, inode: %lu\n", dentry->d_name.name, dentry->d_inode->i_ino);
+	dentry_dbg(dentry, "lookup_fast found name: %s, inode: %p\n", dentry->d_name.name, dentry->d_inode);
+	inode_dbg(dentry->d_inode, "inode: %p\n", dentry->d_inode);
 
 	if (open_flag & O_CREAT) {
 		/* Discard negative dentries. Need inode_lock to do the create */
@@ -4226,7 +4227,7 @@ struct file *do_filp_open(int dfd, struct filename *pathname,
 
 	// 设置进程文件查找结构,保存旧的
 	set_nameidata(&nd, dfd, pathname, NULL);
-	vfs_dbg(pathname->name, "nameidata initlized\n");
+	nd_dbg((&nd), "nameidata initlized\n");
 	// 查找path并打开文件
 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
 	if (unlikely(filp == ERR_PTR(-ECHILD)))

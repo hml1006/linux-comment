@@ -209,8 +209,10 @@ int ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 		return 0;
 	}
 
+	// 提交buffer到block层，读取数据
 	__ext4_read_bh(bh, op_flags, end_io, simu_fail);
 
+	// 等待io返回
 	wait_on_buffer(bh);
 	if (buffer_uptodate(bh))
 		return 0;
@@ -220,10 +222,12 @@ int ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 int ext4_read_bh_lock(struct buffer_head *bh, blk_opf_t op_flags, bool wait)
 {
 	lock_buffer(bh);
+	// 不用等待io返回
 	if (!wait) {
 		ext4_read_bh_nowait(bh, op_flags, NULL, false);
 		return 0;
 	}
+	// 需要等待io返回
 	return ext4_read_bh(bh, op_flags, NULL, false);
 }
 

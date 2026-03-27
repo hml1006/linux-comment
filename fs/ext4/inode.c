@@ -1070,6 +1070,7 @@ int ext4_bread_batch(struct inode *inode, ext4_lblk_t block, int bh_count,
 		}
 	}
 
+	// 批量读取block
 	for (i = 0; i < bh_count; i++)
 		/* Note that NULL bhs[i] is valid because of holes. */
 		if (bhs[i] && !ext4_buffer_uptodate(bhs[i]))
@@ -1078,6 +1079,7 @@ int ext4_bread_batch(struct inode *inode, ext4_lblk_t block, int bh_count,
 	if (!wait)
 		return 0;
 
+	// 等待io完成
 	for (i = 0; i < bh_count; i++)
 		if (bhs[i])
 			wait_on_buffer(bhs[i]);
@@ -4810,8 +4812,6 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	struct blk_plug		plug;
 	int			inodes_per_block, inode_offset;
 
-	inode_dbg(inode, "inode addr = %p, inode = %lu\n",
-		inode, ino);
 	iloc->bh = NULL;
 	if (ino < EXT4_ROOT_INO ||
 	    ino > le32_to_cpu(EXT4_SB(sb)->s_es->s_inodes_count))

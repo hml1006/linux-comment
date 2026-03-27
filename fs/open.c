@@ -1457,7 +1457,7 @@ static int do_sys_openat2(int dfd, const char __user *filename,
 	}
 	putname(tmp);
 	if (!strncmp("/mnt/", tmp->name, strlen("/mnt/")) &&
-		!strncmp(current->comm, "vim", strlen("cat"))) {
+		!strncmp(current->comm, "cat", strlen("cat"))) {
 		vfs_dbg_disable();
 	}
 	return fd;
