@@ -9,6 +9,7 @@
  */
 
 #include "linux/dbg.h"
+#include "linux/printk.h"
 #include <linux/syscalls.h>
 #include <linux/export.h>
 #include <linux/capability.h>
@@ -3679,6 +3680,7 @@ static int do_new_mount(const struct path *path, const char *fstype,
 	const char *subtype = NULL;
 	int err = 0;
 
+	dbg("dev: %s, fstype: %s, path: %s\n", name, fstype, path->dentry->d_name.name);
 	if (!fstype)
 		return -EINVAL;
 
@@ -3958,6 +3960,7 @@ int path_mount(const char *dev_name, const struct path *path,
 	unsigned int mnt_flags = 0, sb_flags;
 	int ret;
 
+	dbg("dev: %s, type: %s, path: %s\n", dev_name, type_page, path->dentry->d_name.name);
 	/* Discard magic */
 	if ((flags & MS_MGC_MSK) == MS_MGC_VAL)
 		flags &= ~MS_MGC_MSK;
@@ -4037,6 +4040,7 @@ int do_mount(const char *dev_name, const char __user *dir_name,
 	struct path path __free(path_put) = {};
 	int ret;
 
+	dbg("dev: %s, type: %s\n", dev_name, type_page);
 	ret = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path);
 	if (ret)
 		return ret;
@@ -4228,8 +4232,11 @@ SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
 	if (IS_ERR(options))
 		goto out_data;
 
+	vfs_dbg_enable();
+	dbg("fs type: %s, dev: %s\n", kernel_type, kernel_dev);
 	ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
 
+	vfs_dbg_disable();
 	kfree(options);
 out_data:
 	kfree(kernel_dev);

@@ -101,6 +101,12 @@ static inline bool is_inode_ext4(const struct inode *inode)
         return false;
 }
 
+#define dbg(fmt, ...)       do { \
+        if (is_vfs_dbg_enabled()) { \
+                printk(KERN_INFO "[%s] "fmt, __func__, ##__VA_ARGS__); \
+        } \
+} while (0)
+
 #define vfs_dbg(pathname, fmt, ...)       do { \
         if (is_vfs_dbg_enabled() && !strncmp(pathname, FILTER_PATH, strlen(FILTER_PATH))) { \
                 printk(KERN_INFO "[%s] path: %s => "fmt, __func__, pathname, ##__VA_ARGS__); \

@@ -228,3 +228,26 @@ devpts_fs_type::next -down-> ext4_fs_type
 @enduml
 
 ```
+
+# 挂载过程
+
+```plantuml
+@startsalt
+{{T
++ mount | 系统调用入口，拷贝用户空间文件系统类型，设备路径，挂载参数到内核空间
+++ do_mount
++++ path_mount | 获取当前文件偏移
+++++ do_new_mount
++++++ do_new_mount_fc
+++++++ fc_mount
++++++++ vfs_get_tree
+++++++++ fc->ops->get_tree()    | 调用文件系统操作函数，如ext4_get_tree
++++++++++ ext4_get_tree
+++++++++++ get_tree_bdev
++++++++++++ get_tree_bdev_flags
+++++++ do_add_mount
+}}
+
+
+@endsalt
+```

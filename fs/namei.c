@@ -2713,6 +2713,7 @@ static int path_lookupat(struct nameidata *nd, unsigned flags, struct path *path
 	const char *s = path_init(nd, flags);
 	int err;
 
+	dbg("path: %s\n", nd->pathname);
 	if (unlikely(flags & LOOKUP_DOWN) && !IS_ERR(s)) {
 		err = handle_lookup_down(nd);
 		if (unlikely(err < 0))
@@ -2749,6 +2750,7 @@ int filename_lookup(int dfd, struct filename *name, unsigned flags,
 	if (IS_ERR(name))
 		return PTR_ERR(name);
 	set_nameidata(&nd, dfd, name, root);
+	dbg("filename: %s\n", name->name);
 	retval = path_lookupat(&nd, flags | LOOKUP_RCU, path);
 	if (unlikely(retval == -ECHILD))
 		retval = path_lookupat(&nd, flags, path);
@@ -3259,6 +3261,7 @@ int user_path_at(int dfd, const char __user *name, unsigned flags,
 		 struct path *path)
 {
 	struct filename *filename = getname_flags(name, flags);
+	dbg("mount dir: %s\n", filename->name);
 	int ret = filename_lookup(dfd, filename, flags, path, NULL);
 
 	putname(filename);
