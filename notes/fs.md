@@ -236,16 +236,31 @@ devpts_fs_type::next -down-> ext4_fs_type
 {{T
 + mount | 系统调用入口，拷贝用户空间文件系统类型，设备路径，挂载参数到内核空间
 ++ do_mount
++++ user_path_at    | 拷贝用户空间传递的目录到path
 +++ path_mount | 获取当前文件偏移
 ++++ do_new_mount
-+++++ do_new_mount_fc
++++++ file_system_type | 获取文件系统类型file_system_type
++++++ fs_context_for_mount | 获取文件系统上下文
++++++ do_new_mount_fc   | 根据sb配置创建新的挂载
 ++++++ fc_mount
 +++++++ vfs_get_tree
 ++++++++ fc->ops->get_tree()    | 调用文件系统操作函数，如ext4_get_tree
 +++++++++ ext4_get_tree
 ++++++++++ get_tree_bdev
 +++++++++++ get_tree_bdev_flags
-++++++ do_add_mount
+++++++++++++ lookup_bdev    | 查找设备
++++++++++++++ kern_path | 构造struct filename并查找
+++++++++++++++ filename_lookup | 查找文件
++++++++++++++++ path_lookupat | 路径查找，参考文件open过程
++++++++++++++ d_backing_inode | 获取设备inode和dev_t设备号
+++++++++++++ sget_dev       | 根据设备号查找或者创建sb
++++++++++++++ sget_fc       | 查找或者创建sb
+++++++++++++++ super_s_dev_test | 根据dev_t设备号检查设备是否已经挂载
+++++++++++++++ alloc_super | 没有查到已经挂载的sb,则分配新的sb
+++++++++++++++ super_s_dev_set | 设置super_block的dev_t设备号
+++++++ mount_too_revealing  | 检查挂载是否过于暴露，比如禁止非root用户挂载proc，sys文件系统，防止暴露内部信息
+++++++ mnt_warn_timestamp_expiry    | 检查文件系统时间戳是否即将达到上限，当前系统时间加上 30 年，超过s_time_max，函数就会触发警告
+++++++ do_add_mount | 把当前mount添加到namespace的挂载树
 }}
 
 

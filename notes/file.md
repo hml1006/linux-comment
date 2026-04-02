@@ -256,6 +256,7 @@ path lookup过程是顺着dentry树从上到下查找的，如果遇到符号链
 ++++++ vfs_open
 +++++++ do_dentry_open  | 将 inode->i_fop 赋给 file->f_op
 ++++++++ f->f_op->open | 通过函数指针调用ext4_file_open
++++++++++ ext4_file_open | 更新最后挂载路径，绑定jounal inode
 +++++ terminate_walk | 结束path walk
 ++++ restore_nameidata | 恢复nameidata结构体
 +++ put_unused_fd       | 如果打开失败，回收描述符
