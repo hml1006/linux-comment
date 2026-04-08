@@ -3262,6 +3262,9 @@ int user_path_at(int dfd, const char __user *name, unsigned flags,
 {
 	struct filename *filename = getname_flags(name, flags);
 	dbg("mount dir: %s\n", filename->name);
+	// 根据文件名查找
+	// path->dentry: 指向挂载点目录（如 /mnt/usb）在父文件系统中的 dentry
+	// path->mnt: 指向这个挂载点所属的父文件系统的 vfsmount 实例
 	int ret = filename_lookup(dfd, filename, flags, path, NULL);
 
 	putname(filename);
