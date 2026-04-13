@@ -17,6 +17,7 @@
  *        David S. Miller (davem@caip.rutgers.edu), 1995
  */
 
+#include "linux/dbg.h"
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/fs.h>
@@ -163,6 +164,8 @@ MODULE_ALIAS("ext3");
 static inline void __ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 				  bh_end_io_t *end_io, bool simu_fail)
 {
+	blk_dbg(bh->b_bdev, "end_io %p, simu_fail %d\n", end_io, simu_fail);
+	// 模拟fail，用于开发测试
 	if (simu_fail) {
 		clear_buffer_uptodate(bh);
 		unlock_buffer(bh);
@@ -178,6 +181,7 @@ static inline void __ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 
 	bh->b_end_io = end_io ? end_io : end_buffer_read_sync;
 	get_bh(bh);
+	// 提交buffer到block层，读取数据
 	submit_bh(REQ_OP_READ | op_flags, bh);
 }
 
@@ -186,10 +190,13 @@ void ext4_read_bh_nowait(struct buffer_head *bh, blk_opf_t op_flags,
 {
 	BUG_ON(!buffer_locked(bh));
 
+	blk_dbg(bh->b_bdev, "end_io %p\n", end_io);
+	// 如果当前buffer是最新，说明其他task已经访问过，直接用这个buffer
 	if (ext4_buffer_uptodate(bh)) {
 		unlock_buffer(bh);
 		return;
 	}
+	// 否则，重新读取
 	__ext4_read_bh(bh, op_flags, end_io, simu_fail);
 }
 
@@ -203,8 +210,10 @@ int ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 		return 0;
 	}
 
+	// 提交buffer到block层，读取数据
 	__ext4_read_bh(bh, op_flags, end_io, simu_fail);
 
+	// 等待io返回
 	wait_on_buffer(bh);
 	if (buffer_uptodate(bh))
 		return 0;
@@ -214,10 +223,12 @@ int ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 int ext4_read_bh_lock(struct buffer_head *bh, blk_opf_t op_flags, bool wait)
 {
 	lock_buffer(bh);
+	// 不用等待io返回
 	if (!wait) {
 		ext4_read_bh_nowait(bh, op_flags, NULL, false);
 		return 0;
 	}
+	// 需要等待io返回
 	return ext4_read_bh(bh, op_flags, NULL, false);
 }
 
@@ -280,6 +291,7 @@ void ext4_sb_breadahead_unmovable(struct super_block *sb, sector_t block)
 	struct buffer_head *bh = bdev_getblk(sb->s_bdev, block,
 			sb->s_blocksize, GFP_NOWAIT);
 
+	sb_dbg(sb, "block %llu, buffer_head %p\n", block, bh);
 	if (likely(bh)) {
 		if (trylock_buffer(bh))
 			ext4_read_bh_nowait(bh, REQ_RAHEAD, NULL, false);

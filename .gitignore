@@ -54,6 +54,7 @@
 *.tar
 *.xz
 *.zst
+*.deb
 Module.symvers
 dtbs-list
 modules.order
@@ -184,3 +185,7 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+
+# disk image file
+/*.img
+/rootfs/

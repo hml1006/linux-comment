@@ -25,6 +25,7 @@
  *	Theodore Ts'o, 2002
  */
 
+#include <linux/dbg.h>
 #include <linux/fs.h>
 #include <linux/pagemap.h>
 #include <linux/time.h>
@@ -131,6 +132,7 @@ static struct buffer_head *__ext4_read_dirblock(struct inode *inode,
 	struct ext4_dir_entry *dirent;
 	int is_dx_block = 0;
 
+	inode_dbg(inode, "name: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
 	if (block >= inode->i_size >> inode->i_blkbits) {
 		ext4_error_inode(inode, func, line, block,
 		       "Attempting to read directory block (%u) that is past i_size (%llu)",
@@ -141,6 +143,7 @@ static struct buffer_head *__ext4_read_dirblock(struct inode *inode,
 	if (ext4_simulate_fail(inode->i_sb, EXT4_SIM_DIRBLOCK_EIO))
 		bh = ERR_PTR(-EIO);
 	else
+		// 读取block
 		bh = ext4_bread(NULL, inode, block, 0);
 	if (IS_ERR(bh)) {
 		__ext4_warning(inode->i_sb, func, line,
@@ -786,7 +789,8 @@ dx_probe(struct ext4_filename *fname, struct inode *dir,
 	u32 hash;
 	ext4_lblk_t block;
 	ext4_lblk_t blocks[EXT4_HTREE_LEVEL];
-
+	inode_dbg(dir, "name: %s, search for %s\n",
+		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
 	memset(frame_in, 0, EXT4_HTREE_LEVEL * sizeof(frame_in[0]));
 	frame->bh = ext4_read_dirblock(dir, 0, INDEX);
 	if (IS_ERR(frame->bh))
@@ -1533,11 +1537,19 @@ static struct buffer_head *__ext4_find_entry(struct inode *dir,
 
 	*res_dir = NULL;
 	sb = dir->i_sb;
+
+	// 文件名校验
 	namelen = fname->usr_fname->len;
 	if (namelen > EXT4_NAME_LEN)
 		return NULL;
 
+	inode_dbg(dir, "name: %s, search for %s\n",
+		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
+
+	// 检查目录中是否有inline数据，如果有，从inline中查找
 	if (ext4_has_inline_data(dir)) {
+		inode_dbg(dir, "name: %s, inline found!\n",
+			d_find_alias_rcu(dir)->d_name.name);
 		int has_inline_data = 1;
 		ret = ext4_find_inline_entry(dir, fname, res_dir,
 					     &has_inline_data);
@@ -1558,6 +1570,7 @@ static struct buffer_head *__ext4_find_entry(struct inode *dir,
 		goto restart;
 	}
 	if (is_dx(dir)) {
+		// HTree查找
 		ret = ext4_dx_find_entry(dir, fname, res_dir);
 		/*
 		 * On success, or if the error was file not found,
@@ -1598,6 +1611,7 @@ restart:
 			else
 				ra_max = nblocks - block;
 			ra_max = min(ra_max, ARRAY_SIZE(bh_use));
+			// 预读一批block，提交后不等待
 			retval = ext4_bread_batch(dir, block, ra_max,
 						  false /* wait */, bh_use);
 			if (retval) {
@@ -1608,6 +1622,7 @@ restart:
 		}
 		if ((bh = bh_use[ra_ptr++]) == NULL)
 			goto next;
+		// 等待IO完成
 		wait_on_buffer(bh);
 		if (!buffer_uptodate(bh)) {
 			EXT4_ERROR_INODE_ERR(dir, EIO,
@@ -1693,13 +1708,17 @@ static struct buffer_head *ext4_lookup_entry(struct inode *dir,
 	int err;
 	struct ext4_filename fname;
 	struct buffer_head *bh;
-
+	inode_dbg(dir, "parent inode path %s, search for %s\n",
+		d_find_alias_rcu(dir)->d_name.name, dentry->d_name.name);
+	
+	// 填充要查找的数据结构
 	err = ext4_fname_prepare_lookup(dir, dentry, &fname);
 	if (err == -ENOENT)
 		return NULL;
 	if (err)
 		return ERR_PTR(err);
 
+	// 从dir中查找文件名
 	bh = __ext4_find_entry(dir, &fname, res_dir, NULL);
 
 	ext4_fname_free_filename(&fname);
@@ -1718,6 +1737,9 @@ static struct buffer_head * ext4_dx_find_entry(struct inode *dir,
 #ifdef CONFIG_FS_ENCRYPTION
 	*res_dir = NULL;
 #endif
+	inode_dbg(dir, "name: %s, search for %s\n",
+		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
+	// 查找dx frame
 	frame = dx_probe(fname, dir, NULL, frames);
 	if (IS_ERR(frame))
 		return ERR_CAST(frame);
@@ -1757,6 +1779,9 @@ success:
 	return bh;
 }
 
+/**
+* dir为父目录的inode，dentry为要查找的目录项，内放要查找的文件名
+*/
 static struct dentry *ext4_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 {
 	struct inode *inode;
@@ -1765,7 +1790,8 @@ static struct dentry *ext4_lookup(struct inode *dir, struct dentry *dentry, unsi
 
 	if (dentry->d_name.len > EXT4_NAME_LEN)
 		return ERR_PTR(-ENAMETOOLONG);
-
+	inode_dbg(dir, "name: %s, search for %s\n",
+		d_find_alias_rcu(dir)->d_name.name, dentry->d_name.name);
 	bh = ext4_lookup_entry(dir, dentry, &de);
 	if (IS_ERR(bh))
 		return ERR_CAST(bh);

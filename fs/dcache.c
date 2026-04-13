@@ -15,6 +15,7 @@
  * the dcache entry is deleted or garbage collected.
  */
 
+#include <linux/dbg.h>
 #include <linux/ratelimit.h>
 #include <linux/string.h>
 #include <linux/mm.h>
@@ -2306,6 +2307,7 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 	struct hlist_bl_node *node;
 	struct dentry *dentry;
 
+	// hash key的生成方式是把parent和name一起进行hash
 	/*
 	 * Note: There is significant duplication with __d_lookup_rcu which is
 	 * required to prevent single threaded performance regressions
@@ -2315,6 +2317,10 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 
 	if (unlikely(parent->d_flags & DCACHE_OP_COMPARE))
 		return __d_lookup_rcu_op_compare(parent, name, seqp);
+
+	char search_name[32] = {0};
+	strncpy(search_name, str, hashlen_len(hashlen) >=31 ? 31 : hashlen_len(hashlen));
+	dentry_dbg(parent, "search for: %s\n", search_name);
 
 	/*
 	 * The hash list is protected using RCU.
@@ -2350,6 +2356,7 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 		 * we are still guaranteed NUL-termination of ->d_name.name.
 		 */
 		seq = raw_seqcount_begin(&dentry->d_seq);
+		// hash key匹配上后，在比较parent，name length，name内容
 		if (dentry->d_parent != parent)
 			continue;
 		if (dentry->d_name.hash_len != hashlen)
@@ -2368,6 +2375,7 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 		if (unlikely(d_unhashed(dentry)))
 			continue;
 		*seqp = seq;
+		dentry_dbg(parent, "found: %s\n", search_name);
 		return dentry;
 	}
 	return NULL;
@@ -2422,6 +2430,7 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 	struct dentry *found = NULL;
 	struct dentry *dentry;
 
+	dentry_dbg(parent, "search for: %s\n", name->name);
 	/*
 	 * Note: There is significant duplication with __d_lookup_rcu which is
 	 * required to prevent single threaded performance regressions
@@ -2459,6 +2468,7 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 			goto next;
 
 		dentry->d_lockref.count++;
+		dentry_dbg(parent, "found: %s\n", name->name);
 		found = dentry;
 		spin_unlock(&dentry->d_lock);
 		break;
@@ -2601,6 +2611,7 @@ struct dentry *d_alloc_parallel(struct dentry *parent,
 	unsigned int hash = name->hash;
 	struct hlist_bl_head *b = in_lookup_hash(parent, hash);
 	struct hlist_bl_node *node;
+	// 申请一个新的dentry
 	struct dentry *new = __d_alloc(parent->d_sb, name);
 	struct dentry *dentry;
 	unsigned seq, r_seq, d_seq;
@@ -2618,6 +2629,7 @@ struct dentry *d_alloc_parallel(struct dentry *parent,
 
 retry:
 	rcu_read_lock();
+	// 通过seqlock等待父目录修改操作完成
 	seq = smp_load_acquire(&parent->d_inode->i_dir_seq);
 	r_seq = read_seqbegin(&rename_lock);
 	dentry = __d_lookup_rcu(parent, name, &d_seq);
@@ -2678,6 +2690,7 @@ retry:
 		 * wait for them to finish
 		 */
 		spin_lock(&dentry->d_lock);
+		// 并行查找，需要加入wq等待第一个查找完成
 		d_wait_lookup(dentry);
 		/*
 		 * it's not in-lookup anymore; in principle we should repeat
@@ -2700,6 +2713,7 @@ retry:
 	}
 	rcu_read_unlock();
 	new->d_wait = wq;
+	// 第一个并行的lookup，直接加入in_lookup_hash表并返回
 	hlist_bl_add_head(&new->d_u.d_in_lookup_hash, b);
 	hlist_bl_unlock(b);
 	return new;

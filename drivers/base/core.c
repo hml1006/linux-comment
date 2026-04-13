@@ -3687,6 +3687,7 @@ int device_add(struct device *dev)
 		fw_devlink_link_device(dev);
 	}
 
+	// 调用驱动probe
 	bus_probe_device(dev);
 
 	/*

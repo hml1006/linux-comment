@@ -239,6 +239,7 @@ int driver_register(struct device_driver *drv)
 		pr_warn("Driver '%s' needs updating - please use "
 			"bus_type methods\n", drv->name);
 
+	// 查找驱动是否在该类型总线上注册过
 	other = driver_find(drv->name, drv->bus);
 	if (other) {
 		pr_err("Error: Driver '%s' is already registered, "
@@ -246,6 +247,7 @@ int driver_register(struct device_driver *drv)
 		return -EBUSY;
 	}
 
+	// 向总线添加驱动
 	ret = bus_add_driver(drv);
 	if (ret)
 		return ret;

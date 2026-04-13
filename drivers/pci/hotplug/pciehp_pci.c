@@ -38,6 +38,7 @@ int pciehp_configure_device(struct controller *ctrl)
 
 	pci_lock_rescan_remove();
 
+	// 获取 0 号pci设备，如果存在，不需要添加
 	dev = pci_get_slot(parent, PCI_DEVFN(0, 0));
 	if (dev) {
 		/*
@@ -51,6 +52,7 @@ int pciehp_configure_device(struct controller *ctrl)
 		goto out;
 	}
 
+	// 扫描总线设备
 	num = pci_scan_slot(parent, PCI_DEVFN(0, 0));
 	if (num == 0) {
 		ctrl_err(ctrl, "No new device found\n");

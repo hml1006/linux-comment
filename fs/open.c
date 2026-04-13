@@ -5,6 +5,7 @@
  *  Copyright (C) 1991, 1992  Linus Torvalds
  */
 
+#include <linux/dbg.h>
 #include <linux/string.h>
 #include <linux/mm.h>
 #include <linux/file.h>
@@ -891,6 +892,7 @@ static int do_dentry_open(struct file *f,
 	struct inode *inode = f->f_path.dentry->d_inode;
 	int error;
 
+	dentry_dbg(f->__f_path.dentry, "inode %lu\n", f->__f_path.dentry->d_inode->i_ino);
 	path_get(&f->f_path);
 	f->f_inode = inode;
 	f->f_mapping = inode->i_mapping;
@@ -917,6 +919,7 @@ static int do_dentry_open(struct file *f,
 	if (S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode))
 		f->f_mode |= FMODE_ATOMIC_POS;
 
+	// 获取文件操作函数
 	f->f_op = fops_get(inode->i_fop);
 	if (WARN_ON(!f->f_op)) {
 		error = -ENODEV;
@@ -1078,6 +1081,7 @@ int vfs_open(const struct path *path, struct file *file)
 	int ret;
 
 	file->__f_path = *path;
+	dentry_dbg(file->__f_path.dentry, "inode %lu\n", file->__f_path.dentry->d_inode->i_ino);
 	ret = do_dentry_open(file, NULL);
 	if (!ret) {
 		/*

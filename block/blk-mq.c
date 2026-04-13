@@ -573,6 +573,7 @@ retry:
 	 * case just retry the hctx assignment and tag allocation as CPU hotplug
 	 * should have migrated us to an online CPU by now.
 	 */
+	// 获取 queue中的一个tag，tag是nvme queue中的command索引
 	tag = blk_mq_get_tag(data);
 	if (tag == BLK_MQ_NO_TAG) {
 		if (data->flags & BLK_MQ_REQ_NOWAIT)
@@ -3060,6 +3061,7 @@ static struct request *blk_mq_get_new_requests(struct request_queue *q,
 	};
 	struct request *rq;
 
+	// 限流
 	rq_qos_throttle(q, bio);
 
 	if (plug) {
@@ -3068,6 +3070,7 @@ static struct request *blk_mq_get_new_requests(struct request_queue *q,
 		data.cached_rqs = &plug->cached_rqs;
 	}
 
+	// 从队列中获取一个request，一个request对应一条nvme command
 	rq = __blk_mq_alloc_requests(&data);
 	if (unlikely(!rq))
 		rq_qos_cleanup(q, bio);
@@ -3185,12 +3188,14 @@ void blk_mq_submit_bio(struct bio *bio)
 		goto queue_exit;
 	}
 
+	// 检查盘是否支持poll，nvme支持
 	if ((bio->bi_opf & REQ_POLLED) && !blk_mq_can_poll(q)) {
 		bio->bi_status = BLK_STS_NOTSUPP;
 		bio_endio(bio);
 		goto queue_exit;
 	}
 
+	// 如果bio的扇区数大于io允许的大小，则拆分bio，拆分后的bio和原始bio构成链表
 	bio = __bio_split_to_limits(bio, &q->limits, &nr_segs);
 	if (!bio)
 		goto queue_exit;
@@ -3198,7 +3203,9 @@ void blk_mq_submit_bio(struct bio *bio)
 	if (!bio_integrity_prep(bio))
 		goto queue_exit;
 
+	// 发射时间设置
 	blk_mq_bio_issue_init(q, bio);
+	// 尝试merge bio
 	if (blk_mq_attempt_bio_merge(q, bio, nr_segs))
 		goto queue_exit;
 
@@ -3209,8 +3216,10 @@ void blk_mq_submit_bio(struct bio *bio)
 
 new_request:
 	if (rq) {
+		// 更新rq时间戳，限流睡眠
 		blk_mq_use_cached_rq(rq, plug, bio);
 	} else {
+		// 创建新的request
 		rq = blk_mq_get_new_requests(q, plug, bio);
 		if (unlikely(!rq)) {
 			if (bio->bi_opf & REQ_NOWAIT)
@@ -3223,6 +3232,7 @@ new_request:
 
 	rq_qos_track(q, rq, bio);
 
+	// 绑定bio到request
 	blk_mq_bio_to_request(rq, bio, nr_segs);
 
 	ret = blk_crypto_rq_get_keyslot(rq);
@@ -3247,6 +3257,7 @@ new_request:
 	hctx = rq->mq_hctx;
 	if ((rq->rq_flags & RQF_USE_SCHED) ||
 	    (hctx->dispatch_busy && (q->nr_hw_queues == 1 || !is_sync))) {
+		// 把request插入软件队列
 		blk_mq_insert_request(rq, 0);
 		blk_mq_run_hw_queue(hctx, true);
 	} else {

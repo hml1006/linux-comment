@@ -86,6 +86,7 @@ static int board_added(struct controller *ctrl)
 		goto err_exit;
 	}
 
+	// 配置扫描设备
 	retval = pciehp_configure_device(ctrl);
 	if (retval) {
 		if (retval != -EEXIST) {
@@ -306,7 +307,7 @@ void pciehp_handle_presence_or_link_change(struct controller *ctrl, u32 events)
 					   slot_name(ctrl),
 					   PCI_HOTPLUG_LINK_UP);
 		}
-		ctrl->request_result = pciehp_enable_slot(ctrl);
+		ctrl->request_result = pciehp_enable_slot(ctrl); // 使能slot
 		break;
 	default:
 		mutex_unlock(&ctrl->state_lock);
@@ -336,6 +337,7 @@ static int __pciehp_enable_slot(struct controller *ctrl)
 		}
 	}
 
+	// 添加pci设备
 	return board_added(ctrl);
 }
 
@@ -344,6 +346,8 @@ static int pciehp_enable_slot(struct controller *ctrl)
 	int ret;
 
 	pm_runtime_get_sync(&ctrl->pcie->port->dev);
+
+	// 使能slot
 	ret = __pciehp_enable_slot(ctrl);
 	if (ret && ATTN_BUTTN(ctrl))
 		/* may be blinking */

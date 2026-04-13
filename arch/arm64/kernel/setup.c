@@ -89,7 +89,9 @@ u64 __cacheline_aligned boot_args[4];
 
 void __init smp_setup_processor_id(void)
 {
+	// 从mpidr寄存器读取aff 3，2，1，0，aff2,1为两级clusterID，aff1为cpuid， aff0为threadid(如果不是一个core支持几个thread core<比如双核心四线程>，值为0)
 	u64 mpidr = read_cpuid_mpidr() & MPIDR_HWID_BITMASK;
+	// 把读取的CPU id设置到 CPU logical map
 	set_cpu_logical_map(0, mpidr);
 
 	pr_info("Booting Linux on physical CPU 0x%010lx [0x%08x]\n",
@@ -170,12 +172,15 @@ static void __init smp_build_mpidr_hash(void)
 static void __init setup_machine_fdt(phys_addr_t dt_phys)
 {
 	int size = 0;
+	// 把 fdt 物理地址映射到虚地址
 	void *dt_virt = fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL);
 	const char *name;
 
+	// 把 fdt 物理地址空间添加到memblock的保留区域，防止被破坏
 	if (dt_virt)
 		memblock_reserve(dt_phys, size);
 
+	// 校验设备树，扫描设备
 	/*
 	 * dt_virt is a fixmap address, hence __pa(dt_virt) can't be used.
 	 * Pass dt_phys directly.
@@ -280,24 +285,33 @@ u64 cpu_logical_map(unsigned int cpu)
 
 void __init __no_sanitize_address setup_arch(char **cmdline_p)
 {
+	// 初始化起始内存管理器结构体
 	setup_initial_init_mm(_text, _etext, _edata, _end);
 
 	*cmdline_p = boot_command_line;
 
+	// 内核地址空间layout random，为了安全，但是通过外部调试器调试需要关闭，这个功能会导致比如qemu找不到符号
 	kaslr_init();
 
+	// 初始化fixmap页表，设备树中间level entry L0, L1, L2，叶子 L3 entry在下面初始化
 	early_fixmap_init();
+	// 初始化 7 个虚地址slot，每个 slot 指向一段 fixmap区域
 	early_ioremap_init();
 
+	// 设备树最后一个页表level entry初始化
 	setup_machine_fdt(__fdt_pointer);
 
 	/*
 	 * Initialise the static keys early as they may be enabled by the
 	 * cpufeature code and early parameters.
 	 */
+	 // 排序并初始化jump label section，后面会用到
 	jump_label_init();
+
+	// 解析内核早期启动参数，比如grub传递的quiet参数
 	parse_early_param();
 
+	// shadow call stack
 	dynamic_scs_init();
 
 	/*
@@ -320,6 +334,8 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	cpu_uninstall_idmap();
 
 	xen_early_init();
+
+	// efi初始化，主要是根据efi的表构造memory map，efi数据在fdt
 	efi_init();
 
 	if (!efi_enabled(EFI_BOOT)) {
@@ -329,6 +345,7 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 			   FW_BUG "Booted with MMU enabled!");
 	}
 
+	// 内存块初始化，remove一些no-map区域，reserve一些如kernel，fdt，ramdisk，device等内存空间
 	arm64_memblock_init();
 
 	paging_init();

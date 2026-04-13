@@ -106,6 +106,7 @@ void __init early_fixmap_init(void)
 	unsigned long addr = FIXADDR_TOT_START;
 	unsigned long end = FIXADDR_TOP;
 
+	// 查找addr在pgd中的对应的entry地址
 	pgd_t *pgdp = pgd_offset_k(addr);
 	p4d_t *p4dp = p4d_offset_kimg(pgdp, addr);
 

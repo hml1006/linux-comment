@@ -19,6 +19,7 @@
  *  Assorted race fixes, rewrite of ext4_get_block() by Al Viro, 2000
  */
 
+#include <linux/dbg.h>
 #include <linux/fs.h>
 #include <linux/mount.h>
 #include <linux/time.h>
@@ -982,6 +983,7 @@ struct buffer_head *ext4_getblk(handle_t *handle, struct inode *inode,
 		    || handle != NULL || create == 0);
 	ASSERT(create == 0 || !nowait);
 
+	inode_dbg(inode, "block: %u\n", block);
 	map.m_lblk = block;
 	map.m_len = 1;
 	err = ext4_map_blocks(handle, inode, &map, map_flags);
@@ -1047,6 +1049,7 @@ struct buffer_head *ext4_bread(handle_t *handle, struct inode *inode,
 	struct buffer_head *bh;
 	int ret;
 
+	inode_dbg(inode, "block: %u\n", block);
 	bh = ext4_getblk(handle, inode, block, map_flags);
 	if (IS_ERR(bh))
 		return bh;
@@ -1076,6 +1079,7 @@ int ext4_bread_batch(struct inode *inode, ext4_lblk_t block, int bh_count,
 		}
 	}
 
+	// 批量读取block
 	for (i = 0; i < bh_count; i++)
 		/* Note that NULL bhs[i] is valid because of holes. */
 		if (bhs[i] && !ext4_buffer_uptodate(bhs[i]))
@@ -1084,6 +1088,7 @@ int ext4_bread_batch(struct inode *inode, ext4_lblk_t block, int bh_count,
 	if (!wait)
 		return 0;
 
+	// 等待io完成
 	for (i = 0; i < bh_count; i++)
 		if (bhs[i])
 			wait_on_buffer(bhs[i]);
@@ -4777,6 +4782,7 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	    ino > le32_to_cpu(EXT4_SB(sb)->s_es->s_inodes_count))
 		return -EFSCORRUPTED;
 
+	// 计算group
 	iloc->block_group = (ino - 1) / EXT4_INODES_PER_GROUP(sb);
 	gdp = ext4_get_group_desc(sb, iloc->block_group, NULL);
 	if (!gdp)
@@ -4786,10 +4792,15 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	 * Figure out the offset within the block group inode table
 	 */
 	inodes_per_block = EXT4_SB(sb)->s_inodes_per_block;
+
+	// 计算inode在group内的索引偏移
 	inode_offset = ((ino - 1) %
 			EXT4_INODES_PER_GROUP(sb));
+
+	// 计算inode在block内的byte offset
 	iloc->offset = (inode_offset % inodes_per_block) * EXT4_INODE_SIZE(sb);
 
+	// 找到inode table的起始block地址
 	block = ext4_inode_table(sb, gdp);
 	if ((block <= le32_to_cpu(EXT4_SB(sb)->s_es->s_first_data_block)) ||
 	    (block >= ext4_blocks_count(EXT4_SB(sb)->s_es))) {
@@ -4797,11 +4808,17 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 			   "block_group %u", block, iloc->block_group);
 		return -EFSCORRUPTED;
 	}
+
+	// 计算inode在第几个block
 	block += (inode_offset / inodes_per_block);
 
+	sb_dbg(sb, "inode: %lu, block_group: %u, block: %llu, offset: %lu\n",
+		ino, iloc->block_group, block, iloc->offset);
+	// 找到这个block的buffer_head
 	bh = sb_getblk(sb, block);
 	if (unlikely(!bh))
 		return -ENOMEM;
+	// 检查buffer是否最新，如果有io error，则需要设置buffer为最新
 	if (ext4_buffer_uptodate(bh))
 		goto has_buffer;
 
@@ -4891,9 +4908,11 @@ make_io:
 	 * Read the block from disk.
 	 */
 	trace_ext4_load_inode(sb, ino);
+	// 从磁盘读取block到buffer
 	ext4_read_bh_nowait(bh, REQ_META | REQ_PRIO, NULL,
 			    ext4_simulate_fail(sb, EXT4_SIM_INODE_EIO));
 	blk_finish_plug(&plug);
+	// 等待io完成被唤醒
 	wait_on_buffer(bh);
 	if (!buffer_uptodate(bh)) {
 		if (ret_block)
@@ -4927,6 +4946,8 @@ int ext4_get_inode_loc(struct inode *inode, struct ext4_iloc *iloc)
 	ext4_fsblk_t err_blk = 0;
 	int ret;
 
+	inode_dbg(inode, "\n");
+	// 根据super block，inode number查找
 	ret = __ext4_get_inode_loc(inode->i_sb, inode->i_ino, inode, iloc,
 					&err_blk);
 

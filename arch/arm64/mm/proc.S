@@ -482,7 +482,7 @@ SYM_FUNC_END(wait_linear_map_split_to_ptes)
 	.pushsection ".idmap.text", "a"
 SYM_FUNC_START(__cpu_setup)
 	tlbi	vmalle1				// Invalidate local TLB
-	dsb	nsh
+	dsb	nsh						// 数据同步屏障, 保证no-share都同步完成
 
 	msr	cpacr_el1, xzr			// Reset cpacr_el1
 	mov	x1, MDSCR_EL1_TDCC		// Reset mdscr_el1 and disable
@@ -494,17 +494,22 @@ SYM_FUNC_START(__cpu_setup)
 	 * Default values for VMSA control registers. These will be adjusted
 	 * below depending on detected CPU features.
 	 */
+	 // mair 寄存器内存权限和属性控制
 	mair	.req	x17
 	tcr	.req	x16
 	tcr2	.req	x15
 	mov_q	mair, MAIR_EL1_SET
+	// 页表转换属性配置
 	mov_q	tcr, TCR_T0SZ(IDMAP_VA_BITS) | TCR_T1SZ(VA_BITS_MIN) | TCR_CACHE_FLAGS | \
 		     TCR_SHARED | TCR_TG_FLAGS | TCR_KASLR_FLAGS | TCR_EL1_AS | \
 		     TCR_EL1_TBI0 | TCR_EL1_A1 | TCR_KASAN_SW_FLAGS | TCR_MTE_FLAGS
 	mov	tcr2, xzr
 
-	tcr_clear_errata_bits tcr, x9, x5
+	tcr_clear_errata_bits tcr, x9, x5	// 修正tcr寄存器有问题的bit
 
+/**
+* 虚地址高位全0或全1, cpu根据这个选择页表寄存器, 这个高位bit数量就是t0sz, t1sz, 64 减去这个数量就是虚地址宽度
+**/
 #ifdef CONFIG_ARM64_VA_BITS_52
 	mov		x9, #64 - VA_BITS
 alternative_if ARM64_HAS_VA52
@@ -518,7 +523,7 @@ alternative_else_nop_endif
 	/*
 	 * Set the IPS bits in TCR_EL1.
 	 */
-	tcr_compute_pa_size tcr, #TCR_EL1_IPS_SHIFT, x5, x6
+	tcr_compute_pa_size tcr, #TCR_EL1_IPS_SHIFT, x5, x6	// 设置物理地址空间大小
 #ifdef CONFIG_ARM64_HW_AFDBM
 	/*
 	 * Enable hardware update of the Access Flags bit.
@@ -561,7 +566,7 @@ alternative_else_nop_endif
 	/*
 	 * Prepare SCTLR
 	 */
-	mov_q	x0, INIT_SCTLR_EL1_MMU_ON
+	mov_q	x0, INIT_SCTLR_EL1_MMU_ON		// 开启mmu
 	ret					// return to head.S
 
 	.unreq	mair

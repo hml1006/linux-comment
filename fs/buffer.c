@@ -19,6 +19,7 @@
  * async buffer flushing, 1999 Andrea Arcangeli <andrea@suse.de>
  */
 
+#include <linux/dbg.h>
 #include <linux/kernel.h>
 #include <linux/sched/signal.h>
 #include <linux/syscalls.h>
@@ -190,7 +191,14 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 	int all_mapped = 1;
 	static DEFINE_RATELIMIT_STATE(last_warned, HZ, 1);
 
+	blk_dbg(bdev, "block: %llu\n", block);
+
+	// 计算page号
 	index = ((loff_t)block << blkbits) / PAGE_SIZE;
+
+	// folio和page结构体大小一致，通过union做兼容，可以强制转换
+	// folio可以表示一段连续的page，page只能表示一个page
+	// 从address_space中获取page
 	folio = __filemap_get_folio(bd_mapping, index, FGP_ACCESSED, 0);
 	if (IS_ERR(folio))
 		goto out;
@@ -1125,6 +1133,7 @@ __getblk_slow(struct block_device *bdev, sector_t block,
 		return NULL;
 	}
 
+	blk_dbg(bdev, "block: %llu, size: %d\n", block, size);
 	for (;;) {
 		struct buffer_head *bh;
 
@@ -1385,6 +1394,7 @@ lookup_bh_lru(struct block_device *bdev, sector_t block, unsigned size)
 		}
 	}
 	bh_lru_unlock();
+	blk_dbg(bdev, "buffer_head lru: %p\n", ret);
 	return ret;
 }
 
@@ -1398,8 +1408,11 @@ static struct buffer_head *
 find_get_block_common(struct block_device *bdev, sector_t block,
 			unsigned size, bool atomic)
 {
+	// 从LRU中查找，找到则会更新LRU
 	struct buffer_head *bh = lookup_bh_lru(bdev, block, size);
+	blk_dbg(bdev, "block: %llu, size: %d, lru bh %p\n", block, size, bh);
 
+	// LRU中没找到，开始查找pagecache
 	if (bh == NULL) {
 		/* __find_get_block_slow will mark the page accessed */
 		bh = __find_get_block_slow(bdev, block, atomic);
@@ -1407,13 +1420,14 @@ find_get_block_common(struct block_device *bdev, sector_t block,
 			bh_lru_install(bh);
 	} else
 		touch_buffer(bh);
-
+	blk_dbg(bdev, "return buffer_head %p\n", bh);
 	return bh;
 }
 
 struct buffer_head *
 __find_get_block(struct block_device *bdev, sector_t block, unsigned size)
 {
+	blk_dbg(bdev, "block %llu, size %u\n", block, size);
 	return find_get_block_common(bdev, block, size, true);
 }
 EXPORT_SYMBOL(__find_get_block);
@@ -1423,6 +1437,7 @@ struct buffer_head *
 __find_get_block_nonatomic(struct block_device *bdev, sector_t block,
 			   unsigned size)
 {
+	blk_dbg(bdev, "block %llu, size %u\n", block, size);
 	return find_get_block_common(bdev, block, size, false);
 }
 EXPORT_SYMBOL(__find_get_block_nonatomic);
@@ -1446,6 +1461,8 @@ struct buffer_head *bdev_getblk(struct block_device *bdev, sector_t block,
 {
 	struct buffer_head *bh;
 
+	blk_dbg(bdev, "block %llu, size %u, gfp %x\n", block, size, gfp);
+	// 允许挂起
 	if (gfpflags_allow_blocking(gfp))
 		bh = __find_get_block_nonatomic(bdev, block, size);
 	else
@@ -2798,13 +2815,18 @@ static void submit_bh_wbc(blk_opf_t opf, struct buffer_head *bh,
 	if (buffer_prio(bh))
 		opf |= REQ_PRIO;
 
+	// 分配bio
 	bio = bio_alloc(bh->b_bdev, 1, opf, GFP_NOIO);
 
 	fscrypt_set_bio_crypt_ctx_bh(bio, bh, GFP_NOIO);
 
+	// 文件系统block number转换为块设备sector number，比如 b_blocknr 单位4096, 
+	// b_size为4096, 转换成512的扇区号需要乘以8
 	bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
 	bio->bi_write_hint = write_hint;
 
+	// bio和page绑定， bio->bi_io_vec->bv_page指向page
+	// bh_offset 计算data在page中的偏移，page可能是一个大的连续页
 	bio_add_folio_nofail(bio, bh->b_folio, bh->b_size, bh_offset(bh));
 
 	bio->bi_end_io = end_bio_bh_io_sync;
@@ -2814,15 +2836,19 @@ static void submit_bh_wbc(blk_opf_t opf, struct buffer_head *bh,
 	guard_bio_eod(bio);
 
 	if (wbc) {
+		// cgroup控制
 		wbc_init_bio(wbc, bio);
 		wbc_account_cgroup_owner(wbc, bh->b_folio, bh->b_size);
 	}
 
+	// 提交bio
 	blk_crypto_submit_bio(bio);
 }
 
 void submit_bh(blk_opf_t opf, struct buffer_head *bh)
 {
+	blk_dbg(bh->b_bdev, "bh %p\n", bh);
+	// 提交bffer_head, 可传递write back控制参数
 	submit_bh_wbc(opf, bh, WRITE_LIFE_NOT_SET, NULL);
 }
 EXPORT_SYMBOL(submit_bh);

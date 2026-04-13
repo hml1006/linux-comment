@@ -7,6 +7,8 @@
  *  table of configured filesystems
  */
 
+#include "linux/kern_levels.h"
+#include "linux/printk.h"
 #include <linux/syscalls.h>
 #include <linux/fs.h>
 #include <linux/proc_fs.h>
@@ -85,8 +87,10 @@ int register_filesystem(struct file_system_type * fs)
 	p = find_filesystem(fs->name, strlen(fs->name));
 	if (*p)
 		res = -EBUSY;
-	else
+	else {
+		printk(KERN_INFO "[%s] register => %s\n", __func__, fs->name);
 		*p = fs;
+	}
 	write_unlock(&file_systems_lock);
 	return res;
 }
