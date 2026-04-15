@@ -414,8 +414,10 @@ end note
 @startsalt
 {{T
 + mount | 系统调用入口，拷贝用户空间文件系统类型，设备路径，挂载参数到内核空间
-++ do_mount
+++ do_mount | 检查挂载参数，开始挂载flow
 +++ user_path_at    | 拷贝用户空间传递的目录到path
+++++ filename_lookup | 查找挂载目录，例如/mnt/nvme/
++++++ path_lookupat   | 查找路径，参考文件open过程
 +++ path_mount | 获取当前文件偏移
 ++++ do_new_mount
 +++++ file_system_type | 获取文件系统类型file_system_type
@@ -427,7 +429,7 @@ end note
 +++++++++ ext4_get_tree
 ++++++++++ get_tree_bdev
 +++++++++++ get_tree_bdev_flags
-++++++++++++ lookup_bdev    | 查找设备
+++++++++++++ lookup_bdev    | 查找块设备路径
 +++++++++++++ kern_path | 构造struct filename并查找
 ++++++++++++++ filename_lookup | 查找文件
 +++++++++++++++ path_lookupat | 路径查找，参考文件open过程
@@ -462,6 +464,10 @@ end note
 +++++++++++++++ ext4_init_orphan_info | 初始化orphan inode信息
 +++++++++++++++ ext4_superblock_csum_set | 设置super_block的校验和
 +++++++++++++++ ext4_register_sysfs | 注册到sysfs
++++++++++++ vfs_create_mount | 创建新的挂载
+++++++++++++ alloc_vfsmnt | 分配vfsmnt
+++++++++++++ setup_mnt | 设置挂载
++++++++++++++ mnt_add_instance | 把mount添加到super_block的s_mounts链表,一个文件系统可以同时挂载到多个地方
 ++++++ mount_too_revealing  | 检查挂载是否过于暴露，比如禁止非root用户挂载proc，sys文件系统，防止暴露内部信息
 ++++++ mnt_warn_timestamp_expiry    | 检查文件系统时间戳是否即将达到上限，当前系统时间加上 30 年，超过s_time_max，函数就会触发警告
 ++++++ do_add_mount | 把当前mount添加到namespace的挂载树
