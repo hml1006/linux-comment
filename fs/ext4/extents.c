@@ -4266,35 +4266,60 @@ insert_hole:
  *
  * return < 0, error case.
  */
+/**
+ * ext4_ext_map_blocks - 在ext4扩展树中映射或分配逻辑块
+ * @handle: 事务处理句柄，用于保证操作的原子性
+ * @inode: 正在操作的文件inode结构体
+ * @map: 块映射结构体，包含请求的逻辑块号、长度以及返回的物理块信息
+ * @flags: 分配和查找标志位，如是否创建新块、是否为未写入状态等
+ *
+ * 此函数是ext4文件系统处理逻辑块到物理块映射的核心函数。
+ * 它首先查找逻辑块对应的扩展项，如果找到且已分配则直接返回物理块地址；
+ * 如果未找到或属于未写入状态，则根据标志位决定是否进行新的物理块分配。
+ *
+ * Return: 成功时返回已分配/映射的块数，失败时返回负的错误码
+ */
 int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 			struct ext4_map_blocks *map, int flags)
 {
+	/* 扩展项路径指针，用于遍历扩展树 */
 	struct ext4_ext_path *path = NULL;
+	/* 新扩展项、当前查找到的扩展项以及临时用的扩展项 */
 	struct ext4_extent newex, *ex, ex2;
+	/* 获取超级块信息结构体 */
 	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
+	/* 新分配的物理块号和当前处理的物理块号 */
 	ext4_fsblk_t newblock = 0, pblk;
+	/* 错误码和扩展树深度 */
 	int err = 0, depth;
+	/* 已分配的块数和簇内偏移量 */
 	unsigned int allocated = 0, offset = 0;
+	/* 已分配的簇数（用于bigalloc特性） */
 	unsigned int allocated_clusters = 0;
+	/* 块分配请求结构体 */
 	struct ext4_allocation_request ar;
+	/* 逻辑块在簇内的偏移量 */
 	ext4_lblk_t cluster_offset;
 
+	/* 调试信息：打印请求的逻辑块号和块数 */
 	ext_debug(inode, "blocks %u/%u requested\n", map->m_lblk, map->m_len);
+	/* 跟踪点：记录进入此函数的信息 */
 	trace_ext4_ext_map_blocks_enter(inode, map->m_lblk, map->m_len, flags);
 
-	/* find extent for this block */
+	/* 查找给定逻辑块对应的扩展项路径 */
 	path = ext4_find_extent(inode, map->m_lblk, NULL, flags);
 	if (IS_ERR(path)) {
 		err = PTR_ERR(path);
 		goto out;
 	}
 
+	/* 获取扩展树的当前深度 */
 	depth = ext_depth(inode);
 
 	/*
-	 * consistent leaf must not be empty;
-	 * this situation is possible, though, _during_ tree modification;
-	 * this is why assert can't be put in ext4_find_extent()
+	 * 一致的叶子节点不能为空；
+	 * 这种情况在修改树期间是有可能发生的；
+	 * 这就是为什么不能把断言放在 ext4_find_extent() 中的原因。
 	 */
 	if (unlikely(path[depth].p_ext == NULL && depth != 0)) {
 		EXT4_ERROR_INODE(inode, "bad extent address "
@@ -4305,32 +4330,38 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 		goto out;
 	}
 
+	/* 获取叶子节点中的扩展项 */
 	ex = path[depth].p_ext;
 	if (ex) {
+		/* 扩展项的逻辑起始块号 */
 		ext4_lblk_t ee_block = le32_to_cpu(ex->ee_block);
+		/* 扩展项的物理起始块号 */
 		ext4_fsblk_t ee_start = ext4_ext_pblock(ex);
+		/* 扩展项的长度 */
 		unsigned short ee_len;
 
 
 		/*
-		 * unwritten extents are treated as holes, except that
-		 * we split out initialized portions during a write.
+		 * 未写入的扩展项被视为空洞，除非
+		 * 我们在写入期间将已初始化的部分分割出来。
 		 */
 		ee_len = ext4_ext_get_actual_len(ex);
 
+		/* 跟踪点：显示当前扩展项信息 */
 		trace_ext4_ext_show_extent(inode, ee_block, ee_start, ee_len);
 
-		/* if found extent covers block, simply return it */
+		/* 如果找到的扩展项覆盖了请求的逻辑块，直接返回它 */
 		if (in_range(map->m_lblk, ee_block, ee_len)) {
+			/* 计算请求逻辑块对应的物理块号 */
 			newblock = map->m_lblk - ee_block + ee_start;
-			/* number of remaining blocks in the extent */
+			/* 计算该扩展项中剩余的块数 */
 			allocated = ee_len - (map->m_lblk - ee_block);
 			ext_debug(inode, "%u fit into %u:%d -> %llu\n",
 				  map->m_lblk, ee_block, ee_len, newblock);
 
 			/*
-			 * If the extent is initialized check whether the
-			 * caller wants to convert it to unwritten.
+			 * 如果扩展项是已初始化的，检查调用者
+			 * 是否希望将其转换为未写入状态。
 			 */
 			if ((!ext4_ext_is_unwritten(ex)) &&
 			    (flags & EXT4_GET_BLOCKS_CONVERT_UNWRITTEN)) {
@@ -4340,8 +4371,10 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 					err = PTR_ERR(path);
 				goto out;
 			} else if (!ext4_ext_is_unwritten(ex)) {
+				/* 如果是已初始化扩展项且不需要转换，设置映射标志 */
 				map->m_flags |= EXT4_MAP_MAPPED;
 				map->m_pblk = newblock;
+				/* 如果分配的块数大于请求的长度，则截断 */
 				if (allocated > map->m_len)
 					allocated = map->m_len;
 				map->m_len = allocated;
@@ -4349,6 +4382,7 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 				goto out;
 			}
 
+			/* 处理未写入状态的扩展项 */
 			path = ext4_ext_handle_unwritten_extents(
 				handle, inode, map, path, flags,
 				&allocated, newblock);
@@ -4359,12 +4393,13 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 	}
 
 	/*
-	 * requested block isn't allocated yet;
-	 * we couldn't try to create block if flags doesn't contain EXT4_GET_BLOCKS_CREATE
+	 * 请求的块尚未分配；
+	 * 如果标志位中不包含 EXT4_GET_BLOCKS_CREATE，则不能尝试创建块
 	 */
 	if ((flags & EXT4_GET_BLOCKS_CREATE) == 0) {
 		ext4_lblk_t len;
 
+		/* 确定要插入的空洞长度 */
 		len = ext4_ext_determine_insert_hole(inode, path, map->m_lblk);
 
 		map->m_pblk = 0;
@@ -4373,14 +4408,16 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 	}
 
 	/*
-	 * Okay, we need to do block allocation.
+	 * 到这里，说明我们需要进行块分配了。
 	 */
+	/* 设置新扩展项的逻辑起始块号 */
 	newex.ee_block = cpu_to_le32(map->m_lblk);
+	/* 计算逻辑块在簇内的偏移量 */
 	cluster_offset = EXT4_LBLK_COFF(sbi, map->m_lblk);
 
 	/*
-	 * If we are doing bigalloc, check to see if the extent returned
-	 * by ext4_find_extent() implies a cluster we can use.
+	 * 如果我们正在处理大分配，检查 ext4_find_extent() 
+	 * 返回的扩展项是否暗示了我们可以使用的簇。
 	 */
 	if (cluster_offset && ex &&
 	    get_implied_cluster_alloc(inode->i_sb, map, ex, path)) {
@@ -4389,19 +4426,19 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 		goto got_allocated_blocks;
 	}
 
-	/* find neighbour allocated blocks */
+	/* 寻找左侧已分配的邻居块 */
 	ar.lleft = map->m_lblk;
 	err = ext4_ext_search_left(inode, path, &ar.lleft, &ar.pleft);
 	if (err)
 		goto out;
+	/* 寻找右侧已分配的邻居块 */
 	ar.lright = map->m_lblk;
 	err = ext4_ext_search_right(inode, path, &ar.lright, &ar.pright,
 				    &ex2, flags);
 	if (err < 0)
 		goto out;
 
-	/* Check if the extent after searching to the right implies a
-	 * cluster we can use. */
+	/* 检查向右搜索后的扩展项是否暗示了我们可以使用的簇 */
 	if ((sbi->s_cluster_ratio > 1) && err &&
 	    get_implied_cluster_alloc(inode->i_sb, map, &ex2, path)) {
 		ar.len = allocated = map->m_len;
@@ -4411,10 +4448,9 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 	}
 
 	/*
-	 * See if request is beyond maximum number of blocks we can have in
-	 * a single extent. For an initialized extent this limit is
-	 * EXT_INIT_MAX_LEN and for an unwritten extent this limit is
-	 * EXT_UNWRITTEN_MAX_LEN.
+	 * 检查请求是否超过了单个扩展项可以容纳的最大块数。
+	 * 对于已初始化扩展项，此限制是 EXT_INIT_MAX_LEN；
+	 * 对于未写入扩展项，此限制是 EXT_UNWRITTEN_MAX_LEN。
 	 */
 	if (map->m_len > EXT_INIT_MAX_LEN &&
 	    !(flags & EXT4_GET_BLOCKS_UNWRIT_EXT))
@@ -4423,7 +4459,7 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 		 (flags & EXT4_GET_BLOCKS_UNWRIT_EXT))
 		map->m_len = EXT_UNWRITTEN_MAX_LEN;
 
-	/* Check if we can really insert (m_lblk)::(m_lblk + m_len) extent */
+	/* 检查我们是否真的可以插入 (m_lblk)::(m_lblk + m_len) 的扩展项 */
 	newex.ee_len = cpu_to_le16(map->m_len);
 	err = ext4_ext_check_overlap(sbi, inode, &newex, path);
 	if (err)
@@ -4431,26 +4467,26 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 	else
 		allocated = map->m_len;
 
-	/* allocate new block */
+	/* 分配新块 */
 	ar.inode = inode;
+	/* 寻找分配目标（提示物理块位置） */
 	ar.goal = ext4_ext_find_goal(inode, path, map->m_lblk);
 	ar.logical = map->m_lblk;
 	/*
-	 * We calculate the offset from the beginning of the cluster
-	 * for the logical block number, since when we allocate a
-	 * physical cluster, the physical block should start at the
-	 * same offset from the beginning of the cluster.  This is
-	 * needed so that future calls to get_implied_cluster_alloc()
-	 * work correctly.
+	 * 我们计算逻辑块号相对于簇起始位置的偏移量，
+	 * 因为当我们分配一个物理簇时，物理块应该从
+	 * 簇起始位置的相同偏移量开始。这对于未来
+	 * 调用 get_implied_cluster_alloc() 时能正常工作
+	 * 是必需的。
 	 */
 	offset = EXT4_LBLK_COFF(sbi, map->m_lblk);
 	ar.len = EXT4_NUM_B2C(sbi, offset+allocated);
 	ar.goal -= offset;
 	ar.logical -= offset;
 	if (S_ISREG(inode->i_mode))
-		ar.flags = EXT4_MB_HINT_DATA;
+		ar.flags = EXT4_MB_HINT_DATA; /* 常规文件设置数据提示 */
 	else
-		/* disable in-core preallocation for non-regular files */
+		/* 对于非常规文件，禁用内存中的预分配 */
 		ar.flags = 0;
 	if (flags & EXT4_GET_BLOCKS_NO_NORMALIZE)
 		ar.flags |= EXT4_MB_HINT_NOPREALLOC;
@@ -4458,10 +4494,12 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 		ar.flags |= EXT4_MB_DELALLOC_RESERVED;
 	if (flags & EXT4_GET_BLOCKS_METADATA_NOFAIL)
 		ar.flags |= EXT4_MB_USE_RESERVED;
+	/* 执行实际的多块分配 */
 	newblock = ext4_mb_new_blocks(handle, &ar, &err);
 	if (!newblock)
 		goto out;
 	allocated_clusters = ar.len;
+	/* 将簇数转换回块数并减去偏移量 */
 	ar.len = EXT4_C2B(sbi, ar.len) - offset;
 	ext_debug(inode, "allocate new block: goal %llu, found %llu/%u, requested %u\n",
 		  ar.goal, newblock, ar.len, allocated);
@@ -4469,30 +4507,31 @@ int ext4_ext_map_blocks(handle_t *handle, struct inode *inode,
 		ar.len = allocated;
 
 got_allocated_blocks:
-	/* try to insert new extent into found leaf and return */
+	/* 尝试将新扩展项插入到找到的叶子节点中并返回 */
 	pblk = newblock + offset;
 	ext4_ext_store_pblock(&newex, pblk);
 	newex.ee_len = cpu_to_le16(ar.len);
-	/* Mark unwritten */
+	/* 标记为未写入状态 */
 	if (flags & EXT4_GET_BLOCKS_UNWRIT_EXT) {
 		ext4_ext_mark_unwritten(&newex);
 		map->m_flags |= EXT4_MAP_UNWRITTEN;
 	}
 
+	/* 将新构建的扩展项插入到扩展树中 */
 	path = ext4_ext_insert_extent(handle, inode, path, &newex, flags);
 	if (IS_ERR(path)) {
 		err = PTR_ERR(path);
 		/*
-		 * Gracefully handle out of space conditions. If the filesystem
-		 * is inconsistent, we'll just leak allocated blocks to avoid
-		 * causing even more damage.
+		 * 优雅地处理空间不足的情况。如果文件系统
+		 * 不一致，我们将直接泄漏已分配的块，以避免
+		 * 造成更大的损坏。
 		 */
 		if (allocated_clusters && (err == -EDQUOT || err == -ENOSPC)) {
 			int fb_flags = 0;
 			/*
-			 * free data blocks we just allocated.
-			 * not a good idea to call discard here directly,
-			 * but otherwise we'd need to call it every free().
+			 * 释放刚刚分配的数据块。
+			 * 直接在这里调用discard并不是个好主意，
+			 * 但否则我们需要在每次free()时都调用它。
 			 */
 			ext4_discard_preallocations(inode);
 			if (flags & EXT4_GET_BLOCKS_DELALLOC_RESERVE)
@@ -4505,14 +4544,15 @@ got_allocated_blocks:
 	}
 
 	/*
-	 * Cache the extent and update transaction to commit on fdatasync only
-	 * when it is _not_ an unwritten extent.
+	 * 缓存扩展项并更新事务，以便在 fdatasync 时提交，
+	 * 仅当它_不是_未写入扩展项时才需要。
 	 */
 	if ((flags & EXT4_GET_BLOCKS_UNWRIT_EXT) == 0)
 		ext4_update_inode_fsync_trans(handle, inode, 1);
 	else
 		ext4_update_inode_fsync_trans(handle, inode, 0);
 
+	/* 设置映射标志：新分配且已映射 */
 	map->m_flags |= (EXT4_MAP_NEW | EXT4_MAP_MAPPED);
 	map->m_pblk = pblk;
 	map->m_len = ar.len;
@@ -4520,12 +4560,10 @@ got_allocated_blocks:
 	ext4_ext_show_leaf(inode, path);
 out:
 	/*
-	 * We never use EXT4_GET_BLOCKS_QUERY_LAST_IN_LEAF with CREATE flag.
-	 * So we know that the depth used here is correct, since there was no
-	 * block allocation done if EXT4_GET_BLOCKS_QUERY_LAST_IN_LEAF is set.
-	 * If tomorrow we start using this QUERY flag with CREATE, then we will
-	 * need to re-calculate the depth as it might have changed due to block
-	 * allocation.
+	 * 我们从不在带有 CREATE 标志的情况下使用 EXT4_GET_BLOCKS_QUERY_LAST_IN_LEAF。
+	 * 所以我们知道这里使用的深度是正确的，因为如果设置了 QUERY 标志，
+	 * 就不会进行块分配。如果将来我们开始在带有 CREATE 的情况下使用
+	 * 此 QUERY 标志，那么我们将需要重新计算深度，因为它可能因块分配而改变。
 	 */
 	if (flags & EXT4_GET_BLOCKS_QUERY_LAST_IN_LEAF) {
 		WARN_ON_ONCE(flags & EXT4_GET_BLOCKS_CREATE);
@@ -4533,8 +4571,10 @@ out:
 			map->m_flags |= EXT4_MAP_QUERY_LAST_IN_LEAF;
 	}
 
+	/* 释放扩展项路径占用的内存 */
 	ext4_free_ext_path(path);
 
+	/* 跟踪点：记录退出此函数的信息 */
 	trace_ext4_ext_map_blocks_exit(inode, flags, map,
 				       err ? err : allocated);
 	return err ? err : allocated;

@@ -424,76 +424,113 @@ static const struct iomap_dio_ops ext4_dio_write_ops = {
  *
  * - Otherwise we will switch to exclusive i_rwsem lock.
  */
+/**
+ * ext4_dio_write_checks - ext4直接I/O写操作的检查与锁管理
+ * @iocb: 内核I/O控制块，包含文件指针、偏移量及I/O标志等信息
+ * @from: 用户空间数据迭代器，包含待写入的数据
+ * @ilock_shared: 指向布尔值的指针，指示当前是否持有inode的共享锁；函数内可能会升级为排他锁
+ * @extend: 指向布尔值的指针，用于返回本次写操作是否会扩展文件大小
+ * @dio_flags: 指向整型的指针，用于返回直接I/O的执行标志（如强制等待）
+ *
+ * 该函数在执行ext4直接I/O写操作前进行一系列前置检查，包括通用写检查、
+ * I/O对齐与覆盖情况判断，并根据检查结果决定是否需要将共享锁升级为排他锁，
+ * 以及设置相应的DIO标志。若检查失败或中途需重试，会妥善处理锁的释放与重获取。
+ *
+ * Return: 成功时返回待写入的字节数，失败时返回负的错误码
+ */
 static ssize_t ext4_dio_write_checks(struct kiocb *iocb, struct iov_iter *from,
 				     bool *ilock_shared, bool *extend,
 				     int *dio_flags)
 {
+	/* 从iocb中获取对应的文件结构体指针 */
 	struct file *file = iocb->ki_filp;
+	/* 获取文件对应的inode结构体 */
 	struct inode *inode = file_inode(file);
+	/* 写入偏移量 */
 	loff_t offset;
+	/* 待写入的字节数 */
 	size_t count;
+	/* 函数返回值/执行结果 */
 	ssize_t ret;
+	/* 标识是否为覆盖写、是否非对齐I/O、是否写入未分配的extent */
 	bool overwrite, unaligned_io, unwritten;
 
 restart:
+	/* 执行通用写操作检查（如权限、资源限制等），返回允许写入的字节数 */
 	ret = ext4_generic_write_checks(iocb, from);
 	if (ret <= 0)
 		goto out;
 
+	/* 获取当前的写入偏移量 */
 	offset = iocb->ki_pos;
+	/* 获取经通用检查后允许写入的字节数 */
 	count = ret;
 
+	/* 检查是否为非对齐I/O（偏移量或数据长度未按块大小对齐） */
 	unaligned_io = ext4_unaligned_io(inode, from, offset);
+	/* 检查本次写操作是否会扩展文件大小 */
 	*extend = ext4_extending_io(inode, offset, count);
+	/* 检查是否为覆盖写，并判断覆盖区域是否包含未分配的extent */
 	overwrite = ext4_overwrite_io(inode, offset, count, &unwritten);
 
 	/*
-	 * Determine whether we need to upgrade to an exclusive lock. This is
-	 * required to change security info in file_modified(), for extending
-	 * I/O, any form of non-overwrite I/O, and unaligned I/O to unwritten
-	 * extents (as partial block zeroing may be required).
+	 * 判断是否需要将共享锁升级为排他锁。以下情况必须持有排他锁：
+	 * 1. 需要在 file_modified() 中修改安全信息（!IS_NOSEC(inode)）；
+	 * 2. 写操作会扩展文件大小（*extend）；
+	 * 3. 非覆盖写（!overwrite）；
+	 * 4. 非对齐I/O且写入未分配的extent（unaligned_io && unwritten），
+	 *    因为此时可能需要对部分块进行填零操作。
 	 *
-	 * Note that unaligned writes are allowed under shared lock so long as
-	 * they are pure overwrites. Otherwise, concurrent unaligned writes risk
-	 * data corruption due to partial block zeroing in the dio layer, and so
-	 * the I/O must occur exclusively.
+	 * 注意：只要非对齐写是纯粹的覆盖写，就允许在共享锁下进行。
+	 * 否则，并发的非对齐写可能会因为DIO层的部分块填零操作
+	 * 导致数据损坏，因此这类I/O必须排他执行。
 	 */
 	if (*ilock_shared &&
 	    ((!IS_NOSEC(inode) || *extend || !overwrite ||
 	     (unaligned_io && unwritten)))) {
+		/* 如果指定了不等待（NOWAIT），直接返回 -EAGAIN 避免阻塞 */
 		if (iocb->ki_flags & IOCB_NOWAIT) {
 			ret = -EAGAIN;
 			goto out;
 		}
+		/* 释放当前的共享锁 */
 		inode_unlock_shared(inode);
+		/* 更新标记，指示当前已不再是共享锁 */
 		*ilock_shared = false;
+		/* 重新获取排他锁 */
 		inode_lock(inode);
+		/* 拿到排他锁后，需重新进行各项检查，防止状态在换锁期间发生变化 */
 		goto restart;
 	}
 
 	/*
-	 * Now that locking is settled, determine dio flags and exclusivity
-	 * requirements. We don't use DIO_OVERWRITE_ONLY because we enforce
-	 * behavior already. The inode lock is already held exclusive if the
-	 * write is non-overwrite or extending, so drain all outstanding dio and
-	 * set the force wait dio flag.
+	 * 锁状态确定后，决定直接I/O的标志和排他性要求。
+	 * 我们不使用 DIO_OVERWRITE_ONLY 标志，因为相关行为已经在此处强制保证。
+	 * 如果写操作是非覆盖写或扩展写，前面已经持有了排他锁，
+	 * 因此需要排空所有正在执行的直接I/O，并设置强制等待标志。
 	 */
 	if (!*ilock_shared && (unaligned_io || *extend)) {
+		/* 在排他锁下，如果遇到 NOWAIT 请求，直接返回 -EAGAIN */
 		if (iocb->ki_flags & IOCB_NOWAIT) {
 			ret = -EAGAIN;
 			goto out;
 		}
+		/* 如果是非对齐I/O，且不是纯覆盖写或写了未分配的extent，需等待其他DIO完成 */
 		if (unaligned_io && (!overwrite || unwritten))
 			inode_dio_wait(inode);
+		/* 设置强制等待标志，确保当前DIO提交后等待完成再返回 */
 		*dio_flags = IOMAP_DIO_FORCE_WAIT;
 	}
 
+	/* 更新文件的修改时间等元数据，可能涉及安全标记的修改 */
 	ret = file_modified(file);
 	if (ret < 0)
 		goto out;
 
+	/* 检查全部通过，返回待写入的字节数 */
 	return count;
 out:
+	/* 退出处理：根据当前锁的状态释放对应的inode锁 */
 	if (*ilock_shared)
 		inode_unlock_shared(inode);
 	else
@@ -501,47 +538,67 @@ out:
 	return ret;
 }
 
+
+/**
+ * ext4_dio_write_iter - ext4 文件系统直接 I/O (DIO) 写入操作的迭代器函数
+ * @iocb: 异步 I/O 控制块，包含文件指针、偏移量等信息
+ * @from: 用户空间的数据迭代器，包含待写入的数据
+ *
+ * 此函数负责处理 ext4 的直接 I/O 写入请求。它会根据写入是否扩展文件、
+ * 是否允许等待等条件获取适当的 inode 锁，并在必要时回退到缓冲 I/O。
+ * 对于扩展文件大小的写入，会将其加入孤儿 inode 列表以防止系统崩溃时数据损坏，
+ * 最后在写入完成后进行相应的清理和页缓存无效化操作。
+ *
+ * 返回值: 成功写入的字节数，失败时返回负的错误码。
+ */
 static ssize_t ext4_dio_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
-	ssize_t ret;
-	handle_t *handle;
-	struct inode *inode = file_inode(iocb->ki_filp);
-	loff_t offset = iocb->ki_pos;
-	size_t count = iov_iter_count(from);
-	bool extend = false;
-	bool ilock_shared = true;
-	int dio_flags = 0;
+	ssize_t ret;                 // 函数返回值，用于存储写入字节数或错误码
+	handle_t *handle;            // 事务处理句柄，用于日志记录
+	struct inode *inode = file_inode(iocb->ki_filp); // 获取文件对应的 inode 结构
+	loff_t offset = iocb->ki_pos; // 获取写入的起始偏移量
+	size_t count = iov_iter_count(from); // 获取待写入的数据总字节数
+	bool extend = false;         // 标记此次写入是否会扩展文件大小
+	bool ilock_shared = true;    // 标记是否可以使用共享 inode 锁（初始假设可以）
+	int dio_flags = 0;           // 直接 I/O 的标志位
 
 	/*
 	 * Quick check here without any i_rwsem lock to see if it is extending
 	 * IO. A more reliable check is done in ext4_dio_write_checks() with
 	 * proper locking in place.
+	 * 此处不持有 i_rwsem 锁进行快速检查，判断是否为扩展文件大小的 I/O。
+	 * 更可靠的检查会在 ext4_dio_write_checks() 中在适当加锁的状态下进行。
 	 */
 	if (offset + count > i_size_read(inode))
-		ilock_shared = false;
+		ilock_shared = false;    // 如果写入超出当前文件大小，则需要排他锁，不能使用共享锁
 
+	// 根据是否设置了 IOCB_NOWAIT 标志，选择非阻塞或阻塞方式获取 inode 锁
 	if (iocb->ki_flags & IOCB_NOWAIT) {
 		if (ilock_shared) {
+			// 尝试获取共享锁，若失败立即返回 -EAGAIN
 			if (!inode_trylock_shared(inode))
 				return -EAGAIN;
 		} else {
+			// 尝试获取排他锁，若失败立即返回 -EAGAIN
 			if (!inode_trylock(inode))
 				return -EAGAIN;
 		}
 	} else {
 		if (ilock_shared)
-			inode_lock_shared(inode);
+			inode_lock_shared(inode); // 阻塞等待获取共享锁
 		else
-			inode_lock(inode);
+			inode_lock(inode);        // 阻塞等待获取排他锁
 	}
 
-	/* Fallback to buffered I/O if the inode does not support direct I/O. */
+	/* Fallback to buffered I/O if the inode does not support direct I/O.
+	 * 如果 inode 不支持直接 I/O，则回退到缓冲 I/O。
+	 */
 	if (!ext4_should_use_dio(iocb, from)) {
 		if (ilock_shared)
-			inode_unlock_shared(inode);
+			inode_unlock_shared(inode); // 释放共享锁
 		else
-			inode_unlock(inode);
-		return ext4_buffered_write_iter(iocb, from);
+			inode_unlock(inode);        // 释放排他锁
+		return ext4_buffered_write_iter(iocb, from); // 调用缓冲写入函数
 	}
 
 	/*
@@ -550,51 +607,67 @@ static ssize_t ext4_dio_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	 * because ext4_should_use_dio() checked for it, but we have to clear
 	 * the state flag before the write checks because a lock cycle could
 	 * introduce races with other writers.
+	 * 阻止创建内联数据，因为我们将要为 DIO 分配数据块。
+	 * 我们知道该 inode 当前没有内联数据，因为 ext4_should_use_dio() 已经检查过，
+	 * 但我们必须在写入检查之前清除该状态标志，因为锁的循环周期可能会引入与其他写入者的竞争。
 	 */
 	ext4_clear_inode_state(inode, EXT4_STATE_MAY_INLINE_DATA);
 
+	// 执行 DIO 写入前的详细检查，可能会修改锁的状态、扩展标志和 dio_flags
 	ret = ext4_dio_write_checks(iocb, from, &ilock_shared, &extend,
 				    &dio_flags);
 	if (ret <= 0)
-		return ret;
+		return ret; // 检查失败或无需写入，直接返回
 
+	// 重新获取更新后的偏移量和待写入字节数
 	offset = iocb->ki_pos;
 	count = ret;
 
+	// 如果此次写入需要扩展文件大小，则需启动事务并将其加入孤儿列表
 	if (extend) {
+		// 启动日志事务，预留 2 个块的空间
 		handle = ext4_journal_start(inode, EXT4_HT_INODE, 2);
 		if (IS_ERR(handle)) {
-			ret = PTR_ERR(handle);
-			goto out;
+			ret = PTR_ERR(handle); // 事务启动失败，记录错误码
+			goto out;              // 跳转到解锁并退出流程
 		}
 
+		// 将 inode 加入孤儿列表，防止写入过程中崩溃导致的数据不一致
 		ret = ext4_orphan_add(handle, inode);
-		ext4_journal_stop(handle);
+		ext4_journal_stop(handle); // 停止事务
 		if (ret)
-			goto out;
+			goto out;          // 添加孤儿节点失败，跳转到退出流程
 	}
 
+	// 执行实际的直接 I/O 读写操作
 	ret = iomap_dio_rw(iocb, from, &ext4_iomap_ops, &ext4_dio_write_ops,
 			   dio_flags, NULL, 0);
 	if (ret == -ENOTBLK)
-		ret = 0;
+		ret = 0; // -ENOTBLK 表示回退到缓冲 I/O，此处视为正常，将返回值置为 0
+
+	// 如果是扩展写入，需要进行写入后的清理工作
 	if (extend) {
 		/*
 		 * We always perform extending DIO write synchronously so by
 		 * now the IO is completed and ext4_handle_inode_extension()
 		 * was called. Cleanup the inode in case of error or race with
 		 * writeback of delalloc blocks.
+		 * 我们总是同步执行扩展 DIO 写入，因此到现在 IO 已完成，
+		 * 且 ext4_handle_inode_extension() 已被调用。
+		 * 在发生错误或与延迟分配块的回写发生竞争时，清理 inode。
 		 */
-		WARN_ON_ONCE(ret == -EIOCBQUEUED);
-		ext4_inode_extension_cleanup(inode, ret < 0);
+		WARN_ON_ONCE(ret == -EIOCBQUEUED); // 扩展写入不应异步排队，触发警告
+		ext4_inode_extension_cleanup(inode, ret < 0); // 扩展写入完成后的清理
 	}
 
 out:
+	// 根据当前锁的状态释放对应的 inode 锁
 	if (ilock_shared)
 		inode_unlock_shared(inode);
 	else
 		inode_unlock(inode);
 
+	// 如果 DIO 写入成功，但迭代器中仍有未写入的数据，则回退到缓冲 I/O 处理剩余部分
 	if (ret >= 0 && iov_iter_count(from)) {
 		ssize_t err;
 		loff_t endbyte;
@@ -603,13 +676,16 @@ out:
 		 * There is no support for atomic writes on buffered-io yet,
 		 * we should never fallback to buffered-io for DIO atomic
 		 * writes.
+		 * 目前缓冲 I/O 尚不支持原子写入，
+		 * 我们绝不应该为 DIO 原子写入回退到缓冲 I/O。
 		 */
-		WARN_ON_ONCE(iocb->ki_flags & IOCB_ATOMIC);
+		WARN_ON_ONCE(iocb->ki_flags & IOCB_ATOMIC); // 若为原子写入回退则触发警告
 
-		offset = iocb->ki_pos;
+		offset = iocb->ki_pos; // 更新偏移量到 DIO 写入结束的位置
+		// 使用缓冲 I/O 写入剩余数据
 		err = ext4_buffered_write_iter(iocb, from);
 		if (err < 0)
-			return err;
+			return err; // 缓冲写入失败，返回错误码
 
 		/*
 		 * We need to ensure that the pages within the page cache for
@@ -617,19 +693,24 @@ out:
 		 * invalidated. This is in attempt to preserve the expected
 		 * direct I/O semantics in the case we fallback to buffered I/O
 		 * to complete off the I/O request.
+		 * 我们需要确保页缓存中涵盖此 I/O 范围的页已被写入磁盘并被无效化。
+		 * 这是为了在回退到缓冲 I/O 完成 I/O 请求时，尽量保持预期的直接 I/O 语义。
 		 */
-		ret += err;
-		endbyte = offset + err - 1;
+		ret += err; // 累加成功写入的字节数
+		endbyte = offset + err - 1; // 计算缓冲写入的结束字节位置
+		// 将页缓存中的脏页回写至磁盘并等待完成
 		err = filemap_write_and_wait_range(iocb->ki_filp->f_mapping,
 						   offset, endbyte);
 		if (!err)
+			// 回写成功后，无效化该范围内的页缓存，确保后续读取直接访问磁盘
 			invalidate_mapping_pages(iocb->ki_filp->f_mapping,
 						 offset >> PAGE_SHIFT,
 						 endbyte >> PAGE_SHIFT);
 	}
 
-	return ret;
+	return ret; // 返回总写入字节数或错误码
 }
+
 
 #ifdef CONFIG_FS_DAX
 static ssize_t
@@ -687,38 +768,62 @@ out:
 }
 #endif
 
+/**
+ * ext4_file_write_iter - ext4 文件异步/同步写入操作的核心入口函数
+ * @iocb: 内核I/O控制块，包含文件指针、写入偏移量、I/O标志等信息
+ * @from: 用户空间数据迭代器，包含待写入的数据及长度
+ *
+ * 该函数是 ext4 文件系统中 file_operations.write_iter 的实现。
+ * 根据文件系统当前状态、挂载选项（如DAX模式）以及I/O标志（如直接I/O、原子写入），
+ * 将写入请求分发到对应的底层处理函数中执行。
+ *
+ * Return: 成功写入的字节数（ssize_t），失败时返回负的错误码
+ */
 static ssize_t
 ext4_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 {
 	int ret;
+	// 获取文件对应的 inode 结构，用于后续的文件属性和状态检查
 	struct inode *inode = file_inode(iocb->ki_filp);
 
+	// 检查文件系统是否处于紧急状态（如只读降级、致命错误等）
 	ret = ext4_emergency_state(inode->i_sb);
 	if (unlikely(ret))
 		return ret;
 
 #ifdef CONFIG_FS_DAX
+	// 如果内核配置了 DAX (Direct Access) 模式，且当前 inode 启用了 DAX
+	// 则直接通过 DAX 模式写入（绕过页缓存，直接访问持久内存）
 	if (IS_DAX(inode))
 		return ext4_dax_write_iter(iocb, from);
 #endif
 
+	// 处理原子写入（Atomic Write）请求
 	if (iocb->ki_flags & IOCB_ATOMIC) {
+		// 获取本次请求写入的数据长度
 		size_t len = iov_iter_count(from);
 
+		// 检查写入长度是否在文件系统支持的原子写入单元范围内
+		// 若小于最小值或大于最大值，则直接返回无效参数错误
 		if (len < EXT4_SB(inode->i_sb)->s_awu_min ||
 		    len > EXT4_SB(inode->i_sb)->s_awu_max)
 			return -EINVAL;
 
+		// 进行通用的原子写入合法性校验
 		ret = generic_atomic_write_valid(iocb, from);
 		if (ret)
 			return ret;
 	}
 
+	// 根据 I/O 控制标志判断是否为直接 I/O (Direct I/O)
 	if (iocb->ki_flags & IOCB_DIRECT)
+		// 直接 I/O 模式：绕过页缓存，直接与块设备进行数据交互
 		return ext4_dio_write_iter(iocb, from);
 	else
+		// 缓冲 I/O 模式：数据先写入页缓存，由内核后台线程负责刷盘
 		return ext4_buffered_write_iter(iocb, from);
 }
+
 
 #ifdef CONFIG_FS_DAX
 static vm_fault_t ext4_dax_huge_fault(struct vm_fault *vmf, unsigned int order)

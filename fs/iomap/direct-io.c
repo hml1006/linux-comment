@@ -615,36 +615,60 @@ static int iomap_dio_inline_iter(struct iomap_iter *iomi, struct iomap_dio *dio)
 	return iomap_iter_advance(iomi, copied);
 }
 
+/**
+ * iomap_dio_iter - 处理直接I/O（DIO）的一次迭代
+ * @iter: 指向iomap迭代器的指针，包含当前I/O映射的状态和信息
+ * @dio: 指向iomap直接I/O对象的指针，包含DIO操作的具体上下文和标志
+ *
+ * 该函数根据当前迭代器中的映射类型（iomap.type），分发并执行相应的
+ * 直接I/O处理逻辑。针对不同的映射类型（如空洞、已映射、未写入等），
+ * 调用对应的迭代处理函数。如果在写操作时遇到空洞，或者遇到延迟分配
+ * （通常是由于与缓冲写冲突），则会返回I/O错误。
+ *
+ * 返回值：成功时返回处理的字节数，失败时返回负的错误码（如-EIO）
+ */
 static int iomap_dio_iter(struct iomap_iter *iter, struct iomap_dio *dio)
 {
+	/* 根据当前的I/O映射类型进行分支处理 */
 	switch (iter->iomap.type) {
 	case IOMAP_HOLE:
+		/* 如果是写操作遇到了空洞，这是一个异常情况，发出警告并返回错误 */
 		if (WARN_ON_ONCE(dio->flags & IOMAP_DIO_WRITE))
 			return -EIO;
+		/* 读操作遇到空洞，交由空洞迭代函数处理 */
 		return iomap_dio_hole_iter(iter, dio);
 	case IOMAP_UNWRITTEN:
+		/* 如果是读操作遇到未写入的块，将其视为空洞处理 */
 		if (!(dio->flags & IOMAP_DIO_WRITE))
 			return iomap_dio_hole_iter(iter, dio);
+		/* 写操作遇到未写入的块，交由bio迭代函数处理 */
 		return iomap_dio_bio_iter(iter, dio);
 	case IOMAP_MAPPED:
+		/* 已映射的块，直接交由bio迭代函数处理 */
 		return iomap_dio_bio_iter(iter, dio);
 	case IOMAP_INLINE:
+		/* 内联数据，交由内联迭代函数处理 */
 		return iomap_dio_inline_iter(iter, dio);
 	case IOMAP_DELALLOC:
 		/*
-		 * DIO is not serialised against mmap() access at all, and so
-		 * if the page_mkwrite occurs between the writeback and the
-		 * iomap_iter() call in the DIO path, then it will see the
-		 * DELALLOC block that the page-mkwrite allocated.
+		 * DIO 根本没有与 mmap() 访问进行串行化，因此
+		 * 如果 page_mkwrite 发生在回写和 DIO 路径中的
+		 * iomap_iter() 调用之间，那么它将会看到
+		 * page-mkwrite 分配的 DELALLOC 块。
 		 */
+		/* 遇到延迟分配块，说明与缓冲写发生了冲突，输出限速警告日志 */
 		pr_warn_ratelimited("Direct I/O collision with buffered writes! File: %pD4 Comm: %.20s\n",
 				    dio->iocb->ki_filp, current->comm);
+		/* 返回I/O错误 */
 		return -EIO;
 	default:
+		/* 遇到未知的映射类型，触发一次性警告 */
 		WARN_ON_ONCE(1);
+		/* 返回I/O错误 */
 		return -EIO;
 	}
 }
+
 
 /*
  * iomap_dio_rw() always completes O_[D]SYNC writes regardless of whether the IO
@@ -666,116 +690,157 @@ static int iomap_dio_iter(struct iomap_iter *iter, struct iomap_dio *dio)
  * Returns -ENOTBLK In case of a page invalidation invalidation failure for
  * writes.  The callers needs to fall back to buffered I/O in this case.
  */
+/**
+ * __iomap_dio_rw - 执行直接I/O读写操作的核心函数
+ * @iocb: 内核异步I/O控制块，包含了文件、偏移量等I/O上下文信息
+ * @iter: 用户空间数据的I/O向量迭代器
+ * @ops: iomap操作函数集，用于文件系统的映射回调
+ * @dops: 直接I/O特定操作函数集
+ * @dio_flags: 直接I/O的标志位，控制特定行为（如强制等待、覆盖写等）
+ * @private: 传递给文件系统的私有数据指针
+ * @done_before: 在此次I/O操作之前已经完成的字节数
+ *
+ * 此函数负责初始化直接I/O请求，根据读写方向设置相应的标志，
+ * 处理页缓存无效化，提交I/O请求，并根据同步/异步模式决定
+ * 是等待完成还是直接返回排队状态。
+ *
+ * Return: 成功时返回指向iomap_dio结构体的指针；如果I/O被异步排队，
+ * 返回ERR_PTR(-EIOCBQUEUED)；失败时返回相应的ERR_PTR错误码；
+ * 如果请求长度为0，返回NULL。
+ */
 struct iomap_dio *
 __iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
 		const struct iomap_ops *ops, const struct iomap_dio_ops *dops,
 		unsigned int dio_flags, void *private, size_t done_before)
 {
+	/* 获取当前文件对应的inode */
 	struct inode *inode = file_inode(iocb->ki_filp);
+	
+	/* 初始化iomap迭代器，用于遍历和映射文件区域 */
 	struct iomap_iter iomi = {
-		.inode		= inode,
-		.pos		= iocb->ki_pos,
-		.len		= iov_iter_count(iter),
-		.flags		= IOMAP_DIRECT,
-		.private	= private,
+		.inode		= inode,               /* 关联的inode */
+		.pos		= iocb->ki_pos,        /* 当前I/O的起始位置 */
+		.len		= iov_iter_count(iter),/* 待处理的数据长度 */
+		.flags		= IOMAP_DIRECT,        /* 标记为直接I/O映射 */
+		.private	= private,             /* 文件系统私有数据 */
 	};
+	
+	/* 判断是否需要等待I/O完成：同步请求或设置了强制等待标志 */
 	bool wait_for_completion =
 		is_sync_kiocb(iocb) || (dio_flags & IOMAP_DIO_FORCE_WAIT);
-	struct blk_plug plug;
-	struct iomap_dio *dio;
-	loff_t ret = 0;
+	struct blk_plug plug;       /* 块设备插头，用于合并I/O请求 */
+	struct iomap_dio *dio;      /* 直接I/O描述符 */
+	loff_t ret = 0;             /* 返回值/错误码 */
 
+	/* 跟踪点：记录直接I/O读写的开始 */
 	trace_iomap_dio_rw_begin(iocb, iter, dio_flags, done_before);
 
+	/* 如果请求的数据长度为0，直接返回NULL */
 	if (!iomi.len)
 		return NULL;
 
+	/* 为直接I/O描述符分配内存 */
 	dio = kmalloc_obj(*dio);
 	if (!dio)
-		return ERR_PTR(-ENOMEM);
+		return ERR_PTR(-ENOMEM); /* 内存分配失败，返回内存不足错误 */
 
-	dio->iocb = iocb;
-	atomic_set(&dio->ref, 1);
-	dio->size = 0;
-	dio->i_size = i_size_read(inode);
-	dio->dops = dops;
-	dio->error = 0;
-	dio->flags = dio_flags & (IOMAP_DIO_FSBLOCK_ALIGNED | IOMAP_DIO_BOUNCE);
-	dio->done_before = done_before;
+	/* 初始化直接I/O描述符的各个字段 */
+	dio->iocb = iocb;                           /* 关联的异步I/O控制块 */
+	atomic_set(&dio->ref, 1);                   /* 引用计数初始化为1 */
+	dio->size = 0;                              /* 已处理的数据大小初始化为0 */
+	dio->i_size = i_size_read(inode);           /* 读取当前文件的大小 */
+	dio->dops = dops;                           /* 关联的直接I/O操作集 */
+	dio->error = 0;                             /* 错误码初始化为0 */
+	dio->flags = dio_flags & (IOMAP_DIO_FSBLOCK_ALIGNED | IOMAP_DIO_BOUNCE); /* 提取有效的标志位 */
+	dio->done_before = done_before;             /* 记录之前已完成的大小 */
 
-	dio->submit.iter = iter;
-	dio->submit.waiter = current;
+	/* 初始化提交相关的子结构体 */
+	dio->submit.iter = iter;                    /* 关联用户数据迭代器 */
+	dio->submit.waiter = current;               /* 记录当前进程为等待者 */
 
+	/* 如果I/O控制块标记为不等待（NOWAIT），则在iomap迭代器中也设置此标志 */
 	if (iocb->ki_flags & IOCB_NOWAIT)
 		iomi.flags |= IOMAP_NOWAIT;
 
+	/* 根据读写方向进行不同的处理 */
 	if (iov_iter_rw(iter) == READ) {
+		/* 读操作处理逻辑 */
+		
+		/* 如果读取的起始位置已经超过或等于文件大小，无需读取，直接退出 */
 		if (iomi.pos >= dio->i_size)
 			goto out_free_dio;
 
+		/* 如果迭代器由用户空间内存支持，设置用户支持标志 */
 		if (user_backed_iter(iter))
 			dio->flags |= IOMAP_DIO_USER_BACKED;
 
+		/* 等待相关页面的写回完成，并准备读取 */
 		ret = kiocb_write_and_wait(iocb, iomi.len);
 		if (ret)
 			goto out_free_dio;
 	} else {
-		iomi.flags |= IOMAP_WRITE;
-		dio->flags |= IOMAP_DIO_WRITE;
+		/* 写操作处理逻辑 */
+		
+		iomi.flags |= IOMAP_WRITE;            /* 标记为写映射 */
+		dio->flags |= IOMAP_DIO_WRITE;        /* 标记为直接I/O写 */
 
+		/* 如果指定了仅覆盖写模式 */
 		if (dio_flags & IOMAP_DIO_OVERWRITE_ONLY) {
-			ret = -EAGAIN;
+			ret = -EAGAIN; /* 默认设置为重试错误 */
+			
+			/* 如果写入范围超出文件当前大小，不能覆盖写，退出 */
 			if (iomi.pos >= dio->i_size ||
 			    iomi.pos + iomi.len > dio->i_size)
 				goto out_free_dio;
-			iomi.flags |= IOMAP_OVERWRITE_ONLY;
+				
+			iomi.flags |= IOMAP_OVERWRITE_ONLY; /* 设置仅覆盖写标志 */
 		}
 
+		/* 如果请求了原子写入，设置原子标志 */
 		if (iocb->ki_flags & IOCB_ATOMIC)
 			iomi.flags |= IOMAP_ATOMIC;
 
-		/* for data sync or sync, we need sync completion processing */
+		/* 对于数据同步或完全同步请求，需要同步完成处理 */
 		if (iocb_is_dsync(iocb)) {
 			dio->flags |= IOMAP_DIO_NEED_SYNC;
 
-		       /*
-			* For datasync only writes, we optimistically try using
-			* WRITE_THROUGH for this IO. This flag requires either
-			* FUA writes through the device's write cache, or a
-			* normal write to a device without a volatile write
-			* cache. For the former, Any non-FUA write that occurs
-			* will clear this flag, hence we know before completion
-			* whether a cache flush is necessary.
+		       /**
+			* 对于仅数据同步的写入，我们乐观地尝试为此I/O使用
+			* WRITE_THROUGH（直写）模式。此标志要求要么通过设备
+			* 写缓存进行FUA写入，要么向没有易失性写缓存的设备
+			* 进行常规写入。对于前者，任何非FUA写入的发生都将
+			* 清除此标志，因此我们在完成之前就知道是否需要刷新
+			* 缓存。
 			*/
 			if (!(iocb->ki_flags & IOCB_SYNC))
 				dio->flags |= IOMAP_DIO_WRITE_THROUGH;
 		}
 
-		/*
-		 * i_size updates must to happen from process context.
+		/**
+		 * i_size（文件大小）的更新必须在进程上下文中进行。
+		 * 如果写入范围超出当前文件大小，则标记需要延迟完成工作。
 		 */
 		if (iomi.pos + iomi.len > dio->i_size)
 			dio->flags |= IOMAP_DIO_COMP_WORK;
 
-		/*
-		 * Try to invalidate cache pages for the range we are writing.
-		 * If this invalidation fails, let the caller fall back to
-		 * buffered I/O.
+		/**
+		 * 尝试使我们正在写入范围的缓存页无效化。
+		 * 如果无效化失败，让调用者回退到缓冲I/O。
 		 */
 		ret = kiocb_invalidate_pages(iocb, iomi.len);
 		if (ret) {
 			if (ret != -EAGAIN) {
+				/* 跟踪页缓存无效化失败事件 */
 				trace_iomap_dio_invalidate_fail(inode, iomi.pos,
 								iomi.len);
 				if (iocb->ki_flags & IOCB_ATOMIC) {
-					/*
-					 * folio invalidation failed, maybe
-					 * this is transient, unlock and see if
-					 * the caller tries again.
+					/**
+					 * 页无效化失败，这可能是暂时的，
+					 * 解锁并查看调用者是否重试。
 					 */
 					ret = -EAGAIN;
 				} else {
-					/* fall back to buffered write */
+					/* 回退到缓冲写 */
 					ret = -ENOTBLK;
 				}
 			}
@@ -783,103 +848,137 @@ __iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
 		}
 	}
 
+	/* 如果不需要等待完成，且超级块的直接I/O完成工作队列尚未初始化，则初始化它 */
 	if (!wait_for_completion && !inode->i_sb->s_dio_done_wq) {
 		ret = sb_init_dio_done_wq(inode->i_sb);
 		if (ret < 0)
 			goto out_free_dio;
 	}
 
+	/* 标记inode正在进行的直接I/O操作开始（阻止某些文件系统操作） */
 	inode_dio_begin(inode);
 
+	/* 开启块设备插头，以便合并后续的I/O请求 */
 	blk_start_plug(&plug);
+	
+	/* 循环遍历并映射文件区域，提交I/O请求 */
 	while ((ret = iomap_iter(&iomi, ops)) > 0) {
+		/* 对每个映射区域执行直接I/O迭代处理 */
 		iomi.status = iomap_dio_iter(&iomi, dio);
 
-		/*
-		 * We can only poll for single bio I/Os.
+		/**
+		 * 我们只能对单个bio的I/O进行轮询。
+		 * 如果有多个bio，则清除高优先级（轮询）标志。
 		 */
 		iocb->ki_flags &= ~IOCB_HIPRI;
 	}
 
+	/* 拔出插头，提交已合并的I/O请求给块设备驱动 */
 	blk_finish_plug(&plug);
 
-	/*
-	 * We only report that we've read data up to i_size.
-	 * Revert iter to a state corresponding to that as some callers (such
-	 * as the splice code) rely on it.
+	/**
+	 * 我们只报告已读取到i_size（文件大小）位置的数据。
+	 * 将迭代器恢复到与该状态对应的位置，因为某些调用者
+	 * （如splice代码）依赖于这一点。
 	 */
 	if (iov_iter_rw(iter) == READ && iomi.pos >= dio->i_size)
 		iov_iter_revert(iter, iomi.pos - dio->i_size);
 
+	/* 如果遇到错误，但已经完成了部分I/O，且允许部分完成 */
 	if (ret == -EFAULT && dio->size && (dio_flags & IOMAP_DIO_PARTIAL)) {
+		/* 如果不是NOWAIT请求，则必须等待已完成部分的结束 */
 		if (!(iocb->ki_flags & IOCB_NOWAIT))
 			wait_for_completion = true;
-		ret = 0;
+		ret = 0; /* 将错误码清零，表示部分成功 */
 	}
 
-	/* magic error code to fall back to buffered I/O */
+	/* 遇到回退到缓冲I/O的魔术错误码 */
 	if (ret == -ENOTBLK) {
-		wait_for_completion = true;
+		wait_for_completion = true; /* 需要等待以安全回退 */
 		ret = 0;
 	}
+	
+	/* 如果发生其他严重错误，记录到dio结构体中 */
 	if (ret < 0)
 		iomap_dio_set_error(dio, ret);
 
-	/*
-	 * If all the writes we issued were already written through to the
-	 * media, we don't need to flush the cache on IO completion. Clear the
-	 * sync flag for this case.
+	/**
+	 * 如果我们发出的所有写入都已经直写到介质，则不需要在
+	 * I/O完成时刷新缓存。在这种情况下，清除同步标志。
 	 *
-	 * Otherwise clear the inline completion flag if any sync work is
-	 * needed, as that needs to be performed from process context.
+	 * 否则，如果需要任何同步工作，则清除内联完成标志，
+	 * 因为同步工作需要在进程上下文中执行。
 	 */
 	if (dio->flags & IOMAP_DIO_WRITE_THROUGH)
 		dio->flags &= ~IOMAP_DIO_NEED_SYNC;
 	else if (dio->flags & IOMAP_DIO_NEED_SYNC)
 		dio->flags |= IOMAP_DIO_COMP_WORK;
 
-	/*
-	 * We are about to drop our additional submission reference, which
-	 * might be the last reference to the dio.  There are three different
-	 * ways we can progress here:
+	/**
+	 * 我们即将放弃额外的提交引用，这可能是对dio的最后
+	 * 一个引用。这里有三种不同的进展方式：
 	 *
-	 *  (a) If this is the last reference we will always complete and free
-	 *	the dio ourselves.
-	 *  (b) If this is not the last reference, and we serve an asynchronous
-	 *	iocb, we must never touch the dio after the decrement, the
-	 *	I/O completion handler will complete and free it.
-	 *  (c) If this is not the last reference, but we serve a synchronous
-	 *	iocb, the I/O completion handler will wake us up on the drop
-	 *	of the final reference, and we will complete and free it here
-	 *	after we got woken by the I/O completion handler.
+	 * (a) 如果这是最后一个引用，我们将始终自己完成并释放dio。
+	 * (b) 如果这不是最后一个引用，并且我们服务于异步iocb，
+	 *     我们在递减后绝不能触及dio，I/O完成处理程序将完成
+	 *     并释放它。
+	 * (c) 如果这不是最后一个引用，但我们服务于同步iocb，
+	 *     I/O完成处理程序将在最终引用丢弃时唤醒我们，我们
+	 *     将在I/O完成处理程序唤醒我们之后，在这里完成并释放它。
 	 */
 	dio->wait_for_completion = wait_for_completion;
+	
+	/* 原子地递减引用计数并测试是否为0（即没有其他引用） */
 	if (!atomic_dec_and_test(&dio->ref)) {
+		/* 还有其他引用存在（I/O仍在进行中） */
 		if (!wait_for_completion) {
+			/* 异步模式：不等待完成，记录跟踪点并返回排队状态 */
 			trace_iomap_dio_rw_queued(inode, iomi.pos, iomi.len);
 			return ERR_PTR(-EIOCBQUEUED);
 		}
 
+		/* 同步模式：循环等待I/O完成 */
 		for (;;) {
-			set_current_state(TASK_UNINTERRUPTIBLE);
-			if (!READ_ONCE(dio->submit.waiter))
+			set_current_state(TASK_UNINTERRUPTIBLE); /* 设置为不可中断睡眠状态 */
+			if (!READ_ONCE(dio->submit.waiter))      /* 检查等待者是否已被清除（完成标志） */
 				break;
 
-			blk_io_schedule();
+			blk_io_schedule(); /* 调度其他进程运行，等待I/O完成唤醒 */
 		}
-		__set_current_state(TASK_RUNNING);
+		__set_current_state(TASK_RUNNING); /* 恢复为运行状态 */
 	}
 
+	/* 成功完成，返回dio结构体指针 */
 	return dio;
 
 out_free_dio:
+	/* 退出清理：释放dio占用的内存 */
 	kfree(dio);
+	/* 如果有错误码，返回对应的错误指针 */
 	if (ret)
 		return ERR_PTR(ret);
+	/* 没有错误码（如读取位置超出文件大小），返回NULL */
 	return NULL;
 }
+
 EXPORT_SYMBOL_GPL(__iomap_dio_rw);
 
+/**
+ * iomap_dio_rw - 执行直接I/O读写操作
+ * @iocb: 指向异步I/O控制块的指针，包含文件偏移量等I/O上下文信息
+ * @iter: 指向I/O向量迭代器的指针，描述用户空间的数据缓冲区
+ * @ops: 指向iomap操作回调函数集的指针，用于文件系统的映射请求
+ * @dops: 指向直接I/O特定操作回调函数集的指针
+ * @dio_flags: 直接I/O的标志位，用于控制特定的I/O行为
+ * @private: 传递给文件系统的私有数据指针
+ * @done_before: 在此次I/O操作之前已经完成的字节数，用于计算总进度
+ *
+ * 该函数是Linux内核中iomap框架下直接I/O(Direct I/O)读写的入口封装。
+ * 它主要负责调用底层执行函数发起I/O操作，并根据执行结果决定是返回错误码
+ * 还是等待并完成整个I/O操作。
+ *
+ * Return: 成功完成时返回读写的字节数，失败时返回负的错误码
+ */
 ssize_t
 iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
 		const struct iomap_ops *ops, const struct iomap_dio_ops *dops,
@@ -887,10 +986,16 @@ iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
 {
 	struct iomap_dio *dio;
 
+	/* 调用底层的直接I/O读写核心逻辑函数，返回iomap_dio结构体指针 */
 	dio = __iomap_dio_rw(iocb, iter, ops, dops, dio_flags, private,
 			     done_before);
+			     
+	// 检查返回值是否为无效指针或空指针
 	if (IS_ERR_OR_NULL(dio))
-		return PTR_ERR_OR_ZERO(dio);
+		return PTR_ERR_OR_ZERO(dio); // 若为错误指针则返回负的错误码，若为NULL则返回0
+		
+	// 若直接I/O操作已正常提交或完成，则执行完成操作并返回实际读写的字节数
 	return iomap_dio_complete(dio);
 }
+
 EXPORT_SYMBOL_GPL(iomap_dio_rw);

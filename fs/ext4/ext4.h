@@ -2327,6 +2327,17 @@ static inline int ext4_emergency_ro(struct super_block *sb)
 	return test_bit(EXT4_FLAGS_EMERGENCY_RO, &EXT4_SB(sb)->s_ext4_flags);
 }
 
+/**
+ * ext4_emergency_state - 检查Ext4文件系统是否处于紧急状态
+ * @sb: 指向超级块（super_block）结构体的指针，代表目标文件系统
+ *
+ * 此函数用于判断Ext4文件系统当前是否处于紧急状态，包括强制关闭或紧急只读状态。
+ * 如果文件系统正被强制关闭，返回 -EIO；
+ * 如果文件系统处于紧急只读模式，返回 -EROFS；
+ * 如果文件系统处于正常状态，返回 0。
+ *
+ * Return: 若处于强制关闭状态返回 -EIO，若处于紧急只读状态返回 -EROFS，否则返回 0
+ */
 static inline int ext4_emergency_state(struct super_block *sb)
 {
 	if (unlikely(ext4_forced_shutdown(sb)))

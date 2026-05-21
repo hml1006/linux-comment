@@ -73,6 +73,21 @@ static inline void fsnotify_inode(struct inode *inode, __u32 mask)
 }
 
 /* Notify this dentry's parent about a child's events. */
+/**
+ * fsnotify_parent - 通知父目录关于文件系统事件
+ * @dentry: 发生事件的目标dentry
+ * @mask: 事件掩码，描述发生的事件类型
+ * @data: 事件相关的额外数据
+ * @data_type: 额外数据的类型
+ * 
+ * 此函数用于通知父目录关于文件系统中的事件。首先检查目标dentry的超级块是否有
+ * 监视器。如果目标是一个目录，则设置FS_ISDIR标志，并检查是否需要通知父目录。
+ * 如果dentry是根目录或断开的，则直接通知子节点。否则，调用__fsnotify_parent
+ * 来通知父目录。
+ * 
+ * 返回值:
+ *     成功时返回0，失败时返回错误码
+ */
 static inline int fsnotify_parent(struct dentry *dentry, __u32 mask,
 				  const void *data, int data_type)
 {

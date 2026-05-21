@@ -1143,6 +1143,19 @@ int kblockd_mod_delayed_work_on(int cpu, struct delayed_work *dwork,
 }
 EXPORT_SYMBOL(kblockd_mod_delayed_work_on);
 
+/**
+ * blk_start_plug_nr_ios - 启动一个块设备请求的插桩，并指定初始 I/O 请求数量。
+ * @plug: 指向待初始化并启动的 blk_plug 结构体的指针
+ * @nr_ios: 预期的 I/O 请求数量，用于限制插桩中排队的请求总数
+ *
+ * 该函数用于初始化并启动一个块设备插桩。插桩机制允许将多个 I/O 请求
+ * 暂时缓存起来，以便后续统一发送到块设备层，从而减少锁竞争并提高 I/O
+ * 吞吐量。调用者可以通过 @nr_ios 参数指定预期的 I/O 数量，该值会被
+ * 限制在 BLK_MAX_REQUEST_COUNT 以内。
+ *
+ * 如果当前任务已经存在一个活跃的插桩（即嵌套插桩场景），该函数将直接
+ * 返回，不做任何处理，以避免覆盖外层的插桩。
+ */
 void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
 {
 	struct task_struct *tsk = current;
@@ -1191,6 +1204,19 @@ void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
  *   page belonging to that request that is currently residing in our private
  *   plug. By flushing the pending I/O when the process goes to sleep, we avoid
  *   this kind of deadlock.
+ */
+/**
+ * blk_start_plug - 启动块层插塞机制
+ * @plug: 指向待初始化的 blk_plug 结构的指针
+ *
+ * 该函数用于启动块设备层的请求插塞机制。插塞机制允许将多个
+ * I/O 请求暂时聚集在当前任务的队列中，而不是立即下发到底层
+ * 驱动，从而使得块层有机会对相邻或重叠的 I/O 请求进行合并
+ * 与排序，有效减少磁盘寻址时间并提高整体 I/O 吞吐量。
+ *
+ * 本函数是对 blk_start_plug_nr_ios() 的封装，默认将初始
+ * I/O 计数设置为 1。当累积的 I/O 数量达到一定阈值时，插塞
+ * 机制会自动解开，将请求下发。
  */
 void blk_start_plug(struct blk_plug *plug)
 {

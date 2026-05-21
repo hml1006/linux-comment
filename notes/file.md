@@ -211,15 +211,8 @@ path lookup过程是顺着dentry树从上到下查找的，如果遇到符号链
 ++ build_open_how       | 初始化open_how flags, openat2的参数
 ++ do_sys_openat2
 +++ build_open_flags    | 将open_how flags转换为openat2的open_flags
-+++ getname             | 根据文件名生成struct filename结构体
-++++ getname_flags
-+++++ audit_reusename   | 如果是审计路径，则返回审计路径
-+++++ __getname         | 分配内存struct filename结构体
-+++++ strncpy_from_user | 将用户空间文件名复制到内核空间
-+++++ initname          | 初始化struct filename结构体字段
-+++++ audit_getname     | 加入审计
-+++ get_unused_fd_flags | 获取未使用的文件描述符
-+++ do_filp_open    | 打开文件
++++ FD_ADD(how->flags, do_file_open(dfd, name, &op)) | 调用do_file_open打开文件，并添加到当前进程的文件描述符表中
++++ do_file_open    | 打开文件
 ++++ set_nameidata | 设置nameidata结构体
 +++++ __set_nameidata | 设置nameidata结构体， current->nameidata 复用
 ++++ path_openat
@@ -259,10 +252,6 @@ path lookup过程是顺着dentry树从上到下查找的，如果遇到符号链
 +++++++++ ext4_file_open | 更新最后挂载路径，绑定jounal inode
 +++++ terminate_walk | 结束path walk
 ++++ restore_nameidata | 恢复nameidata结构体
-+++ put_unused_fd       | 如果打开失败，回收描述符
-+++ fd_install       | 将struct file加到当前进程files中
-+++ putname             | 释放struct filename结构体
-
 }}
 @endsalt
 ```
@@ -280,6 +269,20 @@ path lookup过程是顺着dentry树从上到下查找的，如果遇到符号链
 ++++ file_start_write | 通知文件系统superblock写开始，避免写的时候freeze
 ++++ file_write_and_wait_range | 写文件
 ++++ new_sync_write | 调用文件系统的write函数，现代文件系统使用f_op->write_iter
++++++ ext4_file_write_iter | 调用ext4_file_write_iter
+++++++ ext4_dio_write_iter | DirectIO写
++++++++ iomap_dio_rw | DirectIO写
+++++++++ __iomap_dio_rw | DirectIO写
++++++++++ iomap_iter | 映射文件块,把文件内的偏移映射到磁盘块上
+++++++++++ ops->iomap_begin | 调用文件系统的iomap_begin函数，比如ext4_iomap_begin
++++++++++++ ext4_iomap_begin | 映射文件块,把文件内的偏移映射到磁盘块上
+++++++++++++ ext4_map_blocks | 只查找映射不分配
+++++++++++++ ext4_iomap_alloc | 分配磁盘块
++++++++++++++ ext4_map_blocks | 分配映射
+++++++++++++++ ext4_map_create_blocks | 实际创建映射
++++++++++++++++ ext4_ext_map_blocks | 使用extent，走这个函数
++++++++++ iomap_dio_iter | 写映射好的块
+++++++ ext4_buffered_write_iter | Buffered写
 ++++ fsnotify_modify    | 通知机制，文件被修改
 ++++ add_wchar  | 更新进程写字符数
 ++++ inc_syscw  | 更新进程write系统调用数

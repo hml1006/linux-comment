@@ -369,6 +369,18 @@ ssize_t __import_iovec(int type, const struct iovec __user *uvec,
 		 struct iov_iter *i, bool compat);
 int import_ubuf(int type, void __user *buf, size_t len, struct iov_iter *i);
 
+/**
+ * iov_iter_ubuf - 初始化一个指向单一用户空间缓冲区的 iov_iter 结构体
+ * @i: 指向待初始化的 iov_iter 结构体的指针
+ * @direction: 迭代器的数据流向（READ 或 WRITE）
+ * @buf: 用户空间缓冲区的起始地址
+ * @count: 缓冲区中数据的字节长度
+ *
+ * 该函数用于将一个 iov_iter 结构体初始化为 ITER_UBUF 类型，表示它代表一个
+ * 连续的用户空间缓冲区，而不是通过 iov 向量描述的分散缓冲区。
+ * 函数内部会通过 WARN_ON 检查 direction 是否为非法值（即不是 READ 也不是 WRITE）。
+ * 初始化时会将 nr_segs（段数）自动设置为 1。
+ */
 static inline void iov_iter_ubuf(struct iov_iter *i, unsigned int direction,
 			void __user *buf, size_t count)
 {

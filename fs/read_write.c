@@ -450,6 +450,24 @@ SYSCALL_DEFINE5(llseek, unsigned int, fd, unsigned long, offset_high,
 }
 #endif
 
+/**
+ * rw_verify_area - 验证文件读写区域的权限与偏移量合法性
+ * @read_write: 读写操作类型标识（READ 或 WRITE）
+ * @file: 指向目标文件对象的指针
+ * @ppos: 指向文件偏移量的指针，若为 NULL 则跳过偏移量验证
+ * @count: 请求读写的字节数
+ *
+ * 此函数用于在执行文件读写操作前，验证请求的区域是否合法。
+ * 验证内容包括：
+ * 1. 检查请求的字节数是否为负数，若为负则返回 -EINVAL；
+ * 2. 检查文件偏移量与请求字节数相加后是否会导致溢出或越界，
+ *    对于不支持无符号偏移量的文件，若偏移量为负或相加后溢出，返回 -EINVAL；
+ *    对于支持无符号偏移量的文件，若溢出则返回 -EOVERFLOW；
+ * 3. 调用安全模块检查文件访问权限（读或写）；
+ * 4. 调用 fsnotify 检查文件区域的访问权限。
+ *
+ * Return: 成功时返回 0，失败时返回相应的负错误码（如 -EINVAL、-EOVERFLOW 或安全模块返回的错误码）。
+ */
 int rw_verify_area(int read_write, struct file *file, const loff_t *ppos, size_t count)
 {
 	int mask = read_write == READ ? MAY_READ : MAY_WRITE;
@@ -582,22 +600,53 @@ ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 	return ret;
 }
 
+/**
+ * new_sync_write - 同步写入数据到文件
+ * @filp: 指向目标文件对象的指针
+ * @buf:  指向用户空间缓冲区的指针，包含要写入的数据
+ * @len:  要写入的数据长度（字节数）
+ * @ppos: 指向文件偏移量的指针，如果为NULL则从0开始写入
+ *
+ * 该函数将用户空间的数据同步写入到指定的文件中。它通过初始化一个同步的
+ * 内核I/O控制块和I/O向量迭代器，调用文件操作的 write_iter 方法来完成
+ * 实际的写入操作。写入完成后，如果写入字节数大于0且ppos指针有效，则会
+ * 更新文件的偏移量。
+ *
+ * Return: 成功时返回写入的字节数，失败时返回相应的负错误码。
+ */
 static ssize_t new_sync_write(struct file *filp, const char __user *buf, size_t len, loff_t *ppos)
 {
+	/* 初始化同步内核I/O控制块 */
 	struct kiocb kiocb;
+	/* I/O向量迭代器，用于描述用户空间的缓冲区 */
 	struct iov_iter iter;
+	/* 用于保存写入操作的返回值 */
 	ssize_t ret;
 
+	/* 初始化kiocb，将其与文件对象filp关联，并标记为同步操作 */
 	init_sync_kiocb(&kiocb, filp);
+	/* 设置写入的起始位置：如果ppos非空则取其值，否则默认从0开始 */
 	kiocb.ki_pos = (ppos ? *ppos : 0);
+	/* 使用用户空间缓冲区初始化iov_iter迭代器，方向为数据源（写入） */
 	iov_iter_ubuf(&iter, ITER_SOURCE, (void __user *)buf, len);
 
+	/* 调用具体文件系统的write_iter方法执行实际的写入操作 */
+	// ext4_file_write_iter
 	ret = filp->f_op->write_iter(&kiocb, &iter);
+	/* 
+	 * 断言检查：同步写入操作不应返回-EIOCBQUEUED（表示已排队异步处理）。
+	 * 如果触发此BUG，说明同步上下文中出现了非预期的异步排队行为。
+	 */
 	BUG_ON(ret == -EIOCBQUEUED);
+	
+	/* 如果写入成功（返回正数）且ppos指针有效，则更新文件的偏移量 */
 	if (ret > 0 && ppos)
 		*ppos = kiocb.ki_pos;
+		
+	/* 返回实际写入的字节数或错误码 */
 	return ret;
 }
+
 
 /* caller is responsible for file_start_write/file_end_write */
 ssize_t __kernel_write_iter(struct file *file, struct iov_iter *from, loff_t *pos)
@@ -665,6 +714,24 @@ ssize_t kernel_write(struct file *file, const void *buf, size_t count,
 }
 EXPORT_SYMBOL(kernel_write);
 
+/**
+ * vfs_write - 向文件写入数据
+ * @file: 指向目标文件对象的指针
+ * @buf: 用户空间缓冲区的指针，包含要写入的数据
+ * @count: 要写入的字节数
+ * @pos: 指向文件偏移量的指针，数据将从此位置开始写入
+ *
+ * 该函数是虚拟文件系统（VFS）层的核心写入例程。它首先对文件权限、
+ * 用户空间缓冲区的安全性以及写入范围进行一系列检查，然后调用
+ * 具体文件系统的 write 或 write_iter 方法来执行实际的写入操作。
+ * 写入成功后，会更新系统的写入统计信息并触发文件修改通知。
+ *
+ * Return: 成功时返回写入的字节数（大于0）；失败时返回相应的负错误码：
+ * -EBADF: 文件未以写入模式打开
+ * -EINVAL: 文件不支持写入操作
+ * -EFAULT: 用户空间缓冲区不可访问
+ * 其他负值: 由 rw_verify_area 或具体文件系统操作返回的错误码
+ */
 ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
@@ -681,18 +748,25 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
 		return ret;
 	if (count > MAX_RW_COUNT)
 		count =  MAX_RW_COUNT;
+
+	// 避免文件系统写的时候被freeze，write信号量++
 	file_start_write(file);
 	if (file->f_op->write)
+		// 内存文件系统如proc之类会走这里
 		ret = file->f_op->write(file, buf, count, pos);
 	else if (file->f_op->write_iter)
+		// 块设备文件系统如ext4之类会走这里
 		ret = new_sync_write(file, buf, count, pos);
 	else
 		ret = -EINVAL;
 	if (ret > 0) {
 		fsnotify_modify(file);
+		// 进程io统计
 		add_wchar(current, ret);
 	}
+	// 进程write系统调用数统计
 	inc_syscw(current);
+	// write信号量--
 	file_end_write(file);
 	return ret;
 }
@@ -726,6 +800,20 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 	return ksys_read(fd, buf, count);
 }
 
+/**
+ * ksys_write - 向指定的文件描述符写入数据
+ * @fd: 文件描述符，用于指定目标文件
+ * @buf: 用户空间缓冲区的指针，包含要写入的数据
+ * @count: 要写入的字节数
+ *
+ * 此函数是内核级别的 write 系统调用的内部实现。它通过文件描述符
+ * 查找对应的文件对象，处理文件偏移量，并调用 vfs_write 执行实际
+ * 的写入操作。如果写入成功且文件偏移量指针存在，则会更新文件的
+ * 当前位置。
+ *
+ * Return: 成功时返回写入的字节数（>= 0），失败时返回相应的负错误码
+ * （如 -EBADF 表示无效的文件描述符）。
+ */
 ssize_t ksys_write(unsigned int fd, const char __user *buf, size_t count)
 {
 	CLASS(fd_pos, f)(fd);
