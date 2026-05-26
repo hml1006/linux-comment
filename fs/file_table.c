@@ -215,47 +215,71 @@ static int init_file(struct file *f, int flags, const struct cred *cred)
  * done, you will imbalance int the mount's writer count
  * and a warning at __fput() time.
  */
+/**
+ * alloc_empty_file - 分配一个空的文件结构体
+ * @flags: 文件的打开标志
+ * @cred: 凭证信息，用于权限控制
+ *
+ * 该函数用于从缓存中分配一个新的 file 结构体，并进行初始化。
+ * 同时会检查系统打开文件的数量是否超过上限。
+ *
+ * 返回值: 成功时返回指向新分配的 file 结构体的指针，
+ *         失败时返回相应的 ERR_PTR 错误指针（如 -ENOMEM 或 -ENFILE）。
+ */
 struct file *alloc_empty_file(int flags, const struct cred *cred)
 {
+	/* 记录上次触发文件数上限时的最大文件数，避免重复打印日志 */
 	static long old_max;
+	/* 指向新分配的文件结构体的指针 */
 	struct file *f;
+	/* 用于存储初始化等操作的错误码 */
 	int error;
 
 	/*
-	 * Privileged users can go above max_files
+	 * 特权用户可以突破 max_files 的限制
 	 */
 	if (unlikely(get_nr_files() >= files_stat.max_files) &&
 	    !capable(CAP_SYS_ADMIN)) {
 		/*
-		 * percpu_counters are inaccurate.  Do an expensive check before
-		 * we go and fail.
+		 * percpu_counters（每CPU计数器）是不精确的。
+		 * 在我们真正走向失败之前，做一个开销较大的精确检查。
 		 */
 		if (percpu_counter_sum_positive(&nr_files) >= files_stat.max_files)
 			goto over;
 	}
 
+	/* 从文件结构体专属的 slab 缓存中分配内存 */
 	f = kmem_cache_alloc(filp_cachep, GFP_KERNEL);
+	/* 内存分配失败 */
 	if (unlikely(!f))
 		return ERR_PTR(-ENOMEM);
 
+	/* 初始化分配到的文件结构体 */
 	error = init_file(f, flags, cred);
+	/* 初始化失败，释放之前分配的内存 */
 	if (unlikely(error)) {
 		kmem_cache_free(filp_cachep, f);
 		return ERR_PTR(error);
 	}
 
+	/* 增加系统全局的已打开文件计数器 */
 	percpu_counter_inc(&nr_files);
 
+	/* 返回成功初始化的文件结构体指针 */
 	return f;
 
 over:
-	/* Ran out of filps - report that */
+	/* 文件句柄耗尽 - 报告该情况 */
 	if (get_nr_files() > old_max) {
+		/* 打印内核日志，提示文件数已达上限 */
 		pr_info("VFS: file-max limit %lu reached\n", get_max_files());
+		/* 更新历史最大文件数记录，防止日志刷屏 */
 		old_max = get_nr_files();
 	}
+	/* 返回 -ENFILE 错误，表示系统打开的文件总数已满 */
 	return ERR_PTR(-ENFILE);
 }
+
 
 /*
  * Variant of alloc_empty_file() that doesn't check and modify nr_files.

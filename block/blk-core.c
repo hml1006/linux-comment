@@ -624,32 +624,49 @@ static inline blk_status_t blk_check_zone_append(struct request_queue *q,
 	return BLK_STS_OK;
 }
 
+/**
+ * __submit_bio - 提交一个BIO（块I/O）请求到底层设备
+ * @bio: 指向待提交的BIO结构的指针
+ *
+ * 该函数是块层提交BIO的核心入口之一。它会初始化一个blk_plug用于缓存请求以实现批量提交，
+ * 从而减少频繁向硬件派发请求所带来的时间开销（nsecs级别）。根据目标块设备是否支持
+ * 直接的submit_bio操作，函数会走不同的分发路径。对于不支持直接提交的设备（如NVMe），
+ * 会转入块多队列逻辑；对于支持的设备，则进入队列并调用设备驱动注册的submit_bio回调。
+ */
 static void __submit_bio(struct bio *bio)
 {
-	/* If plug is not used, add new plug here to cache nsecs time. */
+	/* 如果未使用plug，则在此处添加新的plug以缓存nsecs级别的时间 */
 	struct blk_plug plug;
 
 	// 用plug提示批量提交bio
 	blk_start_plug(&plug);
 
+	/* 检查块设备是否具有 BD_HAS_SUBMIT_BIO 标志，决定提交路径 */
 	if (!bdev_test_flag(bio->bi_bdev, BD_HAS_SUBMIT_BIO)) {
-		// nvme走这里
+		// nvme走这里（进入块多队列提交逻辑）
 		blk_mq_submit_bio(bio);
 	} else if (likely(bio_queue_enter(bio) == 0)) {
+		/* 成功进入请求队列，准备调用设备驱动的提交方法 */
 		struct gendisk *disk = bio->bi_bdev->bd_disk;
 	
+		/* 检查是否为轮询(POLL)请求，且设备是否不支持轮询特性 */
 		if ((bio->bi_opf & REQ_POLLED) &&
 		    !(disk->queue->limits.features & BLK_FEAT_POLL)) {
+			/* 设备不支持轮询，直接以不支持状态结束该BIO */
 			bio->bi_status = BLK_STS_NOTSUPP;
 			bio_endio(bio);
 		} else {
+			/* 正常路径：调用具体块设备驱动注册的 submit_bio 回调函数 */
 			disk->fops->submit_bio(bio);
 		}
+		/* 退出请求队列（释放队列引用计数） */
 		blk_queue_exit(disk->queue);
 	}
 
+	/* 结束plug，将缓存的请求批量派发给底层硬件 */
 	blk_finish_plug(&plug);
 }
+
 
 /*
  * The loop in this function may be a bit non-obvious, and so deserves some
@@ -714,6 +731,15 @@ static void __submit_bio_noacct(struct bio *bio)
 	current->bio_list = NULL;
 }
 
+/**
+ * __submit_bio_noacct_mq - 无需账号检查地提交多队列块I/O请求
+ * @bio: 指向待提交的块I/O请求结构的指针
+ *
+ * 该函数用于在不进行额外账号限制检查的情况下，将bio提交至多队列块设备。
+ * 它通过设置当前进程的bio_list来收集处理过程中可能产生的新bio，
+ * 并循环处理这些新生成的bio，直到所有相关的bio都提交完毕。
+ * 这种机制确保了映射设备在提交一个bio时产生的衍生bio能够被正确处理。
+ */
 static void __submit_bio_noacct_mq(struct bio *bio)
 {
 	struct bio_list bio_list[2] = { };
@@ -729,38 +755,53 @@ static void __submit_bio_noacct_mq(struct bio *bio)
 	current->bio_list = NULL;
 }
 
+/**
+ * submit_bio_noacct_nocheck - 提交bio请求且不进行账号检查
+ * @bio: 待提交的bio结构体指针
+ * @split: 标识该bio是否为拆分后的请求
+ *
+ * 该函数用于将bio提交给底层块设备进行处理。在提交过程中，会进行cgroup
+ * 统计、追踪设置，并根据当前上下文及设备类型选择不同的提交路径。
+ */
 void submit_bio_noacct_nocheck(struct bio *bio, bool split)
 {
+	// 开始bio的cgroup计数
 	blk_cgroup_bio_start(bio);
 
+	// 如果bio没有标记追踪完成
 	if (!bio_flagged(bio, BIO_TRACE_COMPLETION)) {
+		// 追踪bio入队事件
 		trace_block_bio_queue(bio);
 		/*
-		 * Now that enqueuing has been traced, we need to trace
-		 * completion as well.
+		 * 既然入队操作已经被追踪，我们同样需要追踪其完成事件。
+		 * 因此在这里设置完成追踪标志位。
 		 */
 		bio_set_flag(bio, BIO_TRACE_COMPLETION);
 	}
 
 	/*
-	 * We only want one ->submit_bio to be active at a time, else stack
-	 * usage with stacked devices could be a problem.  Use current->bio_list
-	 * to collect a list of requests submitted by a ->submit_bio method
-	 * while it is active, and then process them after it returned.
+	 * 我们只希望同一时间只有一个 ->submit_bio 处于活动状态，否则在
+	 * 堆叠设备（stacked devices）的情况下，栈的使用可能会成为问题。
+	 * 使用 current->bio_list 来收集处于活动状态的 ->submit_bio 方法
+	 * 所提交的请求列表，并在其返回后再进行处理。
 	 */
 	if (current->bio_list) {
-		// mapped device走这里
+		// mapped device走这里：当前上下文已有活跃的bio_list
 		if (split)
+			// 如果是拆分的bio，将其添加到链表头部以保证顺序
 			bio_list_add_head(&current->bio_list[0], bio);
 		else
+			// 否则添加到链表尾部
 			bio_list_add(&current->bio_list[0], bio);
 	} else if (!bdev_test_flag(bio->bi_bdev, BD_HAS_SUBMIT_BIO)) {
-		// nvme盘会走这里，有自定义submit_io
+		// nvme盘会走这里，有自定义submit_io：设备未实现自定义的submit_bio回调
 		__submit_bio_noacct_mq(bio);
 	} else {
+		// 普通块设备：使用默认的多队列或传统方式提交
 		__submit_bio_noacct(bio);
 	}
 }
+
 
 static blk_status_t blk_validate_atomic_write_op_size(struct request_queue *q,
 						 struct bio *bio)
@@ -782,6 +823,27 @@ static blk_status_t blk_validate_atomic_write_op_size(struct request_queue *q,
  * resubmitted to lower level drivers by stacking block drivers.  All file
  * systems and other upper level users of the block layer should use
  * submit_bio() instead.
+ */
+/**
+ * submit_bio_noacct - 直接向块设备提交bio, 不记账
+ * @bio: 指向待提交的块I/O操作结构的指针
+ *
+ * 此函数是通用块层的核心提交入口之一，负责对即将提交的bio进行一系列
+ * 合法性检查、特性支持检查以及分区重映射等预处理，最终将合法的bio
+ * 提交到底层驱动或节流控制层。
+ *
+ * 处理流程主要包括：
+ * 1. 检查REQ_NOWAIT请求在队列不支持时的合法性。
+ * 2. 检查内联加密上下文的合法性及硬件支持情况。
+ * 3. 故障注入检查。
+ * 4. 只读设备检查。
+ * 5. 分区重映射及越界检查。
+ * 6. Flush请求的预处理及设备写缓存特性检查。
+ * 7. 针对各种具体I/O操作（写、丢弃、安全擦除、区域追加等）的
+ *    特性及边界限制检查。
+ * 8. 穿过块层节流控制器。
+ * 9. 若通过所有检查，则调用submit_bio_noacct_nocheck()提交bio；
+ *    若不通过，则设置相应的错误状态并结束bio。
  */
 void submit_bio_noacct(struct bio *bio)
 {

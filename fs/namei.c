@@ -1848,10 +1848,23 @@ EXPORT_SYMBOL(lookup_one_qstr_excl);
  * must be legitimized before use. If this returns NULL, then the walk
  * will no longer be in RCU mode.
  */
+/**
+ * lookup_fast - 快速查找目录项
+ * @nd: 当前路径查找数据结构，包含查找状态、路径和标志等信息
+ *
+ * 该函数用于在目录缓存中快速查找指定的目录项。根据查找标志的不同，
+ * 它会在 RCU（Read-Copy-Update）模式或普通加锁模式下进行查找。
+ * 如果在 RCU 模式下查找失败或遇到竞态条件，会尝试退回到非 RCU 模式。
+ *
+ * 返回值: 成功则返回找到的 dentry 指针；如果目录项不在缓存中则返回 NULL；
+ *         如果发生错误则返回相应的 ERR_PTR。
+ */
 static struct dentry *lookup_fast(struct nameidata *nd)
 {
-	struct dentry *dentry, *parent = nd->path.dentry;
-	int status = 1;
+	struct dentry *dentry, *parent = nd->path.dentry; /* dentry: 查找结果目录项，parent: 父目录项 */
+	int status = 1; /* 目录项验证状态，默认为1（有效） */
+
+	/* 打印调试信息，输出当前正在查找的文件/目录名 */
 	nd_dbg(nd, "nd->last=%s\n",
 		nd->last.name);
 	/*
@@ -1859,64 +1872,93 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 	 * of a false negative due to a concurrent rename, the caller is
 	 * going to fall back to non-racy lookup.
 	 */
+	/* 判断是否处于 RCU 查找模式 */
 	if (nd->flags & LOOKUP_RCU) {
 		// rcu_read_lock已经在path_init中调用
+		/* 在 RCU 模式下进行无锁目录项查找 */
 		dentry = __d_lookup_rcu(parent, &nd->last, &nd->next_seq);
+		/* 如果查找失败，尝试退出 RCU 模式转为非竞态查找 */
 		if (unlikely(!dentry)) {
 			if (!try_to_unlazy(nd))
-				return ERR_PTR(-ECHILD);
-			return NULL;
+				return ERR_PTR(-ECHILD); /* 退出 RCU 失败，返回错误 */
+			return NULL; /* 返回 NULL 提示调用者回退到常规查找 */
 		}
 		/*
 		 * This sequence count validates that the parent had no
 		 * changes while we did the lookup of the dentry above.
 		 */
+		/* 检查父目录的序列号，验证在查找期间父目录是否发生了改变 */
 		if (read_seqcount_retry(&parent->d_seq, nd->seq))
-			return ERR_PTR(-ECHILD);
+			return ERR_PTR(-ECHILD); /* 发生竞态条件，返回错误要求重试 */
 
 		// 验证目录是否还有效，FUSE，NFS等文件系统会用到
 		status = d_revalidate(nd->inode, &nd->last, dentry, nd->flags);
+		/* 如果验证成功，直接返回找到的目录项 */
 		if (likely(status > 0))
 			return dentry;
+		/* 验证未通过，尝试将当前 nd 和 dentry 退出 RCU 模式 */
 		if (!try_to_unlazy_next(nd, dentry))
-			return ERR_PTR(-ECHILD);
+			return ERR_PTR(-ECHILD); /* 退出失败，返回错误 */
+		/* 如果是因为 RCU 模式导致验证失败，则在非 RCU 模式下重新验证 */
 		if (status == -ECHILD)
 			/* we'd been told to redo it in non-rcu mode */
 			status = d_revalidate(nd->inode, &nd->last,
 					      dentry, nd->flags);
 	} else {
+		/* 非 RCU 模式：使用常规的加锁方式在 dcache 中查找 */
 		dentry = __d_lookup(parent, &nd->last);
+		/* 如果目录项不在缓存中，直接返回 NULL */
 		if (unlikely(!dentry))
 			return NULL;
+		/* 打印查找到的 dentry 调试信息 */
 		dentry_dbg(dentry, "__d_lookup nd->last=%s\n", nd->last.name);
+		/* 在非 RCU 模式下验证目录项的有效性 */
 		status = d_revalidate(nd->inode, &nd->last, dentry, nd->flags);
 	}
+	/* 处理目录项验证失败的情况 */
 	if (unlikely(status <= 0)) {
 		// 如果无效，把目录invalidate掉
 		if (!status)
-			d_invalidate(dentry);
-		dput(dentry);
-		return ERR_PTR(status);
+			d_invalidate(dentry); /* status 为 0 表示目录项无效，将其失效 */
+		dput(dentry); /* 释放目录项引用 */
+		return ERR_PTR(status); /* 返回错误状态 */
 	}
+	/* 打印最终成功查找的调试信息 */
 	dentry_dbg(dentry, "nd->last=%s\n",
 		nd->last.name);
-	return dentry;
+	return dentry; /* 返回成功查找到且有效的目录项 */
 }
 
+
 /* Fast lookup failed, do it the slow way */
+/**
+ * __lookup_slow - 在父目录中慢速查找指定名称的目录项
+ * @name: 待查找的目录项名称（qstr结构体指针）
+ * @dir: 父目录的目录项
+ * @flags: 查找标志位
+ *
+ * 此函数用于在给定的父目录中查找指定名称的dentry。如果dentry不在缓存中，
+ * 则会调用具体文件系统的lookup操作进行磁盘查找。若缓存中的dentry无效，
+ * 则会进行失效处理并重新查找。
+ *
+ * Return: 成功时返回找到的dentry指针，失败时返回相应的错误指针(ERR_PTR)
+ */
 static struct dentry *__lookup_slow(const struct qstr *name,
 				    struct dentry *dir,
 				    unsigned int flags)
 {
 	struct dentry *dentry, *old;
 	struct inode *inode = dir->d_inode;
+	/* 在栈上声明一个等待队列头，用于并行分配dentry时的进程等待/唤醒 */
 	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
 
+	/* 调试信息：打印正在查找的目录项名称 */
 	dentry_dbg(dir, "search for name = %s\n", name->name);
-	/* Don't go there if it's already dead */
+	/* 如果目录已经是无效（死亡）状态，直接返回-ENOENT错误 */
 	if (unlikely(IS_DEADDIR(inode)))
 		return ERR_PTR(-ENOENT);
 again:
+	/* 并行分配或查找指定名称的dentry，如果其他进程正在创建同一dentry，则在此等待 */
 	dentry = d_alloc_parallel(dir, name, &wq);
 	if (IS_ERR(dentry))
 		return dentry;
@@ -1925,25 +1967,30 @@ again:
 		int error = d_revalidate(inode, name, dentry, flags);
 		if (unlikely(error <= 0)) {
 			if (!error) {
+				/* 校验返回0表示dentry已失效，需要使该缓存无效化并重试查找 */
 				d_invalidate(dentry);
 				dput(dentry);
 				goto again;
 			}
+			/* 校验返回负值表示发生错误，释放dentry引用并返回错误指针 */
 			dput(dentry);
 			dentry = ERR_PTR(error);
 		}
 	} else {
 		// 例如 ext4_lookup 函数
+		/* 调用具体文件系统的lookup方法（如ext4_lookup）从磁盘查找并实例化inode */
 		old = inode->i_op->lookup(inode, dentry, flags);
 		// 唤醒等待在这个dentry wq的查找进程
 		d_lookup_done(dentry);
 		if (unlikely(old)) {
+			/* 如果lookup返回了另一个dentry（通常是由于竞态条件），释放当前dentry，使用返回的old */
 			dput(dentry);
 			dentry = old;
 		}
 	}
 	return dentry;
 }
+
 
 static noinline struct dentry *lookup_slow(const struct qstr *name,
 				  struct dentry *dir,
@@ -2285,6 +2332,17 @@ static const char *handle_dots(struct nameidata *nd, int type)
 	return NULL;
 }
 
+/**
+ * walk_component - 处理路径查找中的单个组件
+ * @nd: 名字查找数据结构，保存当前查找的状态和路径信息
+ * @flags: 查找标志位，控制查找行为（如是否继续查找等）
+ *
+ * 该函数用于解析路径名中的单个组件。对于特殊的"."和".."目录项会进行
+ * 特殊处理；对于普通的目录项，会先尝试从dentry缓存中快速查找，
+ * 若缓存未命中，再回退到慢速路径从磁盘文件系统中查找。
+ *
+ * Return: 成功时返回下一步的文件名指针，失败时返回相应的错误指针
+ */
 static __always_inline const char *walk_component(struct nameidata *nd, int flags)
 {
 	struct dentry *dentry;
@@ -2294,27 +2352,35 @@ static __always_inline const char *walk_component(struct nameidata *nd, int flag
 	 * parent relationships.
 	 */
 	if (unlikely(nd->last_type != LAST_NORM)) {
+		/* 如果处于深度遍历状态且没有WALK_MORE标志，则释放当前的链接 */
 		if (unlikely(nd->depth) && !(flags & WALK_MORE))
 			put_link(nd);
+		/* 处理特殊的"."和".."目录项 */
 		return handle_dots(nd, nd->last_type);
 	}
 	nd_dbg(nd, "nd->last_name = %s\n", nd->last.name);
 	// 从dentry_cache中查找dentry
 	dentry = lookup_fast(nd);
+	/* 如果快速查找返回错误，则将错误指针转换为对应的字符串指针并返回 */
 	if (IS_ERR(dentry))
 		return ERR_CAST(dentry);
 	if (unlikely(!dentry)) {
 		// 缓存中不存在，则从磁盘查找
 		dentry = lookup_slow(&nd->last, nd->path.dentry, nd->flags);
+		/* 如果慢速查找返回错误，则将错误指针转换为对应的字符串指针并返回 */
 		if (IS_ERR(dentry))
 			return ERR_CAST(dentry);
+		/* 如果在磁盘中成功找到dentry，打印调试信息 */
 		if (dentry)
 			dentry_dbg(dentry, "found\n");
 	}
+	/* 如果处于深度遍历状态且没有WALK_MORE标志，则释放当前的链接 */
 	if (unlikely(nd->depth) && !(flags & WALK_MORE))
 		put_link(nd);
+	/* 进入找到的目录项，继续路径遍历的下一步 */
 	return step_into(nd, flags, dentry);
 }
+
 
 /*
  * We can do the critical dentry name comparison and hashing
@@ -2603,13 +2669,25 @@ static inline const char *hash_name(struct nameidata *nd, const char *name, unsi
  * Returns 0 and nd will have valid dentry and mnt on success.
  * Returns error and drops reference to input namei data on failure.
  */
+/**
+ * link_path_walk - 解析并遍历文件路径名
+ * @name: 待解析的路径名字符串
+ * @nd: 指向 nameidata 结构体的指针，保存路径查找的状态和上下文信息
+ *
+ * 该函数用于逐步解析路径名中的各个分量（目录/文件名），处理特殊路径（如 '.' 和 '..'），
+ * 并在遇到符号链接时进行递归或栈式跟踪。它会在遍历过程中更新 nd 结构体的状态。
+ *
+ * Return: 成功返回 0，失败返回相应的负错误码
+ */
 static int link_path_walk(const char *name, struct nameidata *nd)
 {
-	int depth = 0; // depth <= nd->depth
+	int depth = 0; // depth <= nd->depth，用于记录当前符号链接的嵌套深度
 	int err;
 
-	nd->last_type = LAST_ROOT;
-	nd->flags |= LOOKUP_PARENT;
+	nd->last_type = LAST_ROOT; // 初始化最后分量类型为根目录
+	nd->flags |= LOOKUP_PARENT; // 设置查找标志，表示正在查找父目录
+
+	// 检查路径名指针是否包含错误信息
 	if (IS_ERR(name))
 		return PTR_ERR(name);
 
@@ -2619,8 +2697,10 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 			name++;
 		} while (unlikely(*name == '/'));
 	}
+
+	// 如果路径名为空（例如只包含 '/' 的情况）
 	if (unlikely(!*name)) {
-		nd->dir_mode = 0; // short-circuit the 'hardening' idiocy
+		nd->dir_mode = 0; // short-circuit the 'hardening' idiocy，短路处理，避免硬ening相关的无谓操作
 		nd_dbg(nd, "return 0, name = %p\n", name);
 		return 0;
 	}
@@ -2633,32 +2713,38 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 		const char *link;
 		unsigned long lastword;
 
+		// 获取当前挂载点的 idmap，用于权限检查
 		idmap = mnt_idmap(nd->path.mnt);
+		
+		// 检查当前目录是否允许查找（权限验证）
 		err = may_lookup(idmap, nd);
 		if (unlikely(err))
 			return err;
 
-		nd->last.name = name;
+		nd->last.name = name; // 记录当前分量名的起始位置
 		nd_dbg(nd, "before hash name = %s\n", name);
+		
+		// 对当前路径分量进行哈希计算，并提取最后一个字用于后续判断
 		name = hash_name(nd, name, &lastword);
 		nd_dbg(nd, "after hash name = %s\n", name);
 
 		// 判断目录是 '..' 还是 '.'
 		switch(lastword) {
 		case LAST_WORD_IS_DOTDOT:
-			nd->last_type = LAST_DOTDOT;
-			nd->state |= ND_JUMPED;
+			nd->last_type = LAST_DOTDOT; // 标记为上级目录 '..'
+			nd->state |= ND_JUMPED; // 标记发生了目录跳跃
 			break;
 
 		case LAST_WORD_IS_DOT:
-			nd->last_type = LAST_DOT;
+			nd->last_type = LAST_DOT; // 标记为当前目录 '.'
 			break;
 
 		default:
-			nd->last_type = LAST_NORM;
-			nd->state &= ~ND_JUMPED;
+			nd->last_type = LAST_NORM; // 标记为普通目录/文件名
+			nd->state &= ~ND_JUMPED; // 清除目录跳跃标志
 
 			struct dentry *parent = nd->path.dentry;
+			// 如果父目录定义了自定义的哈希操作，则调用其哈希函数
 			if (unlikely(parent->d_flags & DCACHE_OP_HASH)) {
 				err = parent->d_op->d_hash(parent, &nd->last);
 				if (err < 0)
@@ -2666,106 +2752,155 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 			}
 		}
 
+		// 如果当前分量已经是路径的最后一个分量
 		if (!*name)
 			goto OK;
 		/*
 		 * If it wasn't NUL, we know it was '/'. Skip that
 		 * slash, and continue until no more slashes.
 		 */
+		// 跳过当前分量后面的斜杠 '/'
 		do {
 			name++;
 		} while (unlikely(*name == '/'));
+
+		// 如果跳过斜杠后到达字符串末尾，说明这也是最后一个分量
 		if (unlikely(!*name)) {
 			// 最后一个分量
 OK:
 			/* pathname or trailing symlink, done */
+			// 如果没有嵌套的符号链接（深度为0），则路径解析完成
 			if (likely(!depth)) {
-				nd->dir_vfsuid = i_uid_into_vfsuid(idmap, nd->inode);
-				nd->dir_mode = nd->inode->i_mode;
-				nd->flags &= ~LOOKUP_PARENT;
+				nd->dir_vfsuid = i_uid_into_vfsuid(idmap, nd->inode); // 记录目录的 VFS UID
+				nd->dir_mode = nd->inode->i_mode; // 记录目录的模式/权限
+				nd->flags &= ~LOOKUP_PARENT; // 清除 LOOKUP_PARENT 标志，查找结束
 				nd_dbg(nd, "return 0 && depth == 0, name = %s\n", name);
 				return 0;
 			}
 			/* last component of nested symlink */
+			// 如果是嵌套符号链接的最后一个分量，退栈获取上一层符号链接的名字
 			name = nd->stack[--depth].name;
+			// 解析当前分量，不标记 WALK_MORE
 			link = walk_component(nd, 0);
 		} else {
 			/* not the last component */
+			// 如果不是最后一个分量，继续解析，标记 WALK_MORE 表示后面还有分量
 			link = walk_component(nd, WALK_MORE);
 		}
+
+		// 如果 walk_component 返回了一个符号链接
 		if (unlikely(link)) {
 			if (IS_ERR(link))
-				return PTR_ERR(link);
+				return PTR_ERR(link); // 如果返回的是错误指针，返回错误码
 			/* a symlink to follow */
+			// 将当前名字压栈，保存现场以便符号链接解析完后恢复
 			nd->stack[depth++].name = name;
-			name = link;
+			name = link; // 指向符号链接的目标路径，继续遍历
 			continue;
 		}
+
+		// 检查当前路径分量是否是一个有效的目录（不能继续向下查找非目录文件）
 		if (unlikely(!d_can_lookup(nd->path.dentry))) {
+			// 如果在 RCU 模式下，尝试退出 RCU 模式转为普通慢速路径
 			if (nd->flags & LOOKUP_RCU) {
 				if (!try_to_unlazy(nd))
-					return -ECHILD;
+					return -ECHILD; // 退出 RCU 失败，返回错误要求用户空间重试
 			}
-			return -ENOTDIR;
+			return -ENOTDIR; // 当前路径分量不是目录，返回 -ENOTDIR 错误
 		}
 	}
 }
 
+
 /* must be paired with terminate_walk() */
+/**
+ * path_init - 初始化路径查找的起始状态
+ * @nd: 指向 nameidata 结构体的指针，保存路径查找的状态和上下文信息
+ * @flags: 查找标志位，控制查找行为（如是否使用 RCU、查找范围等）
+ *
+ * 该函数根据传入的路径名和标志位，确定路径查找的起始点（根目录、当前工作目录
+ * 或指定的文件描述符对应的目录），并初始化 nameidata 结构体中的相关字段。
+ * 如果遇到错误或需要重试，将返回相应的错误指针。
+ *
+ * 返回值: 成功时返回指向待解析路径的指针，失败时返回相应的 ERR_PTR 错误码。
+ */
 static const char *path_init(struct nameidata *nd, unsigned flags)
 {
+	/* 定义用于存储错误码的变量 */
 	int error;
+	/* 获取待解析的路径名字符串指针 */
 	const char *s = nd->pathname;
 
-	/* LOOKUP_CACHED requires RCU, ask caller to retry */
+	/* LOOKUP_CACHED 要求必须同时开启 RCU，若仅指定 CACHED 则要求调用者使用 RCU 重试 */
 	if (unlikely((flags & (LOOKUP_RCU | LOOKUP_CACHED)) == LOOKUP_CACHED))
 		return ERR_PTR(-EAGAIN);
 
+	/* 如果路径名为空字符串，则不能使用 RCU 模式，清除 LOOKUP_RCU 标志 */
 	if (unlikely(!*s))
 		flags &= ~LOOKUP_RCU;
+	
+	/* 根据是否启用 RCU 模式进行相应的初始化 */
 	if (flags & LOOKUP_RCU)
-		rcu_read_lock();
+		rcu_read_lock(); /* 进入 RCU 读端临界区 */
 	else
-		nd->seq = nd->next_seq = 0;
+		nd->seq = nd->next_seq = 0; /* 非 RCU 模式下，序列号初始化为 0 */
 
+	/* 保存标志位到 nameidata 结构体 */
 	nd->flags = flags;
+	/* 设置状态标志，表示可能发生了跳跃式查找（如挂载点跨越） */
 	nd->state |= ND_JUMPED;
 
+	/* 读取挂载锁的序列计数初始值，用于后续一致性检查 */
 	nd->m_seq = __read_seqcount_begin(&mount_lock.seqcount);
+	/* 读取重命名锁的序列计数初始值，用于后续一致性检查 */
 	nd->r_seq = __read_seqcount_begin(&rename_lock.seqcount);
+	/* 内存读屏障，确保上述锁序列号的读取在后续操作之前完成 */
 	smp_rmb();
 
+	/* 检查是否预设了根目录（通常在 openat2 等操作中设置） */
 	if (unlikely(nd->state & ND_ROOT_PRESET)) {
+		/* 获取预设的根 dentry 和对应的 inode */
 		struct dentry *root = nd->root.dentry;
 		struct inode *inode = root->d_inode;
+		
+		/* 如果路径名非空，但根 dentry 不支持目录查找（不是目录），则返回错误 */
 		if (*s && unlikely(!d_can_lookup(root)))
 			return ERR_PTR(-ENOTDIR);
+		
+		/* 设置当前查找路径和 inode 为预设的根 */
 		nd->path = nd->root;
 		nd->inode = inode;
+		
+		/* 在 RCU 模式下读取 dentry 的序列号以保证一致性 */
 		if (flags & LOOKUP_RCU) {
 			nd->seq = read_seqcount_begin(&nd->path.dentry->d_seq);
 			nd->root_seq = nd->seq;
 		} else {
+			/* 非 RCU 模式下，增加路径的引用计数 */
 			path_get(&nd->path);
 		}
 		return s;
 	}
 
+	/* 根目录的挂载点初始化为 NULL */
 	nd->root.mnt = NULL;
 
 	// 绝对路径，根目录
-	/* Absolute pathname -- fetch the root (LOOKUP_IN_ROOT uses nd->dfd). */
+	/* 绝对路径名：获取根目录 (如果指定了 LOOKUP_IN_ROOT，则使用 nd->dfd 作为根) */
 	if (*s == '/' && likely(!(flags & LOOKUP_IN_ROOT))) {
+		/* 跳转到根目录 */
 		error = nd_jump_root(nd);
 		if (unlikely(error))
 			return ERR_PTR(error);
 		return s;
 	}
 
-	/* Relative pathname -- get the starting-point it is relative to. */
+	/* 相对路径名：获取相对的起始点 */
 	if (nd->dfd == AT_FDCWD) {
 		// 进程工作目录
+		/* 相对路径基于调用进程的当前工作目录 */
 		if (flags & LOOKUP_RCU) {
+			/* RCU 模式下，安全地读取当前进程的文件系统结构体中的 pwd */
 			struct fs_struct *fs = current->fs;
 			unsigned seq;
 
@@ -2774,53 +2909,66 @@ static const char *path_init(struct nameidata *nd, unsigned flags)
 				nd->path = fs->pwd;
 				nd->inode = nd->path.dentry->d_inode;
 				nd->seq = __read_seqcount_begin(&nd->path.dentry->d_seq);
-			} while (read_seqretry(&fs->seq, seq));
+			} while (read_seqretry(&fs->seq, seq)); /* 如果读取期间发生更改，则重试 */
 		} else {
+			/* 非 RCU 模式下，获取当前工作目录并增加引用计数 */
 			get_fs_pwd(current->fs, &nd->path);
 			nd->inode = nd->path.dentry->d_inode;
 		}
 	} else {
 		// 其他相对路径
-		/* Caller must check execute permissions on the starting path component */
+		/* 相对路径基于指定的文件描述符 (dirfd) */
+		/* 调用者必须检查起始路径组件的执行权限 */
 		CLASS(fd_raw, f)(nd->dfd);
 		struct dentry *dentry;
 
+		/* 检查文件描述符是否有效 */
 		if (fd_empty(f))
 			return ERR_PTR(-EBADF);
 
+		/* 处理 LOOKUP_LINKAT_EMPTY 标志：允许通过空路径名引用文件描述符 */
 		if (flags & LOOKUP_LINKAT_EMPTY) {
+			/* 如果文件描述符的凭证与当前进程凭证不匹配，且没有相应能力，则拒绝访问 */
 			if (fd_file(f)->f_cred != current_cred() &&
 			    !ns_capable(fd_file(f)->f_cred->user_ns, CAP_DAC_READ_SEARCH))
 				return ERR_PTR(-ENOENT);
 		}
 
+		/* 获取文件描述符对应的 dentry */
 		dentry = fd_file(f)->f_path.dentry;
 
+		/* 如果路径名非空，但 dentry 不支持目录查找，则返回 -ENOTDIR */
 		if (*s && unlikely(!d_can_lookup(dentry)))
 			return ERR_PTR(-ENOTDIR);
 
+		/* 设置当前查找路径为文件描述符对应的路径 */
 		nd->path = fd_file(f)->f_path;
 		if (flags & LOOKUP_RCU) {
+			/* RCU 模式下读取 inode 和序列号 */
 			nd->inode = nd->path.dentry->d_inode;
 			nd->seq = read_seqcount_begin(&nd->path.dentry->d_seq);
 		} else {
+			/* 非 RCU 模式下，增加路径引用计数并读取 inode */
 			path_get(&nd->path);
 			nd->inode = nd->path.dentry->d_inode;
 		}
 	}
 
-	/* For scoped-lookups we need to set the root to the dirfd as well. */
+	/* 对于作用域查找（如 LOOKUP_BENEATH、LOOKUP_IN_ROOT），需要将根目录也设置为起始 dirfd 对应的目录 */
 	if (unlikely(flags & LOOKUP_IS_SCOPED)) {
 		nd->root = nd->path;
 		if (flags & LOOKUP_RCU) {
+			/* RCU 模式下记录根目录序列号 */
 			nd->root_seq = nd->seq;
 		} else {
+			/* 非 RCU 模式下，增加根路径引用计数并标记已抓取根目录 */
 			path_get(&nd->root);
 			nd->state |= ND_ROOT_GRABBED;
 		}
 	}
 	return s;
 }
+
 
 static inline const char *lookup_last(struct nameidata *nd)
 {
@@ -2839,39 +2987,80 @@ static int handle_lookup_down(struct nameidata *nd)
 }
 
 /* Returns 0 and nd will be valid on success; Returns error, otherwise. */
+/**
+ * path_lookupat - 根据给定的名称数据查找路径
+ * @nd: 指向名称数据结构体的指针，包含查找状态和路径信息
+ * @flags: 查找标志位，用于控制查找行为（如 LOOKUP_DOWN, LOOKUP_MOUNTPOINT 等）
+ * @path: 输出参数，用于存储查找到的路径结果
+ *
+ * 此函数执行文件系统路径查找的核心逻辑。它从初始化路径开始，
+ * 逐级遍历路径组件，处理特殊的挂载点和目录检查，最终返回
+ * 找到的路径或错误码。
+ *
+ * Return: 成功返回 0，失败返回相应的负错误码
+ */
 static int path_lookupat(struct nameidata *nd, unsigned flags, struct path *path)
 {
+	/* 初始化路径查找，获取待查找的路径字符串起始指针 */
 	const char *s = path_init(nd, flags);
 	int err;
 
+	/* 调试输出：打印当前正在查找的路径 */
 	dbg("path: %s\n", nd->pathname);
+
+	/* 如果标志位要求向下查找（LOOKUP_DOWN）且路径起始指针有效 */
 	if (unlikely(flags & LOOKUP_DOWN) && !IS_ERR(s)) {
+		/* 处理向下查找的逻辑（通常用于处理起始点为符号链接等情况） */
 		err = handle_lookup_down(nd);
+		/* 如果处理失败，将路径指针置为错误指针，以便后续进入错误处理流程 */
 		if (unlikely(err < 0))
 			s = ERR_PTR(err);
 	}
 
+	/**
+	 * 核心查找循环：
+	 * 1. link_path_walk() 逐级遍历路径字符串中的各个组件
+	 * 2. lookup_last() 处理路径的最后一个组件
+	 * 当 link_path_walk 成功完成且 lookup_last 返回非 NULL（表示还有需追踪的链接）时继续循环
+	 */
 	while (!(err = link_path_walk(s, nd)) &&
 	       (s = lookup_last(nd)) != NULL)
 		;
+
+	/* 如果路径遍历无错误，且标志位要求查找挂载点 */
 	if (!err && unlikely(nd->flags & LOOKUP_MOUNTPOINT)) {
+		/* 处理挂载点查找逻辑 */
 		err = handle_lookup_down(nd);
+		/* 清除 ND_JUMPED 状态标志，防止后续调用 d_weak_revalidate() */
 		nd->state &= ~ND_JUMPED; // no d_weak_revalidate(), please...
 	}
+
+	/* 如果无错误，完成整个路径的遍历（进行一些内核内部的完整性确认及锁释放等） */
 	if (!err)
 		err = complete_walk(nd);
 
+	/* 如果无错误，且标志位要求目标必须是一个目录 */
 	if (!err && nd->flags & LOOKUP_DIRECTORY)
+		/* 检查最终的 dentry 是否允许作为目录被查找，若不允许则返回 -ENOTDIR 错误 */
 		if (!d_can_lookup(nd->path.dentry))
 			err = -ENOTDIR;
+
+	/* 如果一切顺利，没有发生错误 */
 	if (!err) {
+		/* 将查找到的路径信息拷贝到输出参数 path 中 */
 		*path = nd->path;
+		/* 将 nd 中的路径指针清空，转移路径的所有权，防止被后续操作释放 */
 		nd->path.mnt = NULL;
 		nd->path.dentry = NULL;
 	}
+
+	/* 终止本次查找，清理 nd 结构体中的临时状态和引用计数 */
 	terminate_walk(nd);
+
+	/* 返回错误码，0 表示成功 */
 	return err;
 }
+
 
 int filename_lookup(int dfd, struct filename *name, unsigned flags,
 		    struct path *path, const struct path *root)
@@ -4843,28 +5032,60 @@ struct file *kernel_tmpfile_open(struct mnt_idmap *idmap,
 }
 EXPORT_SYMBOL(kernel_tmpfile_open);
 
+/**
+ * do_tmpfile - 创建并处理临时文件
+ * @nd: 名称数据结构指针，包含路径查找的上下文信息
+ * @flags: 查找标志位
+ * @op: 打开操作参数结构体指针，包含文件打开模式和相关信息
+ * @file: 目标文件结构体指针，用于接收创建的临时文件
+ *
+ * 此函数用于在指定目录下创建临时文件，主要包含路径查找、
+ * 获取写权限、调用底层创建临时文件接口以及审计记录等步骤。
+ *
+ * 返回值: 成功返回0，失败返回相应的负错误码。
+ */
 static int do_tmpfile(struct nameidata *nd, unsigned flags,
 		const struct open_flags *op,
 		struct file *file)
 {
+	/* 声明路径结构体，用于保存查找到的目录路径信息 */
 	struct path path;
+	
+	/* 在给定的路径上下文中查找目标目录，并获取其路径信息 */
 	int error = path_lookupat(nd, flags | LOOKUP_DIRECTORY, &path);
 
+	/* 如果路径查找失败，使用unlikely提示编译器该分支发生概率较低，直接返回错误码 */
 	if (unlikely(error))
 		return error;
+		
+	/* 获取该挂载点的写权限，防止在只读文件系统上创建文件 */
 	error = mnt_want_write(path.mnt);
+	
+	/* 如果获取写权限失败，跳转到out标签释放路径资源并返回错误 */
 	if (unlikely(error))
 		goto out;
+		
+	/* 调用虚拟文件系统层的vfs_tmpfile接口，真正创建临时文件 */
 	error = vfs_tmpfile(mnt_idmap(path.mnt), &path, file, op->mode);
+	
+	/* 如果创建临时文件失败，跳转到out2标签释放写权限 */
 	if (error)
 		goto out2;
+		
+	/* 创建成功，将该临时文件的inode信息记录到审计系统中 */
 	audit_inode(nd->name, file->f_path.dentry, 0);
+	
 out2:
+	/* 释放之前获取的挂载点写权限 */
 	mnt_drop_write(path.mnt);
 out:
+	/* 释放路径查找时引用的目录dentry和vfsmount，防止内存泄漏 */
 	path_put(&path);
+	
+	/* 返回错误码（成功时为0） */
 	return error;
 }
+
 
 static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
 {
@@ -4878,74 +5099,133 @@ static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
 	return error;
 }
 
+/**
+ * path_openat - 在给定的路径上下文中打开文件
+ * @nd:   nameidata结构体指针，保存路径查找的状态和上下文信息
+ * @op:   open_flags结构体指针，包含打开文件的标志和模式等信息
+ * @flags: 查找标志位，控制路径查找的行为（如是否使用RCU模式等）
+ *
+ * 该函数是文件打开的核心处理函数。它会根据不同的打开标志（如临时文件、
+ * O_PATH标志或普通文件）执行相应的处理逻辑，并返回一个初始化好的
+ * file结构体指针，或者在失败时返回错误指针。
+ *
+ * Return: 成功时返回指向struct file的指针，失败时返回IS_ERR()为真的错误指针
+ */
 static struct file *path_openat(struct nameidata *nd,
 			const struct open_flags *op, unsigned flags)
 {
 	struct file *file;
 	int error;
 
-	// 分配file结构体
+	// 分配一个空的file结构体
 	file = alloc_empty_file(op->open_flag, current_cred());
 	if (IS_ERR(file))
 		return file;
 
 	nd_dbg(nd, "will open\n");
+
+	/* 根据文件标志位分派不同的打开处理逻辑 */
 	if (unlikely(file->f_flags & __O_TMPFILE)) {
-		error = do_tmpfile(nd, flags, op, file); // 临时文件
+		error = do_tmpfile(nd, flags, op, file); // 处理临时文件的创建与打开
 	} else if (unlikely(file->f_flags & O_PATH)) {
-		error = do_o_path(nd, flags, file); // 分配文件描述符但不打开文件
+		error = do_o_path(nd, flags, file); // 仅分配文件描述符，但不实际打开文件
 	} else {
-		// 路径查找
-		// path_init会调用rcu_read_lock()
+		/**
+		* 普通文件的路径查找与打开流程
+		* 
+		* 1. path_init: 初始化路径查找，注意该函数内部会调用rcu_read_lock()
+		* 2. link_path_walk: 逐级遍历路径名中的各个目录组件
+		* 3. open_last_lookups: 处理路径的最后一级组件查找及可能的创建操作
+		* 4. do_open: 最终执行文件的打开操作
+		*/
 		const char *s = path_init(nd, flags);
 		while (!(error = link_path_walk(s, nd)) &&
 		       (s = open_last_lookups(nd, file, op)) != NULL)
 			;
 		if (!error)
-			error = do_open(nd, file, op); // 打开文件
+			error = do_open(nd, file, op); // 执行打开文件操作
 
-		// 调用rcu_read_unlock()
+		// 结束路径遍历，并调用rcu_read_unlock()释放RCU读锁
 		terminate_walk(nd);
 	}
+
+	/* 检查打开操作是否成功 */
 	if (likely(!error)) {
 		if (likely(file->f_mode & FMODE_OPENED))
-			return file;
-		WARN_ON(1);
-		error = -EINVAL;
+			return file; // 文件成功打开，返回file指针
+		WARN_ON(1);      // 触发内核警告：无错误但文件未标记为已打开
+		error = -EINVAL; // 赋值无效参数错误码
 	}
+
+	// 打开失败，释放file结构体引用并关闭
 	fput_close(file);
+
+	/* 
+	 * 处理"陈旧"（stale）错误码：
+	 * 如果在RCU模式下遇到陈旧文件句柄，返回-ECHILD以触发回退到非RCU模式重试；
+	 * 如果在普通模式下遇到，则返回标准的-ESTALE错误码。
+	 */
 	if (error == -EOPENSTALE) {
 		if (flags & LOOKUP_RCU)
 			error = -ECHILD;
 		else
 			error = -ESTALE;
 	}
+
 	return ERR_PTR(error);
 }
 
+
+/**
+ * do_file_open - 执行文件打开操作的核心函数
+ * @dfd: 目录文件描述符，指示相对路径的基准目录
+ * @pathname: 指向文件路径名结构的指针
+ * @op: 指向打开标志结构体的指针，包含访问模式和打开标志等信息
+ *
+ * 此函数用于根据给定的路径和标志打开文件。它会先初始化文件查找所需的上下文，
+ * 然后尝试以RCU（读-拷贝-更新）快速路径查找并打开文件。如果快速路径失败
+ * （例如遇到-ECHILD或-ESTALE错误），则会回退到常规的查找模式或重新验证
+ * 模式进行重试，最后恢复进程原有的上下文并返回文件指针。
+ *
+ * Return: 成功时返回打开的文件指针(struct file *)，失败时返回相应的错误指针(ERR_PTR)
+ */
 struct file *do_file_open(int dfd, struct filename *pathname,
 		const struct open_flags *op)
 {
+	/* 定义nameidata结构体变量，用于保存文件路径查找过程中的上下文状态 */
 	struct nameidata nd;
+	/* 从打开标志结构体中提取路径查找标志 */
 	int flags = op->lookup_flags;
+	/* 定义文件指针，用于存放打开成功后的文件结构体 */
 	struct file *filp;
 
+	/* 检查路径名指针是否为无效错误指针 */
 	if (IS_ERR(pathname))
 		return ERR_CAST(pathname);
+
 	// 设置进程文件查找结构,保存旧的
 	set_nameidata(&nd, dfd, pathname, NULL);
 	nd_dbg((&nd), "nameidata initlized\n");
+
 	// 查找path并打开文件
+	/* 首先尝试使用RCU快速路径进行查找和打开，以提高效率 */
 	filp = path_openat(&nd, op, flags | LOOKUP_RCU);
+	/* 如果RCU路径失败并返回-ECHILD错误（通常表示在RCU模式下发生了需要慢速路径的情况），
+	   则回退到不带RCU的常规查找模式重试 */
 	if (unlikely(filp == ERR_PTR(-ECHILD)))
 		filp = path_openat(&nd, op, flags);
+	/* 如果查找返回-ESTALE错误（通常表示缓存过时或文件句柄失效），
+	   则增加LOOKUP_REVAL标志重新验证路径并重试 */
 	if (unlikely(filp == ERR_PTR(-ESTALE)))
 		filp = path_openat(&nd, op, flags | LOOKUP_REVAL);
 
 	// 恢复进程文件查找结构
 	restore_nameidata();
+	
+	/* 返回打开的文件指针（可能包含错误指针） */
 	return filp;
 }
+
 
 struct file *do_file_open_root(const struct path *root,
 		const char *name, const struct open_flags *op)

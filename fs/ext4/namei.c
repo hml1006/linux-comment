@@ -1518,23 +1518,34 @@ static int is_dx_internal_node(struct inode *dir, ext4_lblk_t block,
  * The returned buffer_head has ->b_count elevated.  The caller is expected
  * to brelse() it when appropriate.
  */
+/**
+ * __ext4_find_entry - 在指定目录中查找目录项
+ * @dir: 要搜索的目录对应的 inode 结构体
+ * @fname: 待查找的文件名信息结构体
+ * @res_dir: 输出参数，用于存放找到的目录项指针
+ * @inlined: 输出参数，用于指示是否在 inline 数据中找到该项
+ *
+ * 此函数用于在 ext4 文件系统的目录中查找指定的目录项。它依次尝试
+ * 从 inline 数据、HTree 索引以及传统的线性块中查找目标目录项。
+ *
+ * 返回值: 成功时返回包含目录项的缓冲区头指针，失败或未找到返回 NULL 或错误指针。
+ */
 static struct buffer_head *__ext4_find_entry(struct inode *dir,
 					     struct ext4_filename *fname,
 					     struct ext4_dir_entry_2 **res_dir,
 					     int *inlined)
 {
 	struct super_block *sb;
-	struct buffer_head *bh_use[NAMEI_RA_SIZE];
-	struct buffer_head *bh, *ret = NULL;
-	ext4_lblk_t start, block;
-	const u8 *name = fname->usr_fname->name;
-	size_t ra_max = 0;	/* Number of bh's in the readahead
-				   buffer, bh_use[] */
-	size_t ra_ptr = 0;	/* Current index into readahead
-				   buffer */
-	ext4_lblk_t  nblocks;
+	struct buffer_head *bh_use[NAMEI_RA_SIZE]; /* 预读缓冲区数组 */
+	struct buffer_head *bh, *ret = NULL;       /* bh: 当前处理的缓冲区, ret: 返回值 */
+	ext4_lblk_t start, block;                  /* start: 查找起始块, block: 当前查找块号 */
+	const u8 *name = fname->usr_fname->name;   /* 获取用户态文件名 */
+	size_t ra_max = 0;	/* 预读缓冲区(bh_use)中的缓冲区总数 */
+	size_t ra_ptr = 0;	/* 当前预读缓冲区的读取索引 */
+	ext4_lblk_t  nblocks;                     /* 目录的总块数 */
 	int i, namelen, retval;
 
+	/* 初始化输出参数 */
 	*res_dir = NULL;
 	sb = dir->i_sb;
 
@@ -1555,27 +1566,30 @@ static struct buffer_head *__ext4_find_entry(struct inode *dir,
 					     &has_inline_data);
 		if (inlined)
 			*inlined = has_inline_data;
+		/* 如果确认有 inline 数据（无论是否找到），或者发生错误，则直接退出 */
 		if (has_inline_data || IS_ERR(ret))
 			goto cleanup_and_exit;
 	}
 
+	/* 处理特殊目录项 "." 和 ".." */
 	if ((namelen <= 2) && (name[0] == '.') &&
 	    (name[1] == '.' || name[1] == '\0')) {
 		/*
-		 * "." or ".." will only be in the first block
-		 * NFS may look up ".."; "." should be handled by the VFS
+		 * "." 或 ".." 只会存在于目录的第一个数据块中
+		 * NFS 可能会查找 ".."；而 "." 应该由 VFS 层直接处理
 		 */
 		block = start = 0;
 		nblocks = 1;
 		goto restart;
 	}
+
+	/* 如果目录启用了 HTree (目录索引) 机制，优先使用 HTree 查找 */
 	if (is_dx(dir)) {
 		// HTree查找
 		ret = ext4_dx_find_entry(dir, fname, res_dir);
 		/*
-		 * On success, or if the error was file not found,
-		 * return.  Otherwise, fall back to doing a search the
-		 * old fashioned way.
+		 * 如果查找成功，或者错误不是因为目录索引损坏引起的(如文件未找到)，
+		 * 则直接返回。否则，回退到传统的线性搜索方式。
 		 */
 		if (IS_ERR(ret) && PTR_ERR(ret) == ERR_BAD_DX_DIR)
 			dxtrace(printk(KERN_DEBUG "ext4_find_entry: dx failed, "
@@ -1586,30 +1600,38 @@ static struct buffer_head *__ext4_find_entry(struct inode *dir,
 				       "failed, falling back\n"));
 		else
 			goto cleanup_and_exit;
+		/* 回退传统查找时，重置 ret 为 NULL */
 		ret = NULL;
 	}
+
+	/* 计算目录占用的总逻辑块数 */
 	nblocks = dir->i_size >> EXT4_BLOCK_SIZE_BITS(sb);
 	if (!nblocks) {
 		ret = NULL;
 		goto cleanup_and_exit;
 	}
+
+	/* 获取上一次查找的起始块号，用于优化重复查找性能 */
 	start = EXT4_I(dir)->i_dir_start_lookup;
 	if (start >= nblocks)
 		start = 0;
 	block = start;
+
 restart:
+	/* 线性搜索目录块的主循环 */
 	do {
 		/*
-		 * We deal with the read-ahead logic here.
+		 * 处理预读逻辑，当预读缓冲区读取完毕后，重新填充一批预读块
 		 */
-		cond_resched();
+		cond_resched(); /* 主动让出 CPU，防止长时间占用内核 */
 		if (ra_ptr >= ra_max) {
-			/* Refill the readahead buffer */
+			/* 重新填充预读缓冲区 */
 			ra_ptr = 0;
 			if (block < start)
 				ra_max = start - block;
 			else
 				ra_max = nblocks - block;
+			/* 限制预读数量不超过预读数组的大小 */
 			ra_max = min(ra_max, ARRAY_SIZE(bh_use));
 			// 预读一批block，提交后不等待
 			retval = ext4_bread_batch(dir, block, ra_max,
@@ -1620,10 +1642,14 @@ restart:
 				goto cleanup_and_exit;
 			}
 		}
+
+		/* 从预读缓冲区中取出一个块 */
 		if ((bh = bh_use[ra_ptr++]) == NULL)
 			goto next;
+
 		// 等待IO完成
 		wait_on_buffer(bh);
+		/* 检查读取是否成功 */
 		if (!buffer_uptodate(bh)) {
 			EXT4_ERROR_INODE_ERR(dir, EIO,
 					     "reading directory lblock %lu",
@@ -1632,6 +1658,11 @@ restart:
 			ret = ERR_PTR(-EIO);
 			goto cleanup_and_exit;
 		}
+
+		/*
+		 * 验证目录块的校验和，防止数据损坏。
+		 * 只有未被验证过的块，且不是 dx 内部节点时，才需要校验。
+		 */
 		if (!buffer_verified(bh) &&
 		    !is_dx_internal_node(dir, block,
 					 (struct ext4_dir_entry *)bh->b_data) &&
@@ -1643,28 +1674,35 @@ restart:
 			ret = ERR_PTR(-EFSBADCRC);
 			goto cleanup_and_exit;
 		}
+		/* 校验通过，标记该块为已验证，后续读取无需再校验 */
 		set_buffer_verified(bh);
+
+		/* 在当前数据块中搜索目标目录项 */
 		i = search_dirblock(bh, dir, fname,
 				    EXT4_LBLK_TO_B(dir, block), res_dir);
 		if (i == 1) {
+			/* 找到目录项，更新下一次查找的起始块号缓存，并退出 */
 			EXT4_I(dir)->i_dir_start_lookup = block;
 			ret = bh;
 			goto cleanup_and_exit;
 		} else {
+			/* 未找到，释放当前块的引用 */
 			brelse(bh);
 			if (i < 0) {
+				/* 搜索过程中发生错误 */
 				ret = ERR_PTR(i);
 				goto cleanup_and_exit;
 			}
 		}
 	next:
+		/* 移动到下一个逻辑块，如果超出总块数则回绕到开头 */
 		if (++block >= nblocks)
 			block = 0;
 	} while (block != start);
 
 	/*
-	 * If the directory has grown while we were searching, then
-	 * search the last part of the directory before giving up.
+	 * 如果在搜索期间目录大小增长了，那么在放弃之前，
+	 * 需要搜索目录新增长的那部分数据块。
 	 */
 	block = nblocks;
 	nblocks = dir->i_size >> EXT4_BLOCK_SIZE_BITS(sb);
@@ -1674,11 +1712,12 @@ restart:
 	}
 
 cleanup_and_exit:
-	/* Clean up the read-ahead blocks */
+	/* 清理并释放预读缓冲区中未使用的块，防止内存泄漏 */
 	for (; ra_ptr < ra_max; ra_ptr++)
 		brelse(bh_use[ra_ptr]);
 	return ret;
 }
+
 
 static struct buffer_head *ext4_find_entry(struct inode *dir,
 					   const struct qstr *d_name,
@@ -1701,6 +1740,18 @@ static struct buffer_head *ext4_find_entry(struct inode *dir,
 	return bh;
 }
 
+/**
+ * ext4_lookup_entry - 在指定目录下查找目录项
+ * @dir:    待搜索的父目录inode结构体指针
+ * @dentry: 待查找的目录项dentry结构体指针
+ * @res_dir:输出参数，用于存放找到的ext4目录项结构体指针的地址
+ *
+ * 该函数用于在ext4文件系统中查找指定的目录项。它会先准备查找所需的
+ * 文件名数据结构，然后执行实际的目录项搜索，最后清理临时数据结构并返回结果。
+ *
+ * 返回值: 成功时返回指向缓冲区头buffer_head的指针；如果未找到返回NULL；
+ *         如果准备阶段发生其他错误，返回相应的ERR_PTR错误指针。
+ */
 static struct buffer_head *ext4_lookup_entry(struct inode *dir,
 					     struct dentry *dentry,
 					     struct ext4_dir_entry_2 **res_dir)
@@ -1708,22 +1759,27 @@ static struct buffer_head *ext4_lookup_entry(struct inode *dir,
 	int err;
 	struct ext4_filename fname;
 	struct buffer_head *bh;
+
+	/* 调试信息：打印父目录路径及要查找的文件名 */
 	inode_dbg(dir, "parent inode path %s, search for %s\n",
 		d_find_alias_rcu(dir)->d_name.name, dentry->d_name.name);
 	
 	// 填充要查找的数据结构
 	err = ext4_fname_prepare_lookup(dir, dentry, &fname);
-	if (err == -ENOENT)
+	if (err == -ENOENT) /* 如果文件名不存在（大小写不敏感等场景下可能触发） */
 		return NULL;
-	if (err)
+	if (err) /* 如果发生其他错误，返回对应的错误指针 */
 		return ERR_PTR(err);
 
 	// 从dir中查找文件名
 	bh = __ext4_find_entry(dir, &fname, res_dir, NULL);
 
+	/* 释放查找过程中分配的文件名临时数据结构，避免内存泄漏 */
 	ext4_fname_free_filename(&fname);
+
 	return bh;
 }
+
 
 static struct buffer_head * ext4_dx_find_entry(struct inode *dir,
 			struct ext4_filename *fname,
@@ -1780,63 +1836,97 @@ success:
 }
 
 /**
-* dir为父目录的inode，dentry为要查找的目录项，内放要查找的文件名
-*/
+ * ext4_lookup - 在指定的目录中查找目录项
+ * @dir: 待搜索的父目录 inode
+ * @dentry: 需要查找的目录项
+ * @flags: 查找标志位
+ *
+ * 该函数是 ext4 文件系统的 lookup 操作实现，用于在父目录中
+ * 搜索与 dentry 对应的 inode。如果找到则返回该 inode，
+ * 否则返回 NULL 或错误指针。
+ *
+ * 返回值: 找到的 dentry（通过 d_splice_alias 关联），
+ *         或者 NULL（不缓存的否定查找），或者错误指针。
+ */
 static struct dentry *ext4_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 {
 	struct inode *inode;
-	struct ext4_dir_entry_2 *de = NULL;
-	struct buffer_head *bh;
+	struct ext4_dir_entry_2 *de = NULL; // 目录项结构体指针，用于存储查找结果
+	struct buffer_head *bh; // 缓冲区头指针，用于存储读取的磁盘块
 
+	// 检查文件名长度是否超过 ext4 文件系统的最大限制
 	if (dentry->d_name.len > EXT4_NAME_LEN)
 		return ERR_PTR(-ENAMETOOLONG);
+
+	// 调试信息：打印当前目录名和要查找的文件名
 	inode_dbg(dir, "name: %s, search for %s\n",
 		d_find_alias_rcu(dir)->d_name.name, dentry->d_name.name);
+
+	// 在目录中执行实际的目录项查找操作
 	bh = ext4_lookup_entry(dir, dentry, &de);
+
+	// 如果查找返回错误，则将错误类型转换并返回
 	if (IS_ERR(bh))
 		return ERR_CAST(bh);
-	inode = NULL;
+
+	inode = NULL; // 初始化 inode 为 NULL，表示尚未找到对应 inode
+
+	// 如果缓冲区有效，说明找到了对应的目录项
 	if (bh) {
-		__u32 ino = le32_to_cpu(de->inode);
-		brelse(bh);
+		__u32 ino = le32_to_cpu(de->inode); // 从磁盘格式转换为主机字节序的 inode 号
+		brelse(bh); // 释放缓冲区，因为已经提取出了需要的 inode 号
+
+		// 验证 inode 号是否合法
 		if (!ext4_valid_inum(dir->i_sb, ino)) {
 			EXT4_ERROR_INODE(dir, "bad inode number: %u", ino);
-			return ERR_PTR(-EFSCORRUPTED);
+			return ERR_PTR(-EFSCORRUPTED); // 文件系统损坏错误
 		}
+
+		// 检查目录项是否错误地指向了父目录自身（防止形成目录环）
 		if (unlikely(ino == dir->i_ino)) {
 			EXT4_ERROR_INODE(dir, "'%pd' linked to parent dir",
 					 dentry);
-			return ERR_PTR(-EFSCORRUPTED);
+			return ERR_PTR(-EFSCORRUPTED); // 文件系统损坏错误
 		}
+
+		// 根据 inode 号从磁盘读取 inode 结构
 		inode = ext4_iget(dir->i_sb, ino, EXT4_IGET_NORMAL);
+
+		// 如果 inode 已被删除（返回 -ESTALE），则视为文件系统损坏
 		if (inode == ERR_PTR(-ESTALE)) {
 			EXT4_ERROR_INODE(dir,
 					 "deleted inode referenced: %u",
 					 ino);
 			return ERR_PTR(-EFSCORRUPTED);
 		}
+
+		// 检查加密上下文一致性：如果父目录是加密的，且子项是目录或软链接，
+		// 则必须确保两者的加密策略兼容
 		if (!IS_ERR(inode) && IS_ENCRYPTED(dir) &&
 		    (S_ISDIR(inode->i_mode) || S_ISLNK(inode->i_mode)) &&
 		    !fscrypt_has_permitted_context(dir, inode)) {
 			ext4_warning(inode->i_sb,
 				     "Inconsistent encryption contexts: %lu/%lu",
 				     dir->i_ino, inode->i_ino);
-			iput(inode);
-			return ERR_PTR(-EPERM);
+			iput(inode); // 释放对 inode 的引用
+			return ERR_PTR(-EPERM); // 操作不允许
 		}
 	}
 
+	// 如果启用了 Unicode 支持，且未找到 inode，且目录启用了不区分大小写（casefold）
 	if (IS_ENABLED(CONFIG_UNICODE) && !inode && IS_CASEFOLDED(dir)) {
-		/* Eventually we want to call d_add_ci(dentry, NULL)
-		 * for negative dentries in the encoding case as
-		 * well.  For now, prevent the negative dentry
-		 * from being cached.
+		/**
+		 * 最终我们也会在编码（不区分大小写）的情况下为否定查找
+		 * 调用 d_add_ci(dentry, NULL)。目前，先阻止否定查找
+		 * （即查找不存在的文件）被缓存到 dentry 缓存中。
 		 */
 		return NULL;
 	}
 
+	// 将找到的 inode 与 dentry 关联起来，如果是别名则返回现有别名 dentry
 	return d_splice_alias(inode, dentry);
 }
+
 
 
 struct dentry *ext4_get_parent(struct dentry *child)

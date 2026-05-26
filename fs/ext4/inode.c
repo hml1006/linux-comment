@@ -4971,29 +4971,53 @@ static int ext4_fill_raw_inode(struct inode *inode, struct ext4_inode *raw_inode
  * have in-inode xattr, we have all inode data in memory that is needed
  * to recreate the on-disk version of this inode.
  */
+/**
+ * __ext4_get_inode_loc - 获取指定inode在磁盘上的物理位置信息
+ * @sb: 指向超级块的指针，包含文件系统全局信息
+ * @ino: 需要定位的inode号
+ * @inode: 指向内存中inode结构的指针（可能为NULL），用于优化读取
+ * @iloc: 输出参数，用于存储计算得到的inode位置信息（块组、块号、偏移量等）
+ * @ret_block: 输出参数，若发生I/O错误，返回出错的块号（可为NULL）
+ *
+ * 该函数根据inode号计算其所在的块组、在该组inode表中的块号以及块内偏移量，
+ * 并将对应的缓冲区头部读入内存。如果目标块中的其他inode均为空闲且当前inode
+ * 在内存中有效，则可能会跳过实际的磁盘I/O操作，直接用内存数据填充缓冲区。
+ *
+ * 返回值: 成功返回0，失败返回相应的负错误码（如-EIO, -ENOMEM, -EFSCORRUPTED）
+ */
 static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 				struct inode *inode, struct ext4_iloc *iloc,
 				ext4_fsblk_t *ret_block)
 {
-	struct ext4_group_desc	*gdp;
-	struct buffer_head	*bh;
-	ext4_fsblk_t		block;
-	struct blk_plug		plug;
-	int			inodes_per_block, inode_offset;
+	/* 定义局部变量 */
+	struct ext4_group_desc	*gdp;		/* 块组描述符指针 */
+	struct buffer_head	*bh;		/* 缓冲区头部指针 */
+	ext4_fsblk_t		block;		/* inode所在的磁盘块号 */
+	struct blk_plug		plug;		/* 用于合并I/O请求的插塞结构 */
+	int			inodes_per_block, inode_offset; /* 每块inode数和inode在组内偏移 */
 
+	/* 初始化iloc的缓冲区头部为NULL */
 	iloc->bh = NULL;
+
+	/* 
+	 * 合法性检查：确保inode号在有效范围内。
+	 * 不能小于根inode号，也不能超过文件系统的总inode数。
+	 */
 	if (ino < EXT4_ROOT_INO ||
 	    ino > le32_to_cpu(EXT4_SB(sb)->s_es->s_inodes_count))
 		return -EFSCORRUPTED;
 
-	// 计算group
+	// 计算group：根据inode号推算出其所属的块组号
 	iloc->block_group = (ino - 1) / EXT4_INODES_PER_GROUP(sb);
+
+	/* 获取该块组的块组描述符 */
 	gdp = ext4_get_group_desc(sb, iloc->block_group, NULL);
 	if (!gdp)
 		return -EIO;
 
 	/*
 	 * Figure out the offset within the block group inode table
+	 * （计算在块组inode表内的偏移量）
 	 */
 	inodes_per_block = EXT4_SB(sb)->s_inodes_per_block;
 
@@ -5001,11 +5025,16 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	inode_offset = ((ino - 1) %
 			EXT4_INODES_PER_GROUP(sb));
 
-	// 计算inode在block内的byte offset
+	// 计算inode在block内的byte offset（字节偏移量）
 	iloc->offset = (inode_offset % inodes_per_block) * EXT4_INODE_SIZE(sb);
 
 	// 找到inode table的起始block地址
 	block = ext4_inode_table(sb, gdp);
+
+	/* 
+	 * 安全性检查：确保inode表的起始块号是合法的，
+	 * 必须大于第一个数据块，且小于文件系统的总块数。
+	 */
 	if ((block <= le32_to_cpu(EXT4_SB(sb)->s_es->s_first_data_block)) ||
 	    (block >= ext4_blocks_count(EXT4_SB(sb)->s_es))) {
 		ext4_error(sb, "Invalid inode table block %llu in "
@@ -5013,19 +5042,25 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 		return -EFSCORRUPTED;
 	}
 
-	// 计算inode在第几个block
+	// 计算inode在第几个block：在inode表起始块基础上加上块内偏移
 	block += (inode_offset / inodes_per_block);
 
 	sb_dbg(sb, "inode: %lu, block_group: %u, block: %llu, offset: %lu\n",
 		ino, iloc->block_group, block, iloc->offset);
-	// 找到这个block的buffer_head
+
+	// 找到这个block的buffer_head：通过块号获取对应的缓冲区头部
 	bh = sb_getblk(sb, block);
 	if (unlikely(!bh))
 		return -ENOMEM;
+
 	// 检查buffer是否最新，如果有io error，则需要设置buffer为最新
 	if (ext4_buffer_uptodate(bh))
 		goto has_buffer;
 
+	/* 
+	 * 缓冲区不是最新的，先加锁。
+	 * 加锁后再次检查，防止在等待锁期间其他线程已将其更新。
+	 */
 	lock_buffer(bh);
 	if (ext4_buffer_uptodate(bh)) {
 		/* Someone brought it uptodate while we waited */
@@ -5037,14 +5072,18 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	 * If we have all information of the inode in memory and this
 	 * is the only valid inode in the block, we need not read the
 	 * block.
+	 * （如果内存中已有该inode的全部信息，且该块中这是唯一有效的inode，
+	 * 则无需从磁盘读取该块，可直接填充。）
 	 */
 	if (inode && !ext4_test_inode_state(inode, EXT4_STATE_XATTR)) {
 		struct buffer_head *bitmap_bh;
 		int i, start;
 
+		/* 计算当前块在inode位图中的起始位 */
 		start = inode_offset & ~(inodes_per_block - 1);
 
 		/* Is the inode bitmap in cache? */
+		/* 获取inode位图对应的缓冲区 */
 		bitmap_bh = sb_getblk(sb, ext4_inode_bitmap(sb, gdp));
 		if (unlikely(!bitmap_bh))
 			goto make_io;
@@ -5053,11 +5092,15 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 		 * If the inode bitmap isn't in cache then the
 		 * optimisation may end up performing two reads instead
 		 * of one, so skip it.
+		 * （如果inode位图不在缓存中，优化可能导致两次读取而非一次，
+		 * 因此跳过此优化逻辑。）
 		 */
 		if (!buffer_uptodate(bitmap_bh)) {
 			brelse(bitmap_bh);
 			goto make_io;
 		}
+
+		/* 遍历当前块对应的位图区域，检查是否有其他已使用的inode */
 		for (i = start; i < start + inodes_per_block; i++) {
 			if (i == inode_offset)
 				continue;
@@ -5065,14 +5108,21 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 				break;
 		}
 		brelse(bitmap_bh);
+
+		/* 如果遍历完发现除了自己，其他inode都是空闲的 */
 		if (i == start + inodes_per_block) {
 			struct ext4_inode *raw_inode =
 				(struct ext4_inode *) (bh->b_data + iloc->offset);
 
 			/* all other inodes are free, so skip I/O */
+			/* 其他inode均空闲，跳过I/O操作，直接将缓冲区清零 */
 			memset(bh->b_data, 0, bh->b_size);
+
+			/* 如果内存中的inode不是新创建的，则用内存数据填充磁盘inode结构 */
 			if (!ext4_test_inode_state(inode, EXT4_STATE_NEW))
 				ext4_fill_raw_inode(inode, raw_inode);
+
+			/* 标记缓冲区为最新并解锁，跳转至完成逻辑 */
 			set_buffer_uptodate(bh);
 			unlock_buffer(bh);
 			goto has_buffer;
@@ -5083,25 +5133,37 @@ make_io:
 	/*
 	 * If we need to do any I/O, try to pre-readahead extra
 	 * blocks from the inode table.
+	 * （如果需要执行I/O操作，尝试对inode表中的额外块进行预读。）
 	 */
-	blk_start_plug(&plug);
+	blk_start_plug(&plug); /* 开启I/O插塞，合并后续的I/O请求 */
+
+	/* 如果配置了inode预读块数，则执行预读逻辑 */
 	if (EXT4_SB(sb)->s_inode_readahead_blks) {
 		ext4_fsblk_t b, end, table;
 		unsigned num;
 		__u32 ra_blks = EXT4_SB(sb)->s_inode_readahead_blks;
 
 		table = ext4_inode_table(sb, gdp);
+
 		/* s_inode_readahead_blks is always a power of 2 */
+		/* 计算预读窗口的起始块（对齐到预读块数的边界） */
 		b = block & ~((ext4_fsblk_t) ra_blks - 1);
 		if (table > b)
-			b = table;
-		end = b + ra_blks;
+			b = table; /* 确保预读不越过inode表的起始位置 */
+
+		end = b + ra_blks; /* 计算预读窗口的结束块 */
+
+		/* 计算当前块组中实际使用的inode表块数 */
 		num = EXT4_INODES_PER_GROUP(sb);
 		if (ext4_has_group_desc_csum(sb))
 			num -= ext4_itable_unused_count(sb, gdp);
 		table += num / inodes_per_block;
+
+		/* 确保预读窗口不超过inode表的末尾 */
 		if (end > table)
 			end = table;
+
+		/* 循环提交预读请求 */
 		while (b <= end)
 			ext4_sb_breadahead_unmovable(sb, b++);
 	}
@@ -5110,24 +5172,33 @@ make_io:
 	 * There are other valid inodes in the buffer, this inode
 	 * has in-inode xattrs, or we don't have this inode in memory.
 	 * Read the block from disk.
+	 * （缓冲区中存在其他有效inode，或该inode有内联扩展属性，亦或内存中无此inode。
+	 * 必须从磁盘读取该块。）
 	 */
 	trace_ext4_load_inode(sb, ino);
-	// 从磁盘读取block到buffer
+
+	// 从磁盘读取block到buffer：异步提交读请求
 	ext4_read_bh_nowait(bh, REQ_META | REQ_PRIO, NULL,
 			    ext4_simulate_fail(sb, EXT4_SIM_INODE_EIO));
-	blk_finish_plug(&plug);
-	// 等待io完成被唤醒
+
+	blk_finish_plug(&plug); /* 结束I/O插塞，开始派发请求 */
+
+	// 等待io完成被唤醒：阻塞等待缓冲区读取完成
 	wait_on_buffer(bh);
+
+	/* 如果读取完成后缓冲区仍不是最新的，说明I/O发生错误 */
 	if (!buffer_uptodate(bh)) {
 		if (ret_block)
-			*ret_block = block;
-		brelse(bh);
+			*ret_block = block; /* 记录出错的块号 */
+		brelse(bh); /* 释放缓冲区 */
 		return -EIO;
 	}
 has_buffer:
+	/* 缓冲区已就绪，将其赋值给iloc的bh成员 */
 	iloc->bh = bh;
 	return 0;
 }
+
 
 static int __ext4_get_inode_loc_noinmem(struct inode *inode,
 					struct ext4_iloc *iloc)

@@ -178,19 +178,42 @@ void end_buffer_write_sync(struct buffer_head *bh, int uptodate)
 }
 EXPORT_SYMBOL(end_buffer_write_sync);
 
+/**
+ * __find_get_block_slow - 在块设备中缓慢查找指定的缓冲区头
+ * @bdev: 目标块设备指针
+ * @block: 要查找的块号（扇区号）
+ * @atomic: 布尔值，指示是否在原子上下文中调用（不可休眠）
+ *
+ * 此函数通过遍历块设备地址空间中对应页面的缓冲区列表，
+ * 查找与指定块号匹配的 buffer_head 结构。如果找到，则增加其引用计数并返回。
+ * 该函数主要用于处理高速缓存未命中或调试场景下的块查找。
+ *
+ * 返回值: 成功时返回指向目标 buffer_head 的指针（已增加引用计数），
+ *          失败时返回 NULL。
+ */
 static struct buffer_head *
 __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 {
+	// 声明地址空间结构体指针，指向块设备的地址空间
 	struct address_space *bd_mapping = bdev->bd_mapping;
+	// 获取块设备块大小对应的比特数
 	const int blkbits = bd_mapping->host->i_blkbits;
+	// 声明buffer_head指针，初始化为NULL
 	struct buffer_head *ret = NULL;
+	// 声明页索引变量
 	pgoff_t index;
+	// 声明buffer_head指针，用于遍历
 	struct buffer_head *bh;
+	// 指向页面缓冲区的头buffer
 	struct buffer_head *head;
+	// 声明folio结构体指针，Linux中引入的新结构，替代page
 	struct folio *folio;
+	// 标记是否所有块都已映射
 	int all_mapped = 1;
+	// 定义静态的速率限制状态，用于控制警告输出频率
 	static DEFINE_RATELIMIT_STATE(last_warned, HZ, 1);
 
+	// 打印调试信息
 	blk_dbg(bdev, "block: %llu\n", block);
 
 	// 计算page号
@@ -207,6 +230,8 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 	 * Folio lock protects the buffers. Callers that cannot block
 	 * will fallback to serializing vs try_to_free_buffers() via
 	 * the i_private_lock.
+	 * Folio锁用于保护缓冲区。不能阻塞的调用者将通过
+	 * i_private_lock 退回到与 try_to_free_buffers() 串行化的方式。
 	 */
 	if (atomic)
 		spin_lock(&bd_mapping->i_private_lock);
@@ -219,6 +244,8 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 	/*
 	 * Upon a noref migration, the folio lock serializes here;
 	 * otherwise bail.
+	 * 在无引用(noref)迁移期间，folio锁在此处进行串行化；
+	 * 否则直接退出。
 	 */
 	if (test_bit_acquire(BH_Migrate, &head->b_state)) {
 		WARN_ON(!atomic);
@@ -227,13 +254,19 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 
 	bh = head;
 	do {
+		// 如果当前缓冲区未被映射，则将 all_mapped 标志置为0
 		if (!buffer_mapped(bh))
 			all_mapped = 0;
+		// 如果当前缓冲区的块号与目标块号匹配
 		else if (bh->b_blocknr == block) {
+			// 保存找到的缓冲区头指针
 			ret = bh;
+			// 增加缓冲区头的引用计数
 			get_bh(bh);
+			// 跳转到解锁退出流程
 			goto out_unlock;
 		}
+		// 移动到当前页面中的下一个缓冲区
 		bh = bh->b_this_page;
 	} while (bh != head);
 
@@ -241,8 +274,12 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 	 * not mapped.  This is due to various races between
 	 * file io on the block device and getblk.  It gets dealt with
 	 * elsewhere, don't buffer_error if we had some unmapped buffers
+	 * 我们可能因为该页面上的某些缓冲区未被映射而到达这里。
+	 * 这是由于块设备上的文件IO与getblk之间存在各种竞争条件。
+	 * 这种情况会在其他地方处理，如果存在未映射的缓冲区，不要触发buffer_error。
 	 */
 	ratelimit_set_flags(&last_warned, RATELIMIT_MSG_ON_RELEASE);
+	// 如果所有缓冲区都已映射，但依然没找到目标块，则通过速率限制打印警告信息
 	if (all_mapped && __ratelimit(&last_warned)) {
 		printk("__find_get_block_slow() failed. block=%llu, "
 		       "b_blocknr=%llu, b_state=0x%08lx, b_size=%zu, "
@@ -253,14 +290,18 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 		       1 << blkbits);
 	}
 out_unlock:
+	// 根据上下文类型释放对应的锁
 	if (atomic)
 		spin_unlock(&bd_mapping->i_private_lock);
 	else
 		folio_unlock(folio);
+	// 释放folio的引用计数
 	folio_put(folio);
 out:
+	// 返回找到的缓冲区头指针（未找到则为NULL）
 	return ret;
 }
+
 
 static void end_buffer_async_read(struct buffer_head *bh, int uptodate)
 {
@@ -1363,40 +1404,76 @@ static void bh_lru_install(struct buffer_head *bh)
 /*
  * Look up the bh in this cpu's LRU.  If it's there, move it to the head.
  */
+/**
+ * lookup_bh_lru - 在每CPU的缓冲头LRU缓存中查找指定的缓冲头
+ * @bdev: 目标块设备指针
+ * @block: 目标扇区号
+ * @size: 缓冲区大小
+ *
+ * 此函数用于在当前CPU的缓冲头最近最少使用(LRU)链表中查找匹配的
+ * 缓冲头(buffer_head)。如果找到，会将其移动到LRU链表的头部以
+ * 体现其最近被访问，并增加其引用计数。
+ *
+ * 返回: 如果找到则返回对应的buffer_head指针，否则返回NULL。
+ */
 static struct buffer_head *
 lookup_bh_lru(struct block_device *bdev, sector_t block, unsigned size)
 {
+	/* 初始化返回值指针为NULL */
 	struct buffer_head *ret = NULL;
+	/* 用于循环遍历LRU链表的索引 */
 	unsigned int i;
 
+	/* 检查中断是否已开启（调试/锁依赖检查） */
 	check_irqs_on();
+	/* 获取当前CPU的LRU链表自旋锁 */
 	bh_lru_lock();
+	
+	/* 如果当前CPU处于隔离状态，则放弃查找 */
 	if (cpu_is_isolated(smp_processor_id())) {
+		/* 释放LRU链表自旋锁 */
 		bh_lru_unlock();
+		/* 隔离CPU上不进行缓存查找，直接返回NULL */
 		return NULL;
 	}
+	
+	/* 遍历LRU链表的所有槽位 */
 	for (i = 0; i < BH_LRU_SIZE; i++) {
+		/* 从当前CPU的LRU链表中读取第i个缓冲头指针 */
 		struct buffer_head *bh = __this_cpu_read(bh_lrus.bhs[i]);
 
+		/* 检查缓冲头是否非空，且块号、块设备和大小均与目标匹配 */
 		if (bh && bh->b_blocknr == block && bh->b_bdev == bdev &&
 		    bh->b_size == size) {
+			/* 如果匹配项不在LRU链表的头部（索引0），则需要将其移动到头部 */
 			if (i) {
+				/* 将匹配项之前的所有项向后移动一位，实现LRU策略 */
 				while (i) {
 					__this_cpu_write(bh_lrus.bhs[i],
 						__this_cpu_read(bh_lrus.bhs[i - 1]));
 					i--;
 				}
+				/* 将匹配的缓冲头写入LRU链表的头部（索引0） */
 				__this_cpu_write(bh_lrus.bhs[0], bh);
 			}
+			/* 增加缓冲头的引用计数，防止被过早释放 */
 			get_bh(bh);
+			/* 记录找到的缓冲头，准备返回 */
 			ret = bh;
+			/* 找到目标后跳出循环 */
 			break;
 		}
 	}
+	
+	/* 释放LRU链表自旋锁 */
 	bh_lru_unlock();
+	/* 打印调试信息，记录查找结果 */
 	blk_dbg(bdev, "buffer_head lru: %p\n", ret);
+	
+	/* 返回查找到的缓冲头指针，若未找到则为NULL */
 	return ret;
 }
+
 
 /*
  * Perform a pagecache lookup for the matching buffer.  If it's there, refresh
@@ -2791,13 +2868,28 @@ static void end_bio_bh_io_sync(struct bio *bio)
 	bio_put(bio);
 }
 
+/*
+ * submit_bh_wbc - 提交缓冲区头(buffer_head)的块I/O请求
+ * @opf: 块I/O操作标志（包含操作类型如读/写以及其他修饰标志）
+ * @bh: 指向缓冲区头结构的指针，包含要操作的数据和状态信息
+ * @write_hint: 写入提示，用于优化底层存储设备的写入策略
+ * @wbc: 写回控制结构，用于管理写回流程、cgroup归属等
+ *
+ * 该函数用于将一个缓冲区头（buffer_head）封装成bio结构，并提交给块设备层进行I/O处理。
+ * 在此过程中会进行状态断言、错误标志清理、bio内存分配、扇区号转换、页绑定以及cgroup控制等操作。
+ */
 static void submit_bh_wbc(blk_opf_t opf, struct buffer_head *bh,
 			  enum rw_hint write_hint,
 			  struct writeback_control *wbc)
 {
+	/* 从操作标志中提取基础的操作类型（如 REQ_OP_READ 或 REQ_OP_WRITE） */
 	const enum req_op op = opf & REQ_OP_MASK;
 	struct bio *bio;
 
+	/*
+	 * 断言检查：确保缓冲区头处于合法且可提交的状态
+	 * 必须被锁定、已映射、有结束回调，且不能处于延迟写或未写入状态
+	 */
 	BUG_ON(!buffer_locked(bh));
 	BUG_ON(!buffer_mapped(bh));
 	BUG_ON(!bh->b_end_io);
@@ -2806,45 +2898,68 @@ static void submit_bh_wbc(blk_opf_t opf, struct buffer_head *bh,
 
 	/*
 	 * Only clear out a write error when rewriting
+	 * （仅在重写时清除先前的写错误标志，避免残留错误影响本次写入）
 	 */
 	if (test_set_buffer_req(bh) && (op == REQ_OP_WRITE))
 		clear_buffer_write_io_error(bh);
 
+	/* 如果缓冲区包含元数据，则在操作标志中追加 REQ_META 标识 */
 	if (buffer_meta(bh))
 		opf |= REQ_META;
+	/* 如果缓冲区具有高优先级，则在操作标志中追加 REQ_PRIO 标识 */
 	if (buffer_prio(bh))
 		opf |= REQ_PRIO;
 
 	// 分配bio
 	bio = bio_alloc(bh->b_bdev, 1, opf, GFP_NOIO);
 
+	/* 为bio设置文件系统加密上下文（如果启用了fscrypt特性） */
 	fscrypt_set_bio_crypt_ctx_bh(bio, bh, GFP_NOIO);
 
 	// 文件系统block number转换为块设备sector number，比如 b_blocknr 单位4096, 
 	// b_size为4096, 转换成512的扇区号需要乘以8
+	/* bh->b_size >> 9 即除以512，计算出每个块包含的扇区数，再乘以块号得到起始扇区号 */
 	bio->bi_iter.bi_sector = bh->b_blocknr * (bh->b_size >> 9);
+	/* 设置写入提示，帮助底层存储设备（如SSD）进行写入优化 */
 	bio->bi_write_hint = write_hint;
 
 	// bio和page绑定， bio->bi_io_vec->bv_page指向page
 	// bh_offset 计算data在page中的偏移，page可能是一个大的连续页
+	/* 将缓冲区对应的物理页(folio)添加到bio中，此操作必定成功(nofail) */
 	bio_add_folio_nofail(bio, bh->b_folio, bh->b_size, bh_offset(bh));
 
+	/* 设置bio的结束回调函数和私有数据，I/O完成时将回调 end_bio_bh_io_sync 并传入 bh */
 	bio->bi_end_io = end_bio_bh_io_sync;
 	bio->bi_private = bh;
 
 	/* Take care of bh's that straddle the end of the device */
+	/* 处理越界情况：如果请求跨越了设备末尾，则截断bio以防止越界访问 */
 	guard_bio_eod(bio);
 
 	if (wbc) {
 		// cgroup控制
+		/* 初始化wbc与bio的关联 */
 		wbc_init_bio(wbc, bio);
+		/* 记录该bio所属的cgroup，用于后续的写回带宽控制和统计 */
 		wbc_account_cgroup_owner(wbc, bh->b_folio, bh->b_size);
 	}
 
 	// 提交bio
+	/* 如果设备支持内联加密，则在提交前进行加密处理，随后正式将bio提交给块设备驱动 */
 	blk_crypto_submit_bio(bio);
 }
 
+
+/**
+ * submit_bh - 提交缓冲区头进行I/O操作
+ * @opf: 块操作标志，包含读写模式和生命周期等控制参数
+ * @bh: 指向待提交的buffer_head结构的指针
+ *
+ * 该函数用于提交一个buffer_head进行底层的块设备I/O操作。
+ * 函数首先通过调试宏记录当前提交的缓冲区头及其所属块设备信息，
+ * 随后调用submit_bh_wbc函数执行实际的提交操作，并默认将写入
+ * 生命周期设置为WRITE_LIFE_NOT_SET，且不传递特定的回写控制结构。
+ */
 void submit_bh(blk_opf_t opf, struct buffer_head *bh)
 {
 	blk_dbg(bh->b_bdev, "bh %p\n", bh);
