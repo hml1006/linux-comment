@@ -44,4 +44,14 @@
 
 # 系统调用
 
-[文件操作](./notes/file.md)
+## 文件操作
+[open](./notes/file.md)
+
+[open-syscall](./notes/open-syscall-full-path.md)
+
+# 驱动
+## 驱动相关结构体
+[device](./notes/device.md)
+
+## nvme驱动
+[nvme执行过程](./notes/nvme-pcie-host-analysis.md)
