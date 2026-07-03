@@ -1220,29 +1220,40 @@ EXPORT_SYMBOL(kblockd_mod_delayed_work_on);
  */
 void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
 {
+	/* 获取当前进程的任务结构体指针 */
 	struct task_struct *tsk = current;
 
 	/*
-	 * If this is a nested plug, don't actually assign it.
+	 * 如果这是一个嵌套的插塞，则不要实际分配它。
+	 * （即当前进程已经处于一个插塞中，直接退出避免覆盖）
 	 */
 	if (tsk->plug)
 		return;
 
+	/* 初始化时间戳为0，延迟到实际需要时再获取 */
 	plug->cur_ktime = 0;
+	/* 初始化多队列请求链表为空 */
 	rq_list_init(&plug->mq_list);
+	/* 初始化缓存的请求链表为空 */
 	rq_list_init(&plug->cached_rqs);
+	/* 设置预期的I/O数量，限制在最大请求计数 BLK_MAX_REQUEST_COUNT 以内 */
 	plug->nr_ios = min_t(unsigned short, nr_ios, BLK_MAX_REQUEST_COUNT);
+	/* 初始化当前已累积的请求数量为0 */
 	plug->rq_count = 0;
+	/* 标记当前插塞是否包含来自多个不同队列的请求，初始为否 */
 	plug->multiple_queues = false;
+	/* 标记当前插塞是否包含带有电梯调度器的请求，初始为否 */
 	plug->has_elevator = false;
+	/* 初始化回调函数链表 */
 	INIT_LIST_HEAD(&plug->cb_list);
 
 	/*
-	 * Store ordering should not be needed here, since a potential
-	 * preempt will imply a full memory barrier
+	 * 这里不需要显式的存储屏障来保证写入顺序，
+	 * 因为潜在的抢占操作会隐式包含一个完整的内存屏障。
 	 */
 	tsk->plug = plug;
 }
+
 
 /**
  * blk_start_plug - initialize blk_plug and track it inside the task_struct

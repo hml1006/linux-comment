@@ -470,50 +470,89 @@ SYSCALL_DEFINE5(llseek, unsigned int, fd, unsigned long, offset_high,
  */
 int rw_verify_area(int read_write, struct file *file, const loff_t *ppos, size_t count)
 {
+	/* 根据读写类型确定权限掩码：读操作对应 MAY_READ，写操作对应 MAY_WRITE */
 	int mask = read_write == READ ? MAY_READ : MAY_WRITE;
 	int ret;
 
+	/* 如果请求的字节数被强制转换为有符号数后小于0，说明传入的 count 值过大或非法 */
 	if (unlikely((ssize_t) count < 0))
 		return -EINVAL;
 
 	if (ppos) {
+		/* 获取当前文件偏移量 */
 		loff_t pos = *ppos;
 
 		if (unlikely(pos < 0)) {
+			/* 如果偏移量为负，检查文件是否支持无符号偏移量 */
 			if (!unsigned_offsets(file))
 				return -EINVAL;
-			if (count >= -pos) /* both values are in 0..LLONG_MAX */
+			/* 
+			 * 如果偏移量为负且请求的 count 大于等于 -pos，
+			 * 则两者相加会导致溢出到正值或零，这是不合法的越界操作。
+			 * （此时 pos 和 count 均在 0 到 LLONG_MAX 范围内）
+			 */
+			if (count >= -pos) 
 				return -EOVERFLOW;
 		} else if (unlikely((loff_t) (pos + count) < 0)) {
+			/* 
+			 * 如果偏移量为正，但偏移量加上请求数后溢出为负数，
+			 * 同样需要检查文件是否支持无符号偏移量，不支持则返回错误
+			 */
 			if (!unsigned_offsets(file))
 				return -EINVAL;
 		}
 	}
 
+	/* 调用 LSM (Linux Security Module) 进行文件权限安全检查 */
 	ret = security_file_permission(file, mask);
 	if (ret)
 		return ret;
 
+	/* 进行文件系统通知（如 inotify）相关的权限与区域验证 */
 	return fsnotify_file_area_perm(file, mask, ppos, count);
 }
+
 EXPORT_SYMBOL(rw_verify_area);
 
+/**
+ * new_sync_read - 同步读取文件数据的内核函数
+ * @filp: 指向目标文件对象的指针
+ * @buf:  用户空间缓冲区的指针，用于存放读取的数据
+ * @len:  需要读取的数据长度（字节数）
+ * @ppos: 指向文件偏移量的指针，若为NULL则从0开始
+ *
+ * 此函数通过初始化内核I/O控制块和I/O向量迭代器，将同步读操作
+ * 转换为异步迭代器读操作（read_iter），并在完成后更新文件偏移量。
+ */
 static ssize_t new_sync_read(struct file *filp, char __user *buf, size_t len, loff_t *ppos)
 {
-	struct kiocb kiocb;
-	struct iov_iter iter;
-	ssize_t ret;
+	struct kiocb kiocb;   // 内核I/O控制块，用于跟踪I/O请求的状态
+	struct iov_iter iter; // I/O向量迭代器，用于描述数据缓冲区
+	ssize_t ret;          // 用于保存函数返回值及读取的字节数
 
+	// 初始化同步I/O控制块，并将其与文件对象filp关联
 	init_sync_kiocb(&kiocb, filp);
+	
+	// 设置I/O操作的起始偏移量：若ppos非空则取其值，否则从0开始
 	kiocb.ki_pos = (ppos ? *ppos : 0);
+	
+	// 初始化I/O向量迭代器，指定方向为写入目标(ITER_DEST)，绑定用户空间缓冲区及长度
 	iov_iter_ubuf(&iter, ITER_DEST, buf, len);
 
+	// 调用文件操作集合中的read_iter方法执行实际的读取操作
+	// ext4_file_read_iter
 	ret = filp->f_op->read_iter(&kiocb, &iter);
+	
+	// 断言检查：同步读操作不应返回-EIOCBQUEUED（表示已排队异步处理），若发生则内核崩溃
 	BUG_ON(ret == -EIOCBQUEUED);
+	
+	// 如果传入了文件偏移量指针，则将读取后的最新偏移量写回
 	if (ppos)
 		*ppos = kiocb.ki_pos;
+		
 	return ret;
 }
+
 
 static int warn_unsupported(struct file *file, const char *op)
 {
@@ -569,36 +608,66 @@ ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
 }
 EXPORT_SYMBOL(kernel_read);
 
+/**
+ * vfs_read - 虚拟文件系统(VFS)读取操作的标准接口
+ * @file:  指向目标文件对象的指针
+ * @buf:   用户空间缓冲区的指针，用于存放读取的数据
+ * @count: 需要读取的字节数
+ * @pos:   指向文件偏移量的指针，读取操作会从此位置开始
+ *
+ * 此函数是Linux内核中VFS层的核心读取函数。它会首先进行权限和参数的
+ * 合法性检查，然后调用具体文件系统实现的读取方法将数据从文件读取到
+ * 用户空间缓冲区中，最后更新相关的统计信息。
+ *
+ * 返回值: 成功时返回实际读取的字节数，失败时返回相应的负错误码。
+ */
 ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
 
+	/* 检查文件是否以读模式打开，若没有读权限则返回错误码 */
 	if (!(file->f_mode & FMODE_READ))
 		return -EBADF;
+	/* 检查文件是否支持读操作，若不支持则返回无效参数错误码 */
 	if (!(file->f_mode & FMODE_CAN_READ))
 		return -EINVAL;
+	/* 验证用户空间缓冲区的内存区域是否可写且安全可访问 */
 	if (unlikely(!access_ok(buf, count)))
 		return -EFAULT;
 
+	/* 验证读取区域是否合法（例如检查文件锁、越界等），并返回可读取的安全长度 */
 	ret = rw_verify_area(READ, file, pos, count);
 	if (ret)
 		return ret;
+	/* 限制单次读取的最大字节数，防止整数溢出等潜在风险 */
 	if (count > MAX_RW_COUNT)
 		count =  MAX_RW_COUNT;
 
+	/* 根据具体文件系统的实现，选择同步读取方式 */
 	if (file->f_op->read)
+		/* 如果文件操作集实现了传统的 read 方法，则直接调用 */
 		ret = file->f_op->read(file, buf, count, pos);
 	else if (file->f_op->read_iter)
+		/* 如果实现了 read_iter 方法，则调用 new_sync_read 进行适配同步读取 */
 		ret = new_sync_read(file, buf, count, pos);
 	else
+		/* 若两者均未实现，则返回无效参数错误码 */
 		ret = -EINVAL;
+
+	/* 如果成功读取了数据（返回值大于0），则进行后续的通知和统计更新 */
 	if (ret > 0) {
+		/* 通知文件系统事件监视器（如 inotify），文件被访问读取 */
 		fsnotify_access(file);
+		/* 累加当前进程读取的字符数统计信息 */
 		add_rchar(current, ret);
 	}
+	/* 累加当前进程的系统调用读操作计数 */
 	inc_syscr(current);
+	
+	/* 返回实际读取的字节数或错误码 */
 	return ret;
 }
+
 
 /**
  * new_sync_write - 同步写入数据到文件
@@ -777,19 +846,36 @@ static inline loff_t *file_ppos(struct file *file)
 	return file->f_mode & FMODE_STREAM ? NULL : &file->f_pos;
 }
 
+/**
+ * ksys_read - 从指定的文件描述符中读取数据
+ * @fd: 文件描述符，用于指定要读取的文件
+ * @buf: 用户空间缓冲区的指针，用于存放读取到的数据
+ * @count: 要读取的字节数
+ *
+ * 此函数是内核层面的 read 系统调用的内部实现。它通过文件描述符查找
+ * 对应的内核文件结构，获取或更新文件偏移量，并调用 vfs_read 执行
+ * 实际的文件读取操作。如果读取成功且文件存在偏移量指针，则会更新
+ * 文件的当前读写位置。
+ *
+ * Return: 成功时返回读取的字节数（非负数）；失败时返回负的错误码
+ * （例如 -EBADF 表示无效的文件描述符）。
+ */
 ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)
 {
 	CLASS(fd_pos, f)(fd);
 	ssize_t ret = -EBADF;
 
 	if (!fd_empty(f)) {
+		// 获取文件位置
 		loff_t pos, *ppos = file_ppos(fd_file(f));
 		if (ppos) {
 			pos = *ppos;
 			ppos = &pos;
 		}
+		// 调用 vfs_read 进行实际读取
 		ret = vfs_read(fd_file(f), buf, count, ppos);
 		if (ret >= 0 && ppos)
+			// 更新文件位置
 			fd_file(f)->f_pos = pos;
 	}
 	return ret;

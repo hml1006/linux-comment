@@ -100,62 +100,94 @@ static inline bool should_report_dio_fserror(const struct iomap_dio *dio)
 	}
 }
 
+/**
+ * iomap_dio_complete - 完成直接I/O（DIO）操作
+ * @dio: 指向iomap_dio结构的指针，包含了直接I/O操作的上下文和状态信息
+ *
+ * 此函数在直接I/O操作完成后被调用，负责处理完成后的收尾工作，包括：
+ * 调用特定文件系统的结束回调、报告文件系统错误、处理读取截断、
+ * 使页缓存失效、更新文件偏移量、处理同步写入以及释放相关资源。
+ *
+ * Return: 返回完成的字节数（正数），或错误码（负数）
+ */
 ssize_t iomap_dio_complete(struct iomap_dio *dio)
 {
+	/* 获取直接I/O操作集（包含特定文件系统的结束处理回调等） */
 	const struct iomap_dio_ops *dops = dio->dops;
+	/* 获取关联的异步I/O控制块 */
 	struct kiocb *iocb = dio->iocb;
+	/* 获取I/O操作的起始偏移量 */
 	loff_t offset = iocb->ki_pos;
+	/* 初始化返回值为I/O操作过程中记录的错误码 */
 	ssize_t ret = dio->error;
 
+	/* 如果定义了操作集且包含结束I/O的回调函数，则调用该回调进行特定文件系统的处理 */
 	if (dops && dops->end_io)
 		ret = dops->end_io(iocb, dio->size, ret, dio->flags);
+
+	/* 检查是否需要报告文件系统I/O错误，若需要则进行错误上报 */
 	if (should_report_dio_fserror(dio))
 		fserror_report_io(file_inode(iocb->ki_filp),
 				  iomap_dio_err_type(dio), offset, dio->size,
 				  dio->error, GFP_NOFS);
 
+	/* 如果没有发生错误（likely提示编译器此分支发生的概率更高） */
 	if (likely(!ret)) {
+		/* 将返回值设置为成功传输的字节数 */
 		ret = dio->size;
-		/* check for short read */
+
+		/* 检查是否为短读（读取超出了文件当前大小） */
 		if (offset + ret > dio->i_size &&
 		    !(dio->flags & IOMAP_DIO_WRITE))
+			/* 如果是短读，则将返回值截断为实际可读取的字节数 */
 			ret = dio->i_size - offset;
 	}
 
 	/*
-	 * Try again to invalidate clean pages which might have been cached by
-	 * non-direct readahead, or faulted in by get_user_pages() if the source
-	 * of the write was an mmap'ed region of the file we're writing.  Either
-	 * one is a pretty crazy thing to do, so we don't support it 100%.  If
-	 * this invalidation fails, tough, the write still worked...
+	 * 尝试再次使干净的页缓存失效。这些页缓存可能是由非直接读取预读缓存，
+	 * 或者当写入源是文件的mmap映射区域时由get_user_pages()触发的缺页缓存。
+	 * 这两种做法都相当疯狂，所以我们无法100%支持。如果失效操作失败，
+	 * 那也没办法，数据依然已经成功写入了...
 	 *
-	 * And this page cache invalidation has to be after ->end_io(), as some
-	 * filesystems convert unwritten extents to real allocations in
-	 * ->end_io() when necessary, otherwise a racing buffer read would cache
-	 * zeros from unwritten extents.
+	 * 并且此页缓存失效操作必须在 ->end_io() 之后执行，因为某些文件系统
+	 * 会在必要时在 ->end_io() 中将未写入的区段转换为实际分配的空间。否则，
+	 * 并发的缓冲读取会从尚未写入的区段中缓存零数据。
 	 */
+	/* 如果没有错误、传输了数据、是写操作且未标记跳过失效操作，则执行写后页缓存失效 */
 	if (!dio->error && dio->size && (dio->flags & IOMAP_DIO_WRITE) &&
 	    !(dio->flags & IOMAP_DIO_NO_INVALIDATE))
 		kiocb_invalidate_post_direct_write(iocb, dio->size);
 
+	/* 标记直接I/O操作结束，唤醒等待该inode的DIO完成的其他进程 */
 	inode_dio_end(file_inode(iocb->ki_filp));
 
+	/* 如果返回值为正数，表示成功完成了部分或全部I/O操作 */
 	if (ret > 0) {
+		/* 更新异步I/O控制块中的文件偏移量，向前移动已完成的字节数 */
 		iocb->ki_pos += ret;
 
 		/*
-		 * If this is a DSYNC write, make sure we push it to stable
-		 * storage now that we've written data.
+		 * 如果这是DSYNC（数据同步）写入，确保在数据写入完成后，
+		 * 将其冲刷到稳定存储中。
 		 */
 		if (dio->flags & IOMAP_DIO_NEED_SYNC)
 			ret = generic_write_sync(iocb, ret);
+
+		/* 如果同步操作成功，将之前已完成的字节数累加到当前返回值中 */
 		if (ret > 0)
 			ret += dio->done_before;
 	}
+
+	/* 跟踪记录直接I/O完成事件，用于内核调试和性能分析 */
 	trace_iomap_dio_complete(iocb, dio->error, ret);
+
+	/* 释放iomap_dio结构体占用的内存 */
 	kfree(dio);
+
+	/* 返回最终结果：成功传输的字节数或错误码 */
 	return ret;
 }
+
 EXPORT_SYMBOL_GPL(iomap_dio_complete);
 
 static void iomap_dio_complete_work(struct work_struct *work)
@@ -236,42 +268,65 @@ static void iomap_dio_done(struct iomap_dio *dio)
 	iomap_dio_complete_work(&dio->aio.work);
 }
 
+/**
+ * __iomap_dio_bio_end_io - 处理直接IO(direct I/O) bio的结束回调
+ * @bio: 要处理的bio结构体
+ * @inline_completion: 是否在inline上下文中完成bio
+ * 
+ * 此函数处理直接IO bio的完成工作，根据bio的类型和状态进行不同的清理操作。
+ */
 static void __iomap_dio_bio_end_io(struct bio *bio, bool inline_completion)
 {
-	struct iomap_dio *dio = bio->bi_private;
+	struct iomap_dio *dio = bio->bi_private;  // 获取与bio关联的iomap_dio结构体
 
-	if (dio->flags & IOMAP_DIO_BOUNCE) {
-		bio_iov_iter_unbounce(bio, !!dio->error,
+	// 根据bio的标志位进行不同的处理
+	if (dio->flags & IOMAP_DIO_BOUNCE) {  // 如果使用了bounce buffer
+		bio_iov_iter_unbounce(bio, !!dio->error,  // 解除bounce buffer
 				dio->flags & IOMAP_DIO_USER_BACKED);
-		bio_put(bio);
-	} else if (dio->flags & IOMAP_DIO_USER_BACKED) {
-		bio_check_pages_dirty(bio);
-	} else {
-		bio_release_pages(bio, false);
-		bio_put(bio);
+		bio_put(bio);  // 释放bio
+	} else if (dio->flags & IOMAP_DIO_USER_BACKED) {  // 如果是用户空间映射的bio
+		bio_check_pages_dirty(bio);  // 检查页面是否被修改
+	} else {  // 其他情况
+		bio_release_pages(bio, false);  // 释放页面引用
+		bio_put(bio);  // 释放bio
 	}
 
-	/* Do not touch bio below, we just gave up our reference. */
+	/* 不要再访问bio，因为我们已经放弃了它的引用 */
 
+	// 减少dio的引用计数，如果减到0则完成dio
 	if (atomic_dec_and_test(&dio->ref)) {
 		/*
-		 * Avoid another context switch for the completion when already
-		 * called from the ioend completion workqueue.
+		 * 当已经在ioend完成工作队列中调用时，
+		 * 避免为完成再进行一次上下文切换。
 		 */
 		if (inline_completion)
-			dio->flags &= ~IOMAP_DIO_COMP_WORK;
-		iomap_dio_done(dio);
+			dio->flags &= ~IOMAP_DIO_COMP_WORK;  // 清除完成工作标志
+		iomap_dio_done(dio);  // 完成dio操作
 	}
 }
 
+
+/**
+ * iomap_dio_bio_end_io - 处理直接IO(DIO) bio的结束回调
+ * @bio: 指向bio结构的指针，bio是块I/O操作的基本单位
+ * 
+ * 该函数作为bio完成时的回调函数，用于处理直接IO操作的结束工作。
+ * 它会检查bio的执行状态，如果有错误则设置相应的错误码，
+ * 然后调用__iomap_dio_bio_end_io继续处理后续工作。
+ */
 void iomap_dio_bio_end_io(struct bio *bio)
 {
+	// 从bio的私有字段获取iomap_dio结构体指针
 	struct iomap_dio *dio = bio->bi_private;
 
+	// 检查bio的执行状态，如果状态不为成功，则设置错误码
 	if (bio->bi_status)
 		iomap_dio_set_error(dio, blk_status_to_errno(bio->bi_status));
+	
+	// 调用内部函数处理bio的结束工作
 	__iomap_dio_bio_end_io(bio, false);
 }
+
 EXPORT_SYMBOL_GPL(iomap_dio_bio_end_io);
 
 u32 iomap_finish_ioend_direct(struct iomap_ioend *ioend)
@@ -328,178 +383,201 @@ static int iomap_dio_zero(const struct iomap_iter *iter, struct iomap_dio *dio,
 	return 0;
 }
 
+/**
+ * iomap_dio_bio_iter_one - 处理单个I/O映射的直接IO bio迭代
+ * @iter: I/O迭代器，包含I/O操作的状态和信息
+ * @dio: 直接I/O结构体，包含直接I/O操作的状态和信息
+ * @pos: 当前I/O操作的起始位置
+ * @alignment: 对齐要求
+ * @op: 块设备操作标志
+ * 
+ * 该函数负责为直接I/O操作分配和设置一个bio结构体，并处理相关的I/O操作。
+ * 它处理了bio的分配、加密上下文设置、扇区设置、优先级设置等，并根据操作类型
+ * (写或读)进行相应的处理。最后提交bio进行I/O操作。
+ */
 static ssize_t iomap_dio_bio_iter_one(struct iomap_iter *iter,
 		struct iomap_dio *dio, loff_t pos, unsigned int alignment,
 		blk_opf_t op)
 {
-	unsigned int nr_vecs;
-	struct bio *bio;
-	ssize_t ret;
+	unsigned int nr_vecs;    // bio中需要的向量数量
+	struct bio *bio;        // bio结构体指针
+	ssize_t ret;            // 返回值，表示操作结果或字节数
 
+	// 根据是否需要缓冲，确定bio中需要的向量数量
 	if (dio->flags & IOMAP_DIO_BOUNCE)
 		nr_vecs = bio_iov_bounce_nr_vecs(dio->submit.iter, op);
 	else
 		nr_vecs = bio_iov_vecs_to_alloc(dio->submit.iter, BIO_MAX_VECS);
 
+	// 分配bio结构体并设置相关属性
 	bio = iomap_dio_alloc_bio(iter, dio, nr_vecs, op);
 	fscrypt_set_bio_crypt_ctx(bio, iter->inode,
 			pos >> iter->inode->i_blkbits, GFP_KERNEL);
-	bio->bi_iter.bi_sector = iomap_sector(&iter->iomap, pos);
-	bio->bi_write_hint = iter->inode->i_write_hint;
-	bio->bi_ioprio = dio->iocb->ki_ioprio;
-	bio->bi_private = dio;
-	bio->bi_end_io = iomap_dio_bio_end_io;
+	bio->bi_iter.bi_sector = iomap_sector(&iter->iomap, pos);  // 设置bio的起始扇区
+	bio->bi_write_hint = iter->inode->i_write_hint;           // 设置写提示
+	bio->bi_ioprio = dio->iocb->ki_ioprio;                     // 设置I/O优先级
+	bio->bi_private = dio;                                     // 设置私有数据
+	bio->bi_end_io = iomap_dio_bio_end_io;                     // 设置结束回调函数
 
+	// 根据是否需要缓冲，填充bio页面
 	if (dio->flags & IOMAP_DIO_BOUNCE)
 		ret = bio_iov_iter_bounce(bio, dio->submit.iter);
 	else
 		ret = bio_iov_iter_get_pages(bio, dio->submit.iter,
 					     alignment - 1);
 	if (unlikely(ret))
-		goto out_put_bio;
-	ret = bio->bi_iter.bi_size;
+		goto out_put_bio;    // 如果填充失败，释放bio并返回错误
+	ret = bio->bi_iter.bi_size;    // 获取bio的大小
 
 	/*
-	 * An atomic write bio must cover the complete length.  If it doesn't,
-	 * error out.
+	 * 原子写bio必须覆盖完整的长度。如果不覆盖，则出错。
 	 */
 	if ((op & REQ_ATOMIC) && WARN_ON_ONCE(ret != iomap_length(iter))) {
 		ret = -EINVAL;
 		goto out_put_bio;
 	}
 
+	// 根据操作类型进行相应处理
 	if (dio->flags & IOMAP_DIO_WRITE)
-		task_io_account_write(ret);
+		task_io_account_write(ret);    // 写操作，统计写入字节数
 	else if ((dio->flags & IOMAP_DIO_USER_BACKED) &&
 		 !(dio->flags & IOMAP_DIO_BOUNCE))
-		bio_set_pages_dirty(bio);
+		bio_set_pages_dirty(bio);     // 用户支持的读操作，标记页面为脏
 
 	/*
-	 * We can only poll for single bio I/Os.
+	 * 我们只能轮询单个bio的I/O操作。
 	 */
 	if (iov_iter_count(dio->submit.iter))
-		dio->iocb->ki_flags &= ~IOCB_HIPRI;
-	iomap_dio_submit_bio(iter, dio, bio, pos);
+		dio->iocb->ki_flags &= ~IOCB_HIPRI;    // 如果还有更多迭代，禁用高优先级I/O
+	iomap_dio_submit_bio(iter, dio, bio, pos);    // 提交bio进行I/O操作
 	return ret;
 
 out_put_bio:
-	bio_put(bio);
-	return ret;
+	bio_put(bio);    // 释放bio
+	return ret;      // 返回操作结果
 }
 
+
+/**
+ * iomap_dio_bio_iter - 处理直接I/O操作的bio迭代
+ * @iter: 指向iomap_iter结构的指针，包含I/O映射迭代信息
+ * @dio: 指向iomap_dio结构的指针，包含直接I/O操作的状态信息
+ * 
+ * 该函数负责处理直接I/O操作的bio迭代，根据不同的I/O类型和标志执行相应的操作。
+ * 它处理写入和读取操作，处理未写入区域、共享区域和新分配区域的情况，
+ * 并确保适当的对齐和零填充。
+ */
 static int iomap_dio_bio_iter(struct iomap_iter *iter, struct iomap_dio *dio)
 {
-	const struct iomap *iomap = &iter->iomap;
-	struct inode *inode = iter->inode;
-	unsigned int fs_block_size = i_blocksize(inode), pad;
-	const loff_t length = iomap_length(iter);
-	loff_t pos = iter->pos;
-	blk_opf_t bio_opf = REQ_SYNC | REQ_IDLE;
-	bool need_zeroout = false;
-	u64 copied = 0;
-	size_t orig_count;
-	unsigned int alignment;
-	ssize_t ret = 0;
+	const struct iomap *iomap = &iter->iomap;  // 获取当前的I/O映射
+	struct inode *inode = iter->inode;        // 获取文件节点
+	unsigned int fs_block_size = i_blocksize(inode), pad;  // 文件系统块大小
+	const loff_t length = iomap_length(iter);  // 获取映射长度
+	loff_t pos = iter->pos;                    // 当前位置
+	blk_opf_t bio_opf = REQ_SYNC | REQ_IDLE;   // bio操作标志
+	bool need_zeroout = false;                // 是否需要零填充
+	u64 copied = 0;                           // 已复制字节数
+	size_t orig_count;                        // 原始计数
+	unsigned int alignment;                  // 对齐要求
+	ssize_t ret = 0;                          // 返回值
 
 	/*
-	 * File systems that write out of place and always allocate new blocks
-	 * need each bio to be block aligned as that's the unit of allocation.
+	 * 对于总是分配新块并就地外写的文件系统，每个bio需要与块对齐，
+	 * 因为这是分配的单位。
 	 */
 	if (dio->flags & IOMAP_DIO_FSBLOCK_ALIGNED)
-		alignment = fs_block_size;
+		alignment = fs_block_size;        // 使用文件系统块大小作为对齐
 	else
-		alignment = bdev_logical_block_size(iomap->bdev);
+		alignment = bdev_logical_block_size(iomap->bdev);  // 使用设备逻辑块大小
 
+	// 检查位置和长度是否符合对齐要求
 	if ((pos | length) & (alignment - 1))
 		return -EINVAL;
 
+	// 处理写入操作
 	if (dio->flags & IOMAP_DIO_WRITE) {
-		bool need_completion_work = true;
+		bool need_completion_work = true;  // 是否需要完成工作
 
 		switch (iomap->type) {
 		case IOMAP_MAPPED:
 			/*
-			 * Directly mapped I/O does not inherently need to do
-			 * work at I/O completion time.  But there are various
-			 * cases below where this will get set again.
+			 * 直接映射的I/O本质上不需要在I/O完成时做工作。
+			 * 但在下面的某些情况下，这将被重新设置。
 			 */
 			need_completion_work = false;
 			break;
 		case IOMAP_UNWRITTEN:
-			dio->flags |= IOMAP_DIO_UNWRITTEN;
-			need_zeroout = true;
+			dio->flags |= IOMAP_DIO_UNWRITTEN;  // 标记为未写入区域
+			need_zeroout = true;               // 需要零填充
 			break;
 		default:
 			break;
 		}
 
+		// 处理原子bio操作
 		if (iomap->flags & IOMAP_F_ATOMIC_BIO) {
 			/*
-			 * Ensure that the mapping covers the full write
-			 * length, otherwise it won't be submitted as a single
-			 * bio, which is required to use hardware atomics.
+			 * 确保映射覆盖完整的写入长度，
+			 * 否则它不会作为单个bio提交，
+			 * 这是使用硬件原子操作所必需的。
 			 */
 			if (length != iter->len)
 				return -EINVAL;
-			bio_opf |= REQ_ATOMIC;
+			bio_opf |= REQ_ATOMIC;  // 添加原子操作标志
 		}
 
+		// 处理共享区域
 		if (iomap->flags & IOMAP_F_SHARED) {
 			/*
-			 * Unsharing of needs to update metadata at I/O
-			 * completion time.
+			 * 共享区域的取消共享需要在I/O完成时更新元数据。
 			 */
 			need_completion_work = true;
-			dio->flags |= IOMAP_DIO_COW;
+			dio->flags |= IOMAP_DIO_COW;  // 标记为写时复制
 		}
 
+		// 处理新分配的区域
 		if (iomap->flags & IOMAP_F_NEW) {
 			/*
-			 * Newly allocated blocks might need recording in
-			 * metadata at I/O completion time.
+			 * 新分配的块可能需要在I/O完成时记录在元数据中。
 			 */
 			need_completion_work = true;
-			need_zeroout = true;
+			need_zeroout = true;  // 需要零填充
 		}
 
 		/*
-		 * Use a FUA write if we need datasync semantics and this is a
-		 * pure overwrite that doesn't require any metadata updates.
-		 *
-		 * This allows us to avoid cache flushes on I/O completion.
+		 * 如果我们需要数据同步语义并且这是一个纯覆盖写入，
+		 * 不需要任何元数据更新，则使用FUA写入。
+		 * 
+		 * 这允许我们在I/O完成时避免缓存刷新。
 		 */
 		if (dio->flags & IOMAP_DIO_WRITE_THROUGH) {
 			if (!need_completion_work &&
 			    !(iomap->flags & IOMAP_F_DIRTY) &&
 			    (!bdev_write_cache(iomap->bdev) ||
 			     bdev_fua(iomap->bdev)))
-				bio_opf |= REQ_FUA;
+				bio_opf |= REQ_FUA;  // 添加FUA标志
 			else
 				dio->flags &= ~IOMAP_DIO_WRITE_THROUGH;
 		}
 
 		/*
-		 * We can only do inline completion for pure overwrites that
-		 * don't require additional I/O at completion time.
-		 *
-		 * This rules out writes that need zeroing or metdata updates to
-		 * convert unwritten or shared extents.
-		 *
-		 * Writes that extend i_size are also not supported, but this is
-		 * handled in __iomap_dio_rw().
+		 * 我们只能对不需要在完成时附加I/O的纯覆盖写入进行内联完成。
+		 * 
+		 * 这排除了需要零填充或将未写入或共享区域转换为元数据更新的写入。
+		 * 
+		 * 扩展i_size的写入也不支持，但这在__iomap_dio_rw()中处理。
 		 */
 		if (need_completion_work)
-			dio->flags |= IOMAP_DIO_COMP_WORK;
+			dio->flags |= IOMAP_DIO_COMP_WORK;  // 标记需要完成工作
 
-		bio_opf |= REQ_OP_WRITE;
+		bio_opf |= REQ_OP_WRITE;  // 设置写操作
 	} else {
-		bio_opf |= REQ_OP_READ;
+		bio_opf |= REQ_OP_READ;   // 设置读操作
 	}
 
 	/*
-	 * Save the original count and trim the iter to just the extent we
-	 * are operating on right now.  The iter will be re-expanded once
-	 * we are done.
+	 * 保存原始计数并将迭代修剪为我们当前正在操作的extent。
+	 * 一旦完成，迭代将被重新扩展。
 	 */
 	orig_count = iov_iter_count(dio->submit.iter);
 	iov_iter_truncate(dio->submit.iter, length);
@@ -508,15 +586,15 @@ static int iomap_dio_bio_iter(struct iomap_iter *iter, struct iomap_dio *dio)
 		goto out;
 
 	/*
-	 * The rules for polled IO completions follow the guidelines as the
-	 * ones we set for inline and deferred completions. If none of those
-	 * are available for this IO, clear the polled flag.
+	 * 轮询I/O完成的规则遵循我们为内联和延迟完成设置的指导原则。
+	 * 如果此IO没有这些选项中的任何一个，则清除轮询标志。
 	 */
 	if (dio->flags & IOMAP_DIO_COMP_WORK)
 		dio->iocb->ki_flags &= ~IOCB_HIPRI;
 
+	// 处理零填充
 	if (need_zeroout) {
-		/* zero out from the start of the block to the write offset */
+		/* 从块开始到写入偏移量进行零填充 */
 		pad = pos & (fs_block_size - 1);
 
 		ret = iomap_dio_zero(iter, dio, pos - pad, pad);
@@ -524,61 +602,78 @@ static int iomap_dio_bio_iter(struct iomap_iter *iter, struct iomap_dio *dio)
 			goto out;
 	}
 
+	// 主循环，处理bio迭代
 	do {
 		/*
-		 * If completions already occurred and reported errors, give up now and
-		 * don't bother submitting more bios.
+		 * 如果完成已经发生并报告了错误，现在就放弃，
+		 * 不再提交更多的bio。
 		 */
 		if (unlikely(data_race(dio->error)))
 			goto out;
 
+		// 处理单个bio迭代
 		ret = iomap_dio_bio_iter_one(iter, dio, pos, alignment, bio_opf);
 		if (unlikely(ret < 0)) {
 			/*
-			 * We have to stop part way through an IO. We must fall
-			 * through to the sub-block tail zeroing here, otherwise
-			 * this short IO may expose stale data in the tail of
-			 * the block we haven't written data to.
+			 * 我们在IO中途停止。我们必须在这里继续进行子块尾部零填充，
+			 * 否则这个短的IO可能会暴露我们尚未写入数据的块的尾部中的陈旧数据。
 			 */
 			break;
 		}
-		dio->size += ret;
-		copied += ret;
-		pos += ret;
-		ret = 0;
+		dio->size += ret;    // 更新已处理大小
+		copied += ret;       // 更新已复制字节数
+		pos += ret;         // 更新位置
+		ret = 0;            // 重置返回值
 	} while (iov_iter_count(dio->submit.iter));
 
 	/*
-	 * We need to zeroout the tail of a sub-block write if the extent type
-	 * requires zeroing or the write extends beyond EOF. If we don't zero
-	 * the block tail in the latter case, we can expose stale data via mmap
-	 * reads of the EOF block.
+	 * 如果extent类型需要零填充，或者写入超出EOF，我们需要对子块写入的尾部进行零填充。
+	 * 如果在后一种情况下我们不零填充块尾部，我们可能会通过mmap读取EOF块暴露陈旧数据。
 	 */
 	if (need_zeroout ||
 	    ((dio->flags & IOMAP_DIO_WRITE) && pos >= i_size_read(inode))) {
-		/* zero out from the end of the write to the end of the block */
+		/* 从写入结束到块结束进行零填充 */
 		pad = pos & (fs_block_size - 1);
 		if (pad)
 			ret = iomap_dio_zero(iter, dio, pos,
 					     fs_block_size - pad);
 	}
 out:
-	/* Undo iter limitation to current extent */
+	/* 撤销对当前extent的迭代限制 */
 	iov_iter_reexpand(dio->submit.iter, orig_count - copied);
 	if (copied)
 		return iomap_iter_advance(iter, copied);
 	return ret;
 }
 
+
+/**
+ * iomap_dio_hole_iter - 处理直接IO操作中的空洞区域
+ * @iter: 指向iomap迭代器的指针，包含IO映射迭代相关信息
+ * @dio: 指向直接IO结构的指针，包含直接IO操作的相关信息
+ * 
+ * 该函数用于处理直接IO操作中的空洞区域，通过将空洞区域填充为零数据。
+ * 它使用iov_iter_zero函数将指定长度的数据填充为零，并更新直接IO操作的大小。
+ * 
+ * 返回值:
+ *     成功时返回迭代器前进的长度
+ *     如果遇到错误(如无法填充零数据)，返回-EFAULT
+ */
 static int iomap_dio_hole_iter(struct iomap_iter *iter, struct iomap_dio *dio)
 {
+	// 使用iov_iter_zero函数将迭代器指定长度的数据填充为零
+	// iomap_length(iter)获取当前迭代区域的长度
 	loff_t length = iov_iter_zero(iomap_length(iter), dio->submit.iter);
 
+	// 更新直接IO操作的总大小
 	dio->size += length;
+	// 如果填充的长度为零，表示出现错误，返回-EFAULT
 	if (!length)
 		return -EFAULT;
+	// 迭代器前进指定的长度，继续处理后续数据
 	return iomap_iter_advance(iter, length);
 }
+
 
 static int iomap_dio_inline_iter(struct iomap_iter *iomi, struct iomap_dio *dio)
 {

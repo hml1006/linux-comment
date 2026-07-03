@@ -1284,43 +1284,68 @@ static int bio_iov_iter_align_down(struct bio *bio, struct iov_iter *iter,
  * MM encounters an error pinning the requested pages, it stops. Error
  * is returned only if 0 pages could be pinned.
  */
+/**
+ * bio_iov_iter_get_pages - 从io向量迭代器中获取页面并填充到bio结构中
+ * @bio: bio结构指针，用于存储从迭代器中获取的页面信息
+ * @iter: iov_iter结构指针，包含要提取的页面信息
+ * @len_align_mask: 长度对齐掩码，用于对齐bio的长度
+ * 
+ * 该函数从io向量迭代器中提取页面信息，并将其填充到bio结构中。
+ * 它处理不同类型的迭代器，并支持PCI P2PDMA操作。
+ * 返回0表示成功，负值表示错误。
+ */
+
 int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter,
 			   unsigned len_align_mask)
 {
+	// 初始化提取标志
 	iov_iter_extraction_t flags = 0;
 
+	// 检查bio是否被标记为已克隆，如果是则返回错误
 	if (WARN_ON_ONCE(bio_flagged(bio, BIO_CLONED)))
 		return -EIO;
 
+	// 如果迭代器是bvec类型，直接设置bio的bvec并返回
 	if (iov_iter_is_bvec(iter)) {
 		bio_iov_bvec_set(bio, iter);
 		iov_iter_advance(iter, bio->bi_iter.bi_size);
 		return 0;
 	}
 
+	// 如果迭代器会固定页面，设置bio的PAGE_PINNED标志
 	if (iov_iter_extract_will_pin(iter))
 		bio_set_flag(bio, BIO_PAGE_PINNED);
+	// 如果bio关联的块设备支持PCI P2PDMA，设置相应的标志
 	if (bio->bi_bdev && blk_queue_pci_p2pdma(bio->bi_bdev->bd_disk->queue))
 		flags |= ITER_ALLOW_P2PDMA;
 
+	// 循环从迭代器中提取bvecs到bio中
 	do {
 		ssize_t ret;
 
+		// 尝试从迭代器中提取bvecs到bio的io_vec中
 		ret = iov_iter_extract_bvecs(iter, bio->bi_io_vec,
 				BIO_MAX_SIZE - bio->bi_iter.bi_size,
 				&bio->bi_vcnt, bio->bi_max_vecs, flags);
+		// 如果提取失败或没有数据
 		if (ret <= 0) {
+			// 如果bio中没有向量，返回错误
 			if (!bio->bi_vcnt)
 				return ret;
 			break;
 		}
+		// 更新bio的大小
 		bio->bi_iter.bi_size += ret;
+	// 当迭代器中还有数据且bio未满时继续循环
 	} while (iov_iter_count(iter) && !bio_full(bio, 0));
 
+	// 如果bio的第一个页面是PCI P2PDMA页面，设置REQ_NOMERGE标志
 	if (is_pci_p2pdma_page(bio->bi_io_vec->bv_page))
 		bio->bi_opf |= REQ_NOMERGE;
+	// 对齐bio的长度并返回结果
 	return bio_iov_iter_align_down(bio, iter, len_align_mask);
 }
+
 
 static struct folio *folio_alloc_greedy(gfp_t gfp, size_t *size)
 {
@@ -1714,26 +1739,44 @@ static void bio_dirty_fn(struct work_struct *work)
 	}
 }
 
+/**
+ * bio_check_pages_dirty - 检查bio关联的页面是否为脏页
+ * @bio: 要检查的bio结构体指针
+ * 
+ * 该函数用于检查bio结构关联的所有页面是否为脏页(dirty)。如果所有页面都是脏页，
+ * 则释放这些页面并释放bio；如果有任何页面不是脏页，则将bio添加到脏页列表中，
+ * 并安排工作队列进行处理。
+ */
 void bio_check_pages_dirty(struct bio *bio)
 {
-	struct folio_iter fi;
-	unsigned long flags;
+	struct folio_iter fi;  // 用于遍历bio关联的folio的迭代器
+	unsigned long flags;    // 用于保存中断状态的自旋锁标志
 
+	// 遍历bio关联的所有folio
 	bio_for_each_folio_all(fi, bio) {
+		// 检查当前folio是否为脏页，如果不是则跳转到defer标签
 		if (!folio_test_dirty(fi.folio))
 			goto defer;
 	}
 
+	// 如果所有页面都是脏页，释放这些页面但不标记为脏
 	bio_release_pages(bio, false);
+	// 释放bio结构体
 	bio_put(bio);
-	return;
+	return;  // 函数正常返回
+
 defer:
+	// 如果有非脏页页面，获取自旋锁以保护共享数据结构
 	spin_lock_irqsave(&bio_dirty_lock, flags);
+	// 将当前bio添加到脏页列表
 	bio->bi_private = bio_dirty_list;
 	bio_dirty_list = bio;
+	// 释放自旋锁
 	spin_unlock_irqrestore(&bio_dirty_lock, flags);
+	// 安排工作队列bio_dirty_work来处理脏页bio
 	schedule_work(&bio_dirty_work);
 }
+
 EXPORT_SYMBOL_GPL(bio_check_pages_dirty);
 
 static inline bool bio_remaining_done(struct bio *bio)

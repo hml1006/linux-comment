@@ -45,9 +45,11 @@
 # 系统调用
 
 ## 文件操作
-[open](./notes/file.md)
+[open](./notes/open-syscall.md)
 
-[open-syscall](./notes/open-syscall-full-path.md)
+[write](./notes/write-syscall.md)
+
+
 
 # 驱动
 ## 驱动相关结构体

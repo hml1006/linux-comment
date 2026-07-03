@@ -1846,36 +1846,57 @@ ssize_t iov_iter_extract_pages(struct iov_iter *i,
 }
 EXPORT_SYMBOL_GPL(iov_iter_extract_pages);
 
+/**
+ * get_contig_folio_len - 计算连续页面的长度
+ * @pages: 页面指针数组
+ * @num_pages: 输出参数，存储连续页面的数量
+ * @left: 剩余需要处理的字节数
+ * @offset: 当前页面的偏移量
+ * 
+ * 该函数用于计算从给定页面开始，有多少连续的页面属于同一个folio，
+ * 并返回这些连续页面的总大小。主要用于处理内存映射中的连续页面检查。
+ * 
+ * 返回值: 连续页面的总大小（字节）
+ */
 static unsigned int get_contig_folio_len(struct page **pages,
 		unsigned int *num_pages, size_t left, size_t offset)
 {
+	// 获取第一个页面所属的folio
 	struct folio *folio = page_folio(pages[0]);
+	// 计算当前页面剩余的可用空间
 	size_t contig_sz = min_t(size_t, PAGE_SIZE - offset, left);
 	unsigned int max_pages, i;
 	size_t folio_offset, len;
 
+	// 计算在folio中的偏移量和可用长度
 	folio_offset = PAGE_SIZE * folio_page_idx(folio, pages[0]) + offset;
 	len = min(folio_size(folio) - folio_offset, left);
 
 	/*
-	 * We might COW a single page in the middle of a large folio, so we have
-	 * to check that all pages belong to the same folio.
+	 * 我们可能会处理大型folio中间的单个页面COW（写时复制），
+	 * 因此必须检查所有页面是否属于同一个folio。
 	 */
 	left -= contig_sz;
+	// 计算可能的最大连续页面数
 	max_pages = DIV_ROUND_UP(offset + len, PAGE_SIZE);
 	for (i = 1; i < max_pages; i++) {
+		// 计算下一个页面的字节数
 		size_t next = min_t(size_t, PAGE_SIZE, left);
 
+		// 检查页面是否属于同一个folio且物理连续
 		if (page_folio(pages[i]) != folio ||
 		    pages[i] != pages[i - 1] + 1)
 			break;
+		// 累加连续页面大小
 		contig_sz += next;
 		left -= next;
 	}
 
+	// 设置输出参数为连续页面的数量
 	*num_pages = i;
 	return contig_sz;
 }
+
 
 #define PAGE_PTRS_PER_BVEC     (sizeof(struct bio_vec) / sizeof(struct page *))
 
@@ -1895,10 +1916,23 @@ static unsigned int get_contig_folio_len(struct page **pages,
  * If @nr_vecs was non-zero on entry, the number of successfully extracted bytes
  * can be 0.
  */
+/**
+ * iov_iter_extract_bvecs - 从迭代器中提取bio_vecs
+ * @iter: 输入的迭代器
+ * @bv: bio_vec数组，用于存储提取的数据
+ * @max_size: 最大提取大小
+ * @nr_vecs: 当前已使用的bio_vec数量指针
+ * @max_vecs: bio_vec数组最大容量
+ * @extraction_flags: 提取标志
+ * 
+ * 该函数从迭代器中提取数据并填充到bio_vec数组中，尽可能多地提取连续的数据。
+ * 返回实际提取的大小，如果出错则返回错误码。
+ */
 ssize_t iov_iter_extract_bvecs(struct iov_iter *iter, struct bio_vec *bv,
 		size_t max_size, unsigned short *nr_vecs,
 		unsigned short max_vecs, iov_iter_extraction_t extraction_flags)
 {
+	// 计算剩余可用的bio_vec槽位数
 	unsigned short entries_left = max_vecs - *nr_vecs;
 	unsigned short nr_pages, i = 0;
 	size_t left, offset, len;
@@ -1906,40 +1940,51 @@ ssize_t iov_iter_extract_bvecs(struct iov_iter *iter, struct bio_vec *bv,
 	ssize_t size;
 
 	/*
-	 * Move page array up in the allocated memory for the bio vecs as far as
-	 * possible so that we can start filling biovecs from the beginning
-	 * without overwriting the temporary page array.
+	 * 将页数组向上移动到分配的内存中bio vecs的最大可能位置，
+	 * 这样我们就可以从头开始填充biovecs，而不会覆盖临时的页数组。
 	 */
 	BUILD_BUG_ON(PAGE_PTRS_PER_BVEC < 2);
+	// 计算页数组起始位置，使其尽可能靠后
 	pages = (struct page **)(bv + *nr_vecs) +
 		entries_left * (PAGE_PTRS_PER_BVEC - 1);
 
+	// 从迭代器中提取页
 	size = iov_iter_extract_pages(iter, &pages, max_size, entries_left,
 			extraction_flags, &offset);
+	// 如果提取失败或没有数据，返回相应的错误码
 	if (unlikely(size <= 0))
 		return size ? size : -EFAULT;
 
+	// 计算需要的页数
 	nr_pages = DIV_ROUND_UP(offset + size, PAGE_SIZE);
+	// 遍历剩余数据，填充bio_vec数组
 	for (left = size; left > 0; left -= len) {
 		unsigned int nr_to_add;
 
+		// 如果前一个bio_vec的页类型与当前页不同，停止填充
 		if (*nr_vecs > 0 &&
 		    !zone_device_pages_have_same_pgmap(bv[*nr_vecs - 1].bv_page,
 				pages[i]))
 			break;
 
+		// 获取连续页的长度
 		len = get_contig_folio_len(&pages[i], &nr_to_add, left, offset);
+		// 设置bio_vec
 		bvec_set_page(&bv[*nr_vecs], pages[i], len, offset);
 		i += nr_to_add;
 		(*nr_vecs)++;
 		offset = 0;
 	}
 
+	// 回退迭代器状态
 	iov_iter_revert(iter, left);
+	// 如果需要固定页，释放固定的页
 	if (iov_iter_extract_will_pin(iter)) {
 		while (i < nr_pages)
 			unpin_user_page(pages[i++]);
 	}
+	// 返回实际提取的大小
 	return size - left;
 }
+
 EXPORT_SYMBOL_GPL(iov_iter_extract_bvecs);

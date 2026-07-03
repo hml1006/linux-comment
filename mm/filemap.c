@@ -508,34 +508,54 @@ bool filemap_range_has_page(struct address_space *mapping,
 }
 EXPORT_SYMBOL(filemap_range_has_page);
 
+/**
+ * __filemap_fdatawait_range - 等待指定地址空间内处于回写状态的页完成回写
+ * @mapping: 目标地址空间结构体指针
+ * @start_byte: 等待范围的起始字节偏移量
+ * @end_byte: 等待范围的结束字节偏移量
+ *
+ * 该函数会遍历给定地址空间和字节范围内的所有页，查找带有
+ * PAGECACHE_TAG_WRITEBACK 标签（即正在回写）的页，并阻塞等待
+ * 直到这些页的回写操作完成。此函数通常用于确保数据已安全落盘。
+ */
 static void __filemap_fdatawait_range(struct address_space *mapping,
 				     loff_t start_byte, loff_t end_byte)
 {
+	/* 将起始和结束的字节偏移量转换为页索引 */
 	pgoff_t index = start_byte >> PAGE_SHIFT;
 	pgoff_t end = end_byte >> PAGE_SHIFT;
 	struct folio_batch fbatch;
 	unsigned nr_folios;
 
+	/* 初始化 folio 批次结构体，用于批量获取和操作 folio */
 	folio_batch_init(&fbatch);
 
+	/* 循环遍历从起始索引到结束索引的所有页 */
 	while (index <= end) {
 		unsigned i;
 
+		/* 批量获取当前范围内正在回写的 folio */
 		nr_folios = filemap_get_folios_tag(mapping, &index, end,
 				PAGECACHE_TAG_WRITEBACK, &fbatch);
 
+		/* 如果没有获取到任何 folio，说明范围内没有正在回写的页，退出循环 */
 		if (!nr_folios)
 			break;
 
+		/* 遍历批次中获取到的每一个 folio */
 		for (i = 0; i < nr_folios; i++) {
 			struct folio *folio = fbatch.folios[i];
 
+			/* 阻塞等待当前 folio 的回写操作完成 */
 			folio_wait_writeback(folio);
 		}
+		/* 释放当前批次中的 folio 引用，防止内存泄漏 */
 		folio_batch_release(&fbatch);
+		/* 条件调度，主动让出 CPU，避免在长时间循环中占用 CPU 导致系统卡顿 */
 		cond_resched();
 	}
 }
+
 
 /**
  * filemap_fdatawait_range - wait for writeback to complete
@@ -2886,20 +2906,41 @@ put_folios:
 }
 EXPORT_SYMBOL_GPL(filemap_read);
 
+/**
+ * kiocb_write_and_wait - 等待指定范围内的脏页回写完成
+ * @iocb: 内核异步I/O控制块指针，包含文件、位置和标志等信息
+ * @count: 需要等待回写的字节数
+ *
+ * 该函数用于确保指定文件区域内的数据已经被写回到磁盘。
+ * 如果I/O操作设置了 IOCB_NOWAIT 标志，则仅检查该范围内是否存在需要回写的脏页，
+ * 若存在则立即返回错误码，不进行实际的等待操作；若未设置该标志，则会阻塞等待
+ * 指定范围内的脏页回写完成。
+ *
+ * Return: 0表示成功（无需等待或等待完成），-EAGAIN表示在NOWAIT模式下存在需回写的脏页
+ */
 int kiocb_write_and_wait(struct kiocb *iocb, size_t count)
 {
+	/* 从iocb中获取文件的地址空间映射结构 */
 	struct address_space *mapping = iocb->ki_filp->f_mapping;
+	/* 获取当前I/O操作的起始偏移量 */
 	loff_t pos = iocb->ki_pos;
+	/* 计算I/O操作的结束偏移量（包含当前字节，因此需要减1） */
 	loff_t end = pos + count - 1;
 
+	/* 检查是否设置了 NOWAIT 异步等待标志 */
 	if (iocb->ki_flags & IOCB_NOWAIT) {
+		/* 若设置了 NOWAIT，则检查该范围是否存在需要回写的脏页 */
 		if (filemap_range_needs_writeback(mapping, pos, end))
+			/* 存在脏页，无法立即完成，返回重试错误码 */
 			return -EAGAIN;
+		/* 没有脏页，可以直接继续执行，返回0 */
 		return 0;
 	}
 
+	/* 未设置 NOWAIT 标志，阻塞等待指定范围内的脏页回写完成并清除错误状态 */
 	return filemap_write_and_wait_range(mapping, pos, end);
 }
+
 EXPORT_SYMBOL_GPL(kiocb_write_and_wait);
 
 int filemap_invalidate_pages(struct address_space *mapping,
@@ -2958,50 +2999,81 @@ EXPORT_SYMBOL_GPL(kiocb_invalidate_pages);
  * * number of bytes copied, even for partial reads
  * * negative error code (or 0 if IOCB_NOIO) if nothing was read
  */
+/**
+ * generic_file_read_iter - 通用文件读取的迭代器接口
+ * @iocb: 内核异步I/O控制块，包含文件指针、读取偏移量及标志等信息
+ * @iter: 用户空间缓冲区的I/O向量迭代器
+ *
+ * 该函数是Linux内核中通用的文件读取实现，支持直接I/O（Direct I/O）
+ * 与缓冲I/O（Buffered I/O）。当直接I/O读取不完整时，会自动回退
+ * 到缓冲I/O读取剩余数据。
+ *
+ * 返回值: 读取的字节数，负数表示错误码
+ */
 ssize_t
 generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 {
+	/* 获取本次请求需要读取的总字节数 */
 	size_t count = iov_iter_count(iter);
+	/* 初始化返回值，用于存储读取结果或错误码 */
 	ssize_t retval = 0;
 
+	/* 如果请求读取的字节数为0，直接返回0，跳过文件访问时间的更新 */
 	if (!count)
 		return 0; /* skip atime */
 
+	/* 检查是否设置了直接I/O（Direct I/O）标志 */
 	if (iocb->ki_flags & IOCB_DIRECT) {
+		/* 获取当前文件指针 */
 		struct file *file = iocb->ki_filp;
+		/* 获取文件的地址空间映射 */
 		struct address_space *mapping = file->f_mapping;
+		/* 获取文件的inode节点 */
 		struct inode *inode = mapping->host;
 
+		/* 等待该范围内所有正在进行的写操作完成，确保直接读取的数据一致性 */
 		retval = kiocb_write_and_wait(iocb, count);
+		/* 如果等待过程中发生错误，直接返回错误码 */
 		if (retval < 0)
 			return retval;
+		
+		/* 更新文件的最后访问时间 */
 		file_accessed(file);
 
+		/* 调用底层文件系统的直接I/O操作进行读取 */
 		retval = mapping->a_ops->direct_IO(iocb, iter);
+		/* 如果直接I/O读取成功 */
 		if (retval >= 0) {
+			/* 根据实际读取的字节数更新文件偏移量 */
 			iocb->ki_pos += retval;
+			/* 从剩余待读取计数中减去已读取的字节数 */
 			count -= retval;
 		}
+		/* 如果直接I/O操作不是异步排队状态，则恢复迭代器状态 */
 		if (retval != -EIOCBQUEUED)
 			iov_iter_revert(iter, count - iov_iter_count(iter));
 
 		/*
-		 * Btrfs can have a short DIO read if we encounter
-		 * compressed extents, so if there was an error, or if
-		 * we've already read everything we wanted to, or if
-		 * there was a short read because we hit EOF, go ahead
-		 * and return.  Otherwise fallthrough to buffered io for
-		 * the rest of the read.  Buffered reads will not work for
-		 * DAX files, so don't bother trying.
+		 * Btrfs在遇到压缩数据块时可能会产生短读（实际读取字节数小于请求数）。
+		 * 因此，如果发生错误，或者已经读取了所有请求的数据，或者因为遇到
+		 * EOF（文件末尾）导致短读，则直接返回。
+		 * 否则，继续向下执行，回退到缓冲I/O来读取剩余的数据。
+		 * 注意：DAX（直接访问）文件不支持缓冲读取，因此遇到DAX文件无需尝试回退。
 		 */
 		if (retval < 0 || !count || IS_DAX(inode))
 			return retval;
+		/* 如果当前文件偏移量已经达到或超过文件大小，说明已读到末尾，直接返回 */
 		if (iocb->ki_pos >= i_size_read(inode))
 			return retval;
 	}
 
+	/* 
+	 * 如果不是直接I/O，或者是直接I/O但未读取完整（且非DAX文件且未到EOF），
+	 * 则使用缓冲I/O（filemap_read）读取剩余或全部数据。
+	 */
 	return filemap_read(iocb, iter, retval);
 }
+
 EXPORT_SYMBOL(generic_file_read_iter);
 
 /*

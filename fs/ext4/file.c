@@ -54,51 +54,94 @@
  *
  * This function implements the traditional ext4 behavior in all these cases.
  */
+/**
+ * ext4_should_use_dio - 判断是否应使用直接I/O (DIO) 方式进行读写
+ * @iocb: 内核I/O控制块，包含文件指针、读写偏移量等信息
+ * @iter: 用户空间数据迭代器，包含数据缓冲区信息
+ *
+ * 该函数通过检查inode的直接I/O对齐要求，以及当前读写位置和数据缓冲区
+ * 的对齐情况，来决定当前操作是否可以使用直接I/O。
+ *
+ * 返回值: 如果应使用直接I/O则返回true，否则返回false。
+ */
 static bool ext4_should_use_dio(struct kiocb *iocb, struct iov_iter *iter)
 {
+	/* 获取与iocb关联的文件对应的inode结构体 */
 	struct inode *inode = file_inode(iocb->ki_filp);
+	
+	/* 获取该inode的直接I/O对齐字节数要求 */
 	u32 dio_align = ext4_dio_alignment(inode);
 
+	/* 如果对齐要求为0，表示不支持直接I/O，返回false */
 	if (dio_align == 0)
 		return false;
 
+	/* 如果对齐要求为1，表示无特殊对齐限制，直接返回true */
 	if (dio_align == 1)
 		return true;
 
+	/* 
+	 * 检查读写偏移量与数据缓冲区地址是否均满足对齐要求。
+	 * 使用按位或运算符(|)将两者的对齐情况合并，只要有一个未对齐，
+	 * IS_ALIGNED宏就会判定为未对齐，从而返回false；全部对齐则返回true。
+	 */
 	return IS_ALIGNED(iocb->ki_pos | iov_iter_alignment(iter), dio_align);
 }
 
+
+/**
+ * ext4_dio_read_iter - ext4文件系统直接I/O(DIO)读取操作的迭代器
+ * @iocb: 内核异步I/O控制块，包含文件偏移量、标志等信息
+ * @to: 描述用户空间目标缓冲区的迭代器
+ *
+ * 该函数用于处理ext4文件系统的直接I/O读取请求。如果条件不允许使用
+ * 直接I/O，则会回退到缓冲I/O(Buffered I/O)模式。
+ *
+ * 返回值: 读取的字节数，或负的错误码
+ */
 static ssize_t ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
+	/* 用于存储读取操作的返回值 */
 	ssize_t ret;
+	/* 获取文件对应的inode结构体，用于后续的文件级锁操作 */
 	struct inode *inode = file_inode(iocb->ki_filp);
 
+	/* 检查是否设置了无等待(IOCB_NOWAIT)标志 */
 	if (iocb->ki_flags & IOCB_NOWAIT) {
+		/* 以非阻塞方式尝试获取共享锁，若获取失败则直接返回EAGAIN错误 */
 		if (!inode_trylock_shared(inode))
 			return -EAGAIN;
 	} else {
+		/* 阻塞式获取inode的共享锁，允许并发读取 */
 		inode_lock_shared(inode);
 	}
 
+	/* 判断当前读写操作和文件属性是否适合使用直接I/O */
 	if (!ext4_should_use_dio(iocb, to)) {
+		/* 不适合直接I/O，释放之前获取的inode共享锁 */
 		inode_unlock_shared(inode);
 		/*
-		 * Fallback to buffered I/O if the operation being performed on
-		 * the inode is not supported by direct I/O. The IOCB_DIRECT
-		 * flag needs to be cleared here in order to ensure that the
-		 * direct I/O path within generic_file_read_iter() is not
-		 * taken.
+		 * 如果在inode上执行的操作不受直接I/O支持，
+		 * 则回退到缓冲I/O。在此处需要清除IOCB_DIRECT标志，
+		 * 以确保在调用generic_file_read_iter()时不会进入
+		 * 直接I/O的代码路径。
 		 */
 		iocb->ki_flags &= ~IOCB_DIRECT;
+		/* 走常规的缓冲读取路径 */
 		return generic_file_read_iter(iocb, to);
 	}
 
+	/* 执行基于iomap的直接I/O读写操作 */
 	ret = iomap_dio_rw(iocb, to, &ext4_iomap_ops, NULL, 0, NULL, 0);
+	/* 直接I/O操作完成，释放inode共享锁 */
 	inode_unlock_shared(inode);
 
+	/* 更新文件的最后访问时间 */
 	file_accessed(iocb->ki_filp);
+	/* 返回读取到的字节数或错误码 */
 	return ret;
 }
+
 
 #ifdef CONFIG_FS_DAX
 static ssize_t ext4_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
@@ -129,25 +172,43 @@ static ssize_t ext4_dax_read_iter(struct kiocb *iocb, struct iov_iter *to)
 }
 #endif
 
+/**
+ * ext4_file_read_iter - ext4文件读取的迭代器接口
+ * @iocb: 内核异步I/O控制块，包含了文件指针、偏移量等I/O操作相关信息
+ * @to: 目标iov_iter结构体，描述了用户空间缓冲区的位置和长度
+ *
+ * 该函数是ext4文件系统中处理文件读取操作的核心入口。
+ * 它会根据文件系统的当前状态以及文件的存储和访问模式（如DAX、直接I/O），
+ * 将读取请求分发到相应的具体处理函数中。
+ *
+ * 返回值: 读取的字节数，若出错则返回相应的负错误码
+ */
 static ssize_t ext4_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 {
+	/* 从异步I/O控制块中获取对应的inode结构体 */
 	struct inode *inode = file_inode(iocb->ki_filp);
 
+	/* 检查文件系统是否被强制关闭 */
 	if (unlikely(ext4_forced_shutdown(inode->i_sb)))
-		return -EIO;
+		return -EIO; /* 若已强制关闭，返回I/O错误码 */
 
+	/* 如果请求读取的长度为0，则直接返回0 */
 	if (!iov_iter_count(to))
-		return 0; /* skip atime */
+		return 0; /* skip atime - 跳过访问时间的更新 */
 
 #ifdef CONFIG_FS_DAX
+	/* 如果启用了DAX（直接访问）配置且当前文件支持DAX模式 */
 	if (IS_DAX(inode))
-		return ext4_dax_read_iter(iocb, to);
+		return ext4_dax_read_iter(iocb, to); /* 走DAX读取路径 */
 #endif
+	/* 如果I/O控制块标志中包含直接I/O（IOCB_DIRECT）标志 */
 	if (iocb->ki_flags & IOCB_DIRECT)
-		return ext4_dio_read_iter(iocb, to);
+		return ext4_dio_read_iter(iocb, to); /* 走直接I/O读取路径 */
 
+	/* 默认情况：走通用的缓冲区缓存读取路径 */
 	return generic_file_read_iter(iocb, to);
 }
+
 
 static ssize_t ext4_file_splice_read(struct file *in, loff_t *ppos,
 				     struct pipe_inode_info *pipe,

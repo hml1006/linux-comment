@@ -6327,21 +6327,43 @@ err_out:
 	return error;
 }
 
+/**
+ * ext4_dio_alignment - 获取ext4文件系统下直接I/O(DIO)的对齐要求
+ * @inode: 指向目标inode结构的指针
+ *
+ * 此函数用于判断指定inode是否支持直接I/O（DIO），并返回相应的对齐要求。
+ * 如果不支持DIO，则返回0；如果支持，则返回所需的字节数对齐边界。
+ * 返回1表示使用iomap的默认对齐方式。
+ *
+ * Return: 直接I/O的对齐字节数，0表示不支持直接I/O
+ */
 u32 ext4_dio_alignment(struct inode *inode)
 {
+	/* 如果inode启用了fsverity（文件系统验证），则不支持DIO，返回0 */
 	if (fsverity_active(inode))
 		return 0;
+
+	/* 如果inode需要日志记录数据，则不支持DIO，返回0 */
 	if (ext4_should_journal_data(inode))
 		return 0;
+
+	/* 如果inode包含内联数据，则不支持DIO，返回0 */
 	if (ext4_has_inline_data(inode))
 		return 0;
+
+	/* 如果inode被加密 */
 	if (IS_ENCRYPTED(inode)) {
+		/* 检查fscrypt是否支持该inode的DIO，不支持则返回0 */
 		if (!fscrypt_dio_supported(inode))
 			return 0;
+		/* 如果支持加密DIO，则需要按文件系统的块大小进行对齐 */
 		return i_blocksize(inode);
 	}
+
+	/* 其他常规情况，支持DIO，返回1表示使用iomap的默认对齐规则 */
 	return 1; /* use the iomap defaults */
 }
+
 
 int ext4_getattr(struct mnt_idmap *idmap, const struct path *path,
 		 struct kstat *stat, u32 request_mask, unsigned int query_flags)

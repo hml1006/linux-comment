@@ -1,3 +1,178 @@
+# ***open***
+
+**完整对比表**
+
+| 维度                   | **open** | **openat** | **openat2**       |
+| ---------------------- | -------------- | ---------------- | ----------------------- |
+| **路径解析起点** | 当前工作目录   | dirfd 或 CWD     | dirfd 或 CWD            |
+| **符号链接处理** | O_NOFOLLOW     | O_NOFOLLOW       | RESOLVE_NO_SYMLINKS     |
+| **逃逸防护**     | 无             | 有限             | RESOLVE_BENEATH/IN_ROOT |
+| **魔法链接**     | 支持           | 支持             | RESOLVE_NO_MAGICLINKS   |
+| **跨设备限制**   | 无             | 无               | RESOLVE_NO_XDEV         |
+| **参数扩展**     | 无法扩展       | 难以扩展         | 易于扩展                |
+| **版本管理**     | 无             | 无               | size 参数版本检查       |
+| **安全性**       | 低             | 中               | 高                      |
+| **性能**         | 最优           | 中等             | 略低但可接受            |
+| **兼容性**       | 最好           | 好               | Linux 5.6+              |
+| **推荐场景**     | 遗留代码       | 一般应用         | 安全关键应用            |
+
+
+在 Linux 6.18 中：
+
+1. **`open`** 主要用于兼容性，新代码应避免使用
+2. **`openat`** 是目前的主流选择，平衡了功能和兼容性
+3. **`openat2`** 是未来的方向，提供了最强的安全特性和扩展性
+
+对于新项目，特别是安全敏感的应用，强烈推荐使用 `openat2`。它的结构体设计确保了向后兼容，同时提供了防止各种路径遍历攻击的能力。对于需要支持老内核的系统，可以回退到 `openat`，但应避免使用原始的 `open`。
+
+## **do_sys_open代码执行flow**
+
+    path lookup过程是顺着dentry树从上到下查找的，如果遇到符号链接，会沿着符号链接进入下一级目录，如果遇到挂载点，会进入挂载点，如果遇到文件，则打开文件。**执行流程分析**
+
+1. **系统调用入口与参数转换：**do_sys_open 首先调用 build_open_how 初始化 open_how 结构体（支持 openat2 参数），随后进入 do_sys_openat2 调用 build_open_flags 将其转换为内核内部的 open_flags 结构。
+2. **文件描述符分配与路径查找：**通过 get_unused_fd_flags 分配 fd，然后调用 do_filp_open 进入 VFS 路径查找核心。path_init 初始化查找起点，link_path_walk 逐级解析路径分量。
+3. **目录项查找与 EXT4 inode 读取**：在 walk_component 中，优先调用 lookup_fast 查找 dcache；若未命中，则进入 lookup_slow 调用 ext4_lookup。EXT4 通过 ext4_find_entry 遍历目录项，若目标 inode 不在内存，则调用 __ext4_get_inode_loc 计算磁盘物理块位置，并通过 sb_bread 触发块 I/O 读取。
+4. **NVMe 块设备 I/O 提交与完成：**sb_bread 构造 buffer_head 并向通用块层提交 bio。请求到达 NVMe 驱动后，被转化为 NVMe Read 命令（SQE）提交至 SQ 队列，并写 Doorbell 寄存器通知控制器。控制器 DMA 读取完成后产生 CQE 中断，驱动在中断上下文释放 bio 完成回调，将数据写入页缓存并唤醒等待进程。
+5. **文件结构初始化与绑定：**回到 VFS 层，open_last_lookups 和 do_open 被调用，进入 vfs_open -> do_dentry_open。在此将 inode->i_fop（即 ext4_file_operations）赋给 file->f_op，并调用 ext4_file_open 完成文件系统特定逻辑。最后 fd_install 将 file 与 fd 绑定。
+
+### 执行flow
+
+```mermaid
+flowchart TD
+    A([用户态调用 open/openat/openat2]) --> B[do_sys_open]
+  
+    subgraph VFS系统调用层
+        B --> C[build_open_how<br/>初始化open_how, 支持openat2参数]
+        C --> D[do_sys_openat2]
+        D --> E[build_open_flags<br/>转换open_how为内核open_flags]
+        E --> F[get_unused_fd_flags<br/>分配文件描述符fd]
+        F --> G[do_filp_open]
+    end
+
+    G --> H[path_openat]
+
+    subgraph VFS路径解析层
+        H --> I[alloc_empty_file<br/>分配struct file结构体]
+        I --> J[path_init<br/>初始化查找起点与nameidata]
+        J --> K[link_path_walk<br/>逐级解析路径分量]
+    
+        K --> L{处理路径分量}
+        L --> M[may_lookup<br/>检查目录执行权限]
+        M --> N[walk_component]
+    
+        N --> O{dcache是否命中?}
+        O -- 是 --> V[step_into<br/>进入下一级/处理挂载点]
+    
+        O -- 否 --> P[lookup_slow]
+        P --> Q[d_alloc_parallel<br/>分配dentry加入dcache]
+        Q --> R[__lookup_slow]
+    end
+
+    subgraph EXT4文件系统层
+        R --> S[ext4_lookup<br/>EXT4目录项查找]
+        S --> T[ext4_lookup_entry]
+        T --> U{检查inline data?}
+    
+        U -- 是 --> U1[ext4_find_inline_entry<br/>从inode内联数据中查找]
+    
+        U -- 否 --> U2[__ext4_find_entry<br/>从磁盘目录块中查找]
+    
+        U1 --> U3[ext4_get_inode_loc<br/>获取目标inode磁盘位置]
+        U2 --> U3
+    
+        U3 --> U4[__ext4_get_inode_loc<br/>计算block_group与block偏移]
+        U4 --> U5[sb_bread<br/>读取inode所在磁盘块]
+    end
+
+    subgraph NVMe块设备驱动层
+        U5 --> V1[构造bio与buffer_head<br/>提交块I/O请求]
+        V1 --> V2[通用块层处理<br/>合并与调度]
+        V2 --> V3[NVMe驱动<br/>bio转化为NVMe Read SQE]
+        V3 --> V4[提交至SQ队列<br/>写Doorbell寄存器通知控制器]
+        V4 --> V5[NVMe控制器<br/>执行DMA读取磁盘数据]
+        V5 --> V6[完成中断CQE<br/>触发NVMe中断处理]
+        V6 --> V7[块层完成回调<br/>数据写入页缓存,唤醒等待进程]
+    end
+
+    V7 --> V
+
+    V --> W{路径是否解析完毕?}
+    W -- 否 --> K
+    W -- 是 --> X[open_last_lookups<br/>最后一级组件查找与打开]
+
+    subgraph VFS文件打开层
+        X --> Y[do_open]
+        Y --> Z[vfs_open]
+        Z --> AA[do_dentry_open<br/>file->f_op = inode->i_fop]
+        AA --> AB[f->f_op->open<br/>调用ext4_file_open]
+    
+        subgraph EXT4特定打开逻辑
+            AB --> AC[ext4_file_open<br/>更新挂载路径,绑定journal inode]
+        end
+    
+        AC --> AD[fd_install<br/>将file结构与fd绑定到进程]
+    end
+
+    AD --> AE([返回fd给用户态])
+
+```
+
+### 函数调用栈
+
+```plantuml
+@startsalt
+{{T
++ do_sys_open
+++ build_open_how       | 初始化open_how flags, openat2的参数
+++ do_sys_openat2
++++ build_open_flags    | 将open_how flags转换为openat2的open_flags
++++ FD_ADD(how->flags, do_file_open(dfd, name, &op)) | 调用do_file_open打开文件，并添加到当前进程的文件描述符表中
++++ do_file_open    | 打开文件
+++++ set_nameidata | 设置nameidata结构体
++++++ __set_nameidata | 设置nameidata结构体， current->nameidata 复用
+++++ path_openat
++++++ alloc_empty_file | 分配struct file结构体
++++++ do_tmpfile | if __O_TMPFILE标识查找临时文件
++++++ do_o_path | if O_PATH方式打开，可以查看文件描述信息，但是不真正打开文件
++++++ path_init | else 初始化path结构体，开始path walk
++++++ link_path_walk    | 开头跳过连续的 /
+++++++ for循环处理每个路径分量
++++++++ mnt_idmap        | 获取mnt的uid，gid map
++++++++ may_lookup | 检查权限
++++++++ hash_name
++++++++ walk_component
+++++++++ handle_dots    | 处理.和..
+++++++++ lookup_fast | 快速查找，从dcache中找
+++++++++ lookup_slow | 慢速查找，从inode中找
++++++++++ d_alloc_parallel | 分配新的dentry，并添加到dcache中，同时处理好多进程同时访问的问题
++++++++++ __lookup_slow
+++++++++++ inode->i_op->lookup == ext4_lookup | 调用文件系统的lookup函数，比如ext4_lookup
++++++++++++ 检查文件名长度
++++++++++++ ext4_lookup_entry | 查找文件名对应的inode
+++++++++++++ ext4_fname_prepare_lookup | 准备查找，初始化struct ext4_filename fname
+++++++++++++ __ext4_find_entry | 查找文件名对应的inode
++++++++++++++ ext4_has_inline_data | 检查文件是否有内联数据, 文件内容很少的情况下, 直接inline到inode剩余空间
++++++++++++++ ext4_find_inline_entry | 查找内联数据
+++++++++++++++ ext4_get_inode_loc | 获取inode位置
++++++++++++++++ __ext4_get_inode_loc | 获取inode位置，buffer_head指向inode所在block
+++++++++++++++ ext4_raw_inode | 获取inode中inline起始位置
+++++++++++++++ ext4_search_dir | 从inline数据中查找目录
+++++++++++++ ext4_fname_free_filename | 释放fname，未开加密为空
+++++++++ step_into | 查找到当前路径分量，进入下一级，如果dentry是挂载点，会进入挂载点
++++++ open_last_lookups
++++++ do_open | 打开文件
+++++++ vfs_open
++++++++ do_dentry_open  | 将 inode->i_fop 赋给 file->f_op
+++++++++ f->f_op->open | 通过函数指针调用ext4_file_open
++++++++++ ext4_file_open | 更新最后挂载路径，绑定jounal inode
++++++ terminate_walk | 结束path walk
+++++ restore_nameidata | 恢复nameidata结构体
+}}
+@endsalt
+```
+
+# 深层次分析
+
 # Open 系统调用全路径深度分析
 
 从 `SYSCALL_DEFINE3(open)` 到 NVMe 驱动 Doorbell 的完整代码追踪
