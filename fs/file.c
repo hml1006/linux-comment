@@ -722,24 +722,39 @@ EXPORT_SYMBOL(fd_install);
  *
  * Returns: The file associated with @fd (NULL if @fd is not open)
  */
+/**
+ * file_close_fd_locked - 关闭文件描述符并返回对应的文件结构体
+ * @files: 文件结构体指针，包含进程打开的文件描述符表
+ * @fd: 要关闭的文件描述符编号
+ * 
+ * 该函数在持有文件锁的情况下安全地关闭指定的文件描述符，并返回对应的文件结构体指针。
+ * 使用RCU机制确保在多核环境下的安全性。
+ * 
+ * 返回值:
+ *     成功时返回关闭的文件结构体指针，如果文件描述符无效则返回NULL
+ */
+
 struct file *file_close_fd_locked(struct files_struct *files, unsigned fd)
 {
-	struct fdtable *fdt = files_fdtable(files);
+	struct fdtable *fdt = files_fdtable(files);  // 获取文件描述符表
 	struct file *file;
 
-	lockdep_assert_held(&files->file_lock);
+	lockdep_assert_held(&files->file_lock);  // 确保持有文件锁
 
+	// 检查文件描述符是否超出范围
 	if (fd >= fdt->max_fds)
 		return NULL;
 
+	// 使用array_index_nospec防止越界访问
 	fd = array_index_nospec(fd, fdt->max_fds);
-	file = rcu_dereference_raw(fdt->fd[fd]);
+	file = rcu_dereference_raw(fdt->fd[fd]);  // 原始RCU引用获取文件结构体
 	if (file) {
-		rcu_assign_pointer(fdt->fd[fd], NULL);
-		__put_unused_fd(files, fd);
+		rcu_assign_pointer(fdt->fd[fd], NULL);  // 将文件描述符指针置为NULL
+		__put_unused_fd(files, fd);  // 将文件描述符标记为未使用
 	}
-	return file;
+	return file;  // 返回文件结构体指针
 }
+
 
 int close_fd(unsigned fd)
 {
@@ -886,10 +901,16 @@ SYSCALL_DEFINE3(close_range, unsigned int, fd, unsigned int, max_fd,
  *
  * Returns: The file associated with @fd (NULL if @fd is not open)
  */
+/**
+ * 关闭文件描述符并返回对应的file结构体指针
+ * @param fd 要关闭的文件描述符
+ * @return 成功返回对应的file结构体指针，失败返回NULL
+ */
 struct file *file_close_fd(unsigned int fd)
 {
-	struct files_struct *files = current->files;
+	struct files_struct *files = current->files;  // 获取当前进程的文件描述符表
 	struct file *file;
+	// 加锁保护对文件描述符表的访问
 
 	spin_lock(&files->file_lock);
 	file = file_close_fd_locked(files, fd);

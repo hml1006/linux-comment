@@ -46,6 +46,47 @@ sequenceDiagram
     Syscall-->>User: 返回读取字节数
 ```
 
+## 调用链概述
+
+```
+用户进程 read(fd, buf, count)
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│  系统调用入口 (SYSCALL_DEFINE3)          │  ← fs/read_write.c
+│  sys_read() → ksys_read()               │
+├─────────────────────────────────────────┤
+│  VFS 读分发                              │  ← fs/read_write.c
+│  vfs_read → new_sync_read               │
+│  → filp->f_op->read_iter                │
+├─────────────────────────────────────────┤
+│  Ext4 文件系统 (页缓存/直接IO分派)        │  ← fs/ext4/file.c
+│  ext4_file_read_iter                    │
+│  → generic_file_read_iter               │
+├─────────────────────────────────────────┤
+│  页高速缓存 (Page Cache)                 │  ← mm/filemap.c
+│  filemap_read → filemap_get_pages       │
+│  → filemap_create_folio                  │
+├─────────────────────────────────────────┤
+│  Ext4 块映射 & BIO 构造                  │  ← fs/ext4/readpage.c
+│  ext4_read_folio → ext4_mpage_readpages │
+│  → bio_alloc + bio_add_folio            │
+│  → blk_crypto_submit_bio                │
+├─────────────────────────────────────────┤
+│  块设备层 (Block Layer)                 │  ← block/
+│  submit_bio → __submit_bio              │
+│  → blk_mq_submit_bio                    │
+├─────────────────────────────────────────┤
+│  NVMe 驱动 (PCIe 提交)                  │  ← drivers/nvme/host/pci.c
+│  nvme_queue_rq → nvme_sq_copy_cmd       │
+│  → nvme_write_sq_db (Doorbell)          │
+├─────────────────────────────────────────┤
+│  中断返回 (完成处理)                     │  ← drivers/nvme/host/pci.c
+│  nvme_irq → nvme_poll_cq                │
+│  → nvme_handle_cqe → blk_mq_complete    │
+│  → BIO 回调 → 页解锁 → 数据拷贝到用户态   │
+└─────────────────────────────────────────┘
+```
 ---
 
 ## 二、 详细流程梳理
@@ -197,3 +238,87 @@ static const struct blk_mq_ops nvme_mq_ops = {
 
 **总结：** 
 Linux 的 I/O 栈是一个高度分层的架构。VFS 提供了统一的抽象，Ext4 负责文件逻辑到磁盘逻辑的映射，Block 层负责 I/O 调度和多队列管理，NVMe 驱动负责将抽象请求转化为具体的硬件协议。数据流动的核心是 **"先到 Page Cache，缺页则构建 bio 交由底层 DMA 读取，读回后唤醒进程并拷贝至用户态"**。
+
+## 四、 汇总：一次 read 的完整旅程
+
+```
+用户态 read(fd, buf, 4096)
+  │
+  ├─ 系统调用 (syscall 指令)
+  │   └─ SYSCALL_DEFINE3(read)
+  │
+  ├─ ksys_read (fs/read_write.c)
+  │   ├─ fd → file 结构体查找
+  │   └─ vfs_read
+  │
+  ├─ VFS 层
+  │   ├─ rw_verify_area (权限校验)
+  │   └─ new_sync_read → kiocb + iov_iter 初始化
+  │       └─ ext4_file_read_iter
+  │
+  ├─ Ext4 文件系统
+  │   └─ generic_file_read_iter → filemap_read
+  │
+  ├─ 页缓存 (mm/filemap.c)
+  │   ├─ filemap_get_pages
+  │   │   ├─ filemap_get_read_batch (XArray 查找)
+  │   │   ├─ page_cache_sync_ra (预读)
+  │   │   └─ filemap_create_folio (创建新 folio)
+  │   └─ filemap_read_folio (触发 I/O)
+  │       └─ mapping->a_ops->read_folio
+  │
+  ├─ Ext4 块映射 (fs/ext4/readpage.c)
+  │   ├─ ext4_read_folio
+  │   ├─ ext4_mpage_readpages
+  │   │   ├─ ext4_map_blocks (逻辑块 → 物理扇区)
+  │   │   ├─ bio_alloc + bio_add_folio (构造 BIO)
+  │   │   └─ blk_crypto_submit_bio
+  │   └─ submit_bio
+  │
+  ├─ 块设备层 (block/blk-core.c + blk-mq.c)
+  │   ├─ submit_bio_noacct → __submit_bio
+  │   ├─ blk_mq_submit_bio
+  │   │   ├─ bio_split_to_limits (拆分)
+  │   │   ├─ blk_mq_attempt_bio_merge (合并)
+  │   │   ├─ blk_mq_get_new_requests (分配 request)
+  │   │   └─ blk_mq_bio_to_request (bio 绑定 request)
+  │   ├─ blk_add_rq_to_plug (plug 批处理)
+  │   └─ blk_finish_plug → blk_mq_dispatch_plug_list
+  │
+  ├─ NVMe 驱动提交 (pci.c)
+  │   ├─ nvme_queue_rq
+  │   │   ├─ nvme_prep_rq
+  │   │   │   ├─ nvme_setup_cmd (构造 NVMe Read 命令)
+  │   │   │   │   - opcode = nvme_cmd_read (0x02)
+  │   │   │   │   - slba = 起始逻辑块地址
+  │   │   │   │   - length = 块数 - 1
+  │   │   │   └─ nvme_map_data (PRP/SGL DMA 映射)
+  │   │   ├─ nvme_sq_copy_cmd (memcpy 到 SQ)
+  │   │   └─ nvme_write_sq_db (写 Shadow Doorbell / MMIO)
+  │   └─ → PCIe TLP → NVMe 控制器收到命令
+  │
+  ├─ NVMe 控制器执行
+  │   ├─ 从 SQ 取命令
+  │   ├─ DMA 读取主机内存 (数据缓冲区)
+  │   ├─ 执行 NAND 读
+  │   ├─ DMA 写入 CQE (完成队列条目)
+  │   └─ 触发 MSI-X 中断
+  │
+  ├─ 中断处理 (pci.c)
+  │   ├─ nvme_irq → nvme_poll_cq
+  │   │   ├─ nvme_cqe_pending (检查阶段位)
+  │   │   ├─ dma_rmb (读内存屏障)
+  │   │   ├─ nvme_handle_cqe
+  │   │   │   ├─ nvme_find_rq (command_id → request)
+  │   │   │   └─ nvme_try_complete_req
+  │   │   └─ nvme_ring_cq_doorbell (释放 CQ 槽位)
+  │   └─ blk_mq_complete_request_remote
+  │
+  └─ 完成回调链
+      ├─ blk_update_request
+      ├─ bio->bi_end_io → mpage_end_io
+      │   └─ __read_end_io → folio_end_read → folio_unlock
+      └─ 页缓存数据就绪
+          └─ copy_folio_to_iter (内核 → 用户空间拷贝)
+              └─ read 系统调用返回 (读取字节数)
+```

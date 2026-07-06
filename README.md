@@ -47,9 +47,11 @@
 ## 文件操作
 [open](./notes/open-syscall.md)
 
+[read](./notes/read-syscall.md)
+
 [write](./notes/write-syscall.md)
 
-
+[close](./notes/close-syscall-full-path.md)
 
 # 驱动
 ## 驱动相关结构体
