@@ -30,6 +30,29 @@ SYM_CODE_START(vectors)
 SYM_CODE_END(vectors)
 ```
 
+entry对应的C函数
+```c
+asmlinkage void el1t_64_sync_handler(struct pt_regs *regs);
+asmlinkage void el1t_64_irq_handler(struct pt_regs *regs);
+asmlinkage void el1t_64_fiq_handler(struct pt_regs *regs);
+asmlinkage void el1t_64_error_handler(struct pt_regs *regs);
+
+asmlinkage void el1h_64_sync_handler(struct pt_regs *regs);
+asmlinkage void el1h_64_irq_handler(struct pt_regs *regs);
+asmlinkage void el1h_64_fiq_handler(struct pt_regs *regs);
+asmlinkage void el1h_64_error_handler(struct pt_regs *regs);
+
+asmlinkage void el0t_64_sync_handler(struct pt_regs *regs);
+asmlinkage void el0t_64_irq_handler(struct pt_regs *regs);
+asmlinkage void el0t_64_fiq_handler(struct pt_regs *regs);
+asmlinkage void el0t_64_error_handler(struct pt_regs *regs);
+
+asmlinkage void el0t_32_sync_handler(struct pt_regs *regs);
+asmlinkage void el0t_32_irq_handler(struct pt_regs *regs);
+asmlinkage void el0t_32_fiq_handler(struct pt_regs *regs);
+asmlinkage void el0t_32_error_handler(struct pt_regs *regs);
+```
+
 为了缓解间接分支预测漏洞造成的cache泄露给user space，可以启用tramp_vectors，通过tramp_vectors跳转到vectors，这个patch会降低性能，所以是个可选项。
 
 cpu间接分支预测会提前执行指令，如果用户空间指令访问了内核空间地址，会把数据从内存加载到cache，虽然会访问失败，但是通过一些特殊操作可以在用户空间访问到内核泄露的cache数据。
