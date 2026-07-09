@@ -46,6 +46,17 @@
 
 # 系统调用
 
+[系统调用分类列表](./notes/arm64-syscall-table.md)
+
+## 文件描述符操作
+[close](./notes/close-syscall-full-path.md)
+
+[dup](./notes/dup-syscall.md)
+
+[dup3](./notes/dup3-syscall.md)
+
+[close_range](./notes/close_range-syscall.md)
+
 ## 文件操作
 [open](./notes/open-syscall.md)
 
@@ -53,7 +64,6 @@
 
 [write](./notes/write-syscall.md)
 
-[close](./notes/close-syscall-full-path.md)
 
 ## 网络操作
 [网络相关系统调用分类](./notes/net-syscall.md)

@@ -1,3 +1,4 @@
 {
-    "remote.SSH.defaultForwardedPorts": []
+    "remote.SSH.defaultForwardedPorts": [],
+    "Codegeex.RepoIndex": true
 }

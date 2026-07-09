@@ -66,19 +66,40 @@ void backing_file_set_user_path(struct file *f, const struct path *path)
 }
 EXPORT_SYMBOL_GPL(backing_file_set_user_path);
 
+/**
+ * 释放文件结构体内存和相关资源
+ * @f: 指向要释放的文件结构体的指针
+ * 
+ * 该函数负责释放文件结构体及其关联的资源，包括：
+ * 1. 调用安全模块的文件释放钩子
+ * 2. 更新系统中打开文件计数器（如果不是特殊模式）
+ * 3. 释放文件相关的凭证
+ * 4. 根据文件模式释放文件结构体或后备文件资源
+ */
 static inline void file_free(struct file *f)
 {
+	// 调用安全模块的文件释放钩子
 	security_file_free(f);
+	
+	// 如果文件不是FMODE_NOACCOUNT模式，则减少系统中打开文件计数
 	if (likely(!(f->f_mode & FMODE_NOACCOUNT)))
 		percpu_counter_dec(&nr_files);
+	
+	// 释放文件相关的凭证
 	put_cred(f->f_cred);
+	
+	// 如果文件处于FMODE_BACKING模式
 	if (unlikely(f->f_mode & FMODE_BACKING)) {
+		// 释放后备文件的路径引用
 		path_put(backing_file_user_path(f));
+		// 从后备文件的缓存中释放文件结构体
 		kmem_cache_free(bfilp_cachep, backing_file(f));
 	} else {
+		// 从普通文件缓存中释放文件结构体
 		kmem_cache_free(filp_cachep, f);
 	}
 }
+
 
 /*
  * Return the total number of open files in the system
@@ -466,45 +487,67 @@ struct file *alloc_file_clone(struct file *base, int flags,
  */
 static void __fput(struct file *file)
 {
+	// 从文件结构中获取目录项(dentry)、虚拟文件系统安装点(vfsmount)、inode节点和文件模式
 	struct dentry *dentry = file->f_path.dentry;
 	struct vfsmount *mnt = file->f_path.mnt;
 	struct inode *inode = file->f_inode;
 	fmode_t mode = file->f_mode;
 
+	// 如果文件未打开，则直接跳转到out标签处执行
 	if (unlikely(!(file->f_mode & FMODE_OPENED)))
 		goto out;
 
+	// 可能会睡眠，确保当前进程可以安全地睡眠
 	might_sleep();
 
+	// 通知系统文件关闭事件
 	fsnotify_close(file);
 	/*
-	 * The function eventpoll_release() should be the first called
-	 * in the file cleanup chain.
+	 * eventpoll_release()函数应该在文件清理链中首先被调用。
+	 * 这是必要的，因为它处理与epoll相关的资源清理。
 	 */
 	eventpoll_release(file);
+	// 移除文件上的所有锁
 	locks_remove_file(file);
 
+	// 调用安全模块的文件释放钩子
 	security_file_release(file);
+	// 如果文件被设置为异步模式(FASYNC)
 	if (unlikely(file->f_flags & FASYNC)) {
+		// 且文件操作结构中有fasync方法
 		if (file->f_op->fasync)
+			// 调用fasync方法取消异步通知
 			file->f_op->fasync(-1, file, 0);
 	}
+	// 如果文件操作结构中有release方法
 	if (file->f_op->release)
+		// 调用release方法释放文件资源
 		file->f_op->release(inode, file);
+	// 如果是字符设备文件，且不是通过路径打开的，且有关联的字符设备
 	if (unlikely(S_ISCHR(inode->i_mode) && inode->i_cdev != NULL &&
 		     !(mode & FMODE_PATH))) {
+		// 减少字符设备引用计数
 		cdev_put(inode->i_cdev);
 	}
+	// 减少文件操作结构的引用计数
 	fops_put(file->f_op);
+	// 释放文件属主信息
 	file_f_owner_release(file);
+	// 减少文件访问权限的引用计数
 	put_file_access(file);
+	// 减少目录项的引用计数
 	dput(dentry);
+	// 如果文件模式需要卸载
 	if (unlikely(mode & FMODE_NEED_UNMOUNT))
+		// 在文件释放时卸载文件系统
 		dissolve_on_fput(mnt);
+	// 减少虚拟文件系统安装点的引用计数
 	mntput(mnt);
 out:
+	// 释放文件结构本身
 	file_free(file);
 }
+
 
 static LLIST_HEAD(delayed_fput_list);
 static void delayed_fput(struct work_struct *unused)
@@ -592,11 +635,21 @@ EXPORT_SYMBOL(__fput_sync);
  *
  * See file_ref_put_close() for details.
  */
+/**
+ * fput_close_sync - 同步关闭文件并减少文件引用计数
+ * @file: 要关闭的文件指针
+ * 
+ * 该函数用于安全地关闭一个文件，它会减少文件的引用计数，并在引用计数降为0时
+ * 执行实际的文件关闭操作。使用likely()宏优化性能，假设文件引用计数减少
+ * 并成功关闭的情况是常见的。
+ */
 void fput_close_sync(struct file *file)
 {
+	/* 尝试减少文件引用计数，如果成功减少则执行实际的文件关闭操作 */
 	if (likely(file_ref_put_close(&file->f_ref)))
-		__fput(file);
+		__fput(file);  /* 执行文件关闭的底层操作 */
 }
+
 
 /*
  * Equivalent to fput(), but optimized for being called with the last
