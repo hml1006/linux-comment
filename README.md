@@ -46,27 +46,79 @@
 
 # 系统调用
 
-[系统调用分类列表](./notes/arm64-syscall-table.md)
+[系统调用分类列表](./notes/syscall/arm64-syscall-table.md)
 
 ## 文件描述符操作
-[close](./notes/close-syscall-full-path.md)
 
-[dup](./notes/dup-syscall.md)
+[close](./notes/syscall/close-syscall-full-path.md)
 
-[dup3](./notes/dup3-syscall.md)
+[close_range](./notes/syscall/close_range-syscall.md)
 
-[close_range](./notes/close_range-syscall.md)
+[dup](./notes/syscall/dup-syscall.md)
 
-## 文件操作
-[open](./notes/open-syscall.md)
+[dup3](./notes/syscall/dup3-syscall.md)
 
-[read](./notes/read-syscall.md)
+## 文件I/O
 
-[write](./notes/write-syscall.md)
+[read](./notes/syscall/read-syscall.md)
+
+[write](./notes/syscall/write-syscall.md)
+
+[readv](./notes/syscall/readv-syscall-full-path.md)
+
+[writev](./notes/syscall/writev-syscall-full-path.md)
+
+[pread64](./notes/syscall/pread64-syscall.md)
+
+[pwrite64](./notes/syscall/pwrite64-syscall.md)
+
+[preadv / pwritev](./notes/syscall/preadv-pwritev-syscall.md)
+
+[splice / tee / vmsplice](./notes/syscall/splice-syscall.md)
+
+[sendfile / copy_file_range](./notes/syscall/sendfile-copy-range-syscall.md)
+
+## 文件元数据与属性
+
+[stat / fstat / statx / xattr](./notes/syscall/stat-xattr-syscall.md)
 
 
-## 网络操作
-[网络相关系统调用分类](./notes/net-syscall.md)
+## 扩展属性
+
+
+## 文件系统挂载与结构
+
+[fsync / fdatasync / sync / syncfs / sync_file_range](./notes/syscall/sync-syscall.md)
+
+## 目录与路径操作
+
+[open](./notes/syscall/open-syscall.md)
+
+## 内存管理
+
+[mmap / munmap / mprotect / madvise / brk](./notes/syscall/memory-syscall-analysis.md)
+
+## 定时器与时间
+
+[timer / time](./notes/syscall/timer-time-syscall.md)
+
+## 进程控制
+
+[概览](./notes/syscall/process-syscall-analysis.md)
+
+## 进程调度
+
+[概览](./notes/syscall/sched-cred-signal-syscall.md)
+
+## 网络与Socket
+
+[概览](./notes/net-syscall.md)
+
+## 事件通知
+
+[概览](./notes/syscall/epoll-aio-io_uring-syscall.md)
+
+---
 
 # 驱动
 ## 驱动相关结构体

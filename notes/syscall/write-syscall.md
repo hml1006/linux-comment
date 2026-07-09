@@ -169,37 +169,31 @@ flowchart TD
 ```
 
 
-```plantuml
-@startsalt
-{{T
-+ write
-++ ksys_write
-+++ file_ppos | 获取当前文件偏移
-+++ vfs_write
-++++ rw_verify_area | 检查文件偏移是否合法
-++++ file_start_write | 通知文件系统superblock写开始，避免写的时候freeze
-++++ file_write_and_wait_range | 写文件
-++++ new_sync_write | 调用文件系统的write函数，现代文件系统使用f_op->write_iter
-+++++ ext4_file_write_iter | 调用ext4_file_write_iter
-++++++ ext4_dio_write_iter | DirectIO写
-+++++++ iomap_dio_rw | DirectIO写
-++++++++ __iomap_dio_rw | DirectIO写
-+++++++++ iomap_iter | 映射文件块,把文件内的偏移映射到磁盘块上
-++++++++++ ops->iomap_begin | 调用文件系统的iomap_begin函数，比如ext4_iomap_begin
-+++++++++++ ext4_iomap_begin | 映射文件块,把文件内的偏移映射到磁盘块上
-++++++++++++ ext4_map_blocks | 只查找映射不分配
-++++++++++++ ext4_iomap_alloc | 分配磁盘块
-+++++++++++++ ext4_map_blocks | 分配映射
-++++++++++++++ ext4_map_create_blocks | 实际创建映射
-+++++++++++++++ ext4_ext_map_blocks | 使用extent，走这个函数
-+++++++++ iomap_dio_iter | 写映射好的块
-++++++ ext4_buffered_write_iter | Buffered写
-++++ fsnotify_modify    | 通知机制，文件被修改
-++++ add_wchar  | 更新进程写字符数
-++++ inc_syscw  | 更新进程write系统调用数
-++++ file_end_write | 通知文件系统superblock，写结束
-}}
-
-
-@endsalt
+```
+write(fd, buf, count)
+ └─ ksys_write(fd, buf, count)
+      ├─ file_ppos(f.file)                           # 获取当前文件偏移
+      └─ vfs_write(f.file(), buf, count, &pos)
+           ├─ rw_verify_area(WRITE, file, &pos, count)  # 检查偏移合法性
+           ├─ file_start_write(file)                 # 防止freeze并发
+           ├─ file_write_and_wait_range(file, pos, pos + count)  # 写文件
+           ├─ new_sync_write(file, buf, count, pos)   # 调用f_op->write_iter
+           │   └─ call_write_iter() → ext4_file_write_iter()
+           │        ├─ ext4_dio_write_iter()          # DirectIO路径
+           │        │   └─ iomap_dio_rw()
+           │        │       └─ __iomap_dio_rw()
+           │        │           ├─ iomap_iter()
+           │        │           │   └─ ops->iomap_begin()
+           │        │           │       └─ ext4_iomap_begin()
+           │        │           │           ├─ ext4_map_blocks()      # 只查找不分配
+           │        │           │           └─ ext4_iomap_alloc()
+           │        │           │               └─ ext4_map_blocks()  # 分配映射
+           │        │           │                   └─ ext4_map_create_blocks()
+           │        │           │                       └─ ext4_ext_map_blocks()  # extent操作
+           │        │           └─ iomap_dio_iter()   # 写映射好的块
+           │        └─ ext4_buffered_write_iter()     # Buffered写路径
+           ├─ fsnotify_modify(file)                   # 通知文件被修改
+           ├─ add_wchar(current, ret)                 # 更新进程写字符数
+           ├─ inc_syscw(current)                      # 更新write系统调用数
+           └─ file_end_write(file)                    # 通知superblock写结束
 ```

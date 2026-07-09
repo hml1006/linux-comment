@@ -1301,40 +1301,53 @@ uaccess_end:
 	return ret;
 }
 
+/**
+ * 从用户空间复制iovec结构数组到内核空间
+ * 
+ * @param uvec: 指向用户空间的iovec结构数组指针
+ * @param nr_segs: iovec数组的段数
+ * @param fast_segs: 快速分配的段数阈值
+ * @param fast_iov: 快速分配的iovec缓冲区
+ * @param compat: 是否为兼容模式
+ * 
+ * @return: 成功时返回指向内核空间iovec数组的指针，失败时返回错误码指针
+ */
 struct iovec *iovec_from_user(const struct iovec __user *uvec,
 		unsigned long nr_segs, unsigned long fast_segs,
 		struct iovec *fast_iov, bool compat)
 {
-	struct iovec *iov = fast_iov;
+	struct iovec *iov = fast_iov; // 使用快速分配的缓冲区
 	int ret;
 
 	/*
-	 * SuS says "The readv() function *may* fail if the iovcnt argument was
-	 * less than or equal to 0, or greater than {IOV_MAX}.  Linux has
-	 * traditionally returned zero for zero segments, so...
+	 * SuS (Single UNIX Specification)关于readv()函数的规范说明：
+	 * 当iovcnt参数小于等于0或大于{IOV_MAX}时，readv()函数可能失败
+	 * Linux传统上对零段数返回0，所以这里做特殊处理
 	 */
-	if (nr_segs == 0)
+	if (nr_segs == 0) // 如果段数为0，直接返回快速分配的缓冲区
 		return iov;
-	if (nr_segs > UIO_MAXIOV)
+	if (nr_segs > UIO_MAXIOV) // 检查段数是否超过最大限制
 		return ERR_PTR(-EINVAL);
-	if (nr_segs > fast_segs) {
+	if (nr_segs > fast_segs) { // 如果段数超过快速分配阈值，则动态分配内存
 		iov = kmalloc_objs(struct iovec, nr_segs);
-		if (!iov)
+		if (!iov) // 内存分配失败，返回错误码
 			return ERR_PTR(-ENOMEM);
 	}
 
-	if (unlikely(compat))
+	// 根据是否为兼容模式选择不同的复制函数
+	if (unlikely(compat)) // 如果是兼容模式，使用兼容的复制函数
 		ret = copy_compat_iovec_from_user(iov, uvec, nr_segs);
-	else
+	else // 否则使用标准的复制函数
 		ret = copy_iovec_from_user(iov, uvec, nr_segs);
-	if (ret) {
-		if (iov != fast_iov)
+	if (ret) { // 如果复制失败
+		if (iov != fast_iov) // 如果使用了动态分配的内存，则释放它
 			kfree(iov);
-		return ERR_PTR(ret);
+		return ERR_PTR(ret); // 返回错误码
 	}
 
-	return iov;
+	return iov; // 返回成功复制的iovec数组
 }
+
 
 /*
  * Single segment iovec supplied by the user, import it as ITER_UBUF.
@@ -1361,17 +1374,31 @@ static ssize_t __import_iovec_ubuf(int type, const struct iovec __user *uvec,
 	return i->count;
 }
 
+/**
+ * 导入iovec结构数组并初始化iovec迭代器
+ * 
+ * @param type 迭代器类型
+ * @param uvec 用户空间的iovec结构数组指针
+ * @param nr_segs iovec结构数组的段数
+ * @param fast_segs 快速段数
+ * @param iovp 指向iovec结构数组的指针的指针
+ * @param i iov迭代器指针
+ * @param compat 是否为兼容模式
+ * @return 成功返回总长度，失败返回错误码
+ */
 ssize_t __import_iovec(int type, const struct iovec __user *uvec,
 		 unsigned nr_segs, unsigned fast_segs, struct iovec **iovp,
 		 struct iov_iter *i, bool compat)
 {
-	ssize_t total_len = 0;
-	unsigned long seg;
-	struct iovec *iov;
+	ssize_t total_len = 0;  // 记录所有iovec段的总长度
+	unsigned long seg;      // 当前处理的段索引
+	struct iovec *iov;      // iovec结构数组指针
 
+	// 如果只有一段，直接处理单个iovec
 	if (nr_segs == 1)
 		return __import_iovec_ubuf(type, uvec, iovp, i, compat);
 
+	// 从用户空间复制iovec结构数组到内核空间
 	iov = iovec_from_user(uvec, nr_segs, fast_segs, *iovp, compat);
 	if (IS_ERR(iov)) {
 		*iovp = NULL;
@@ -1379,16 +1406,16 @@ ssize_t __import_iovec(int type, const struct iovec __user *uvec,
 	}
 
 	/*
-	 * According to the Single Unix Specification we should return EINVAL if
-	 * an element length is < 0 when cast to ssize_t or if the total length
-	 * would overflow the ssize_t return value of the system call.
-	 *
-	 * Linux caps all read/write calls to MAX_RW_COUNT, and avoids the
-	 * overflow case.
+	 * 根据Single Unix Specification：
+	 * 1. 如果元素长度转换为ssize_t后小于0，应返回EINVAL
+	 * 2. 如果总长度溢出系统调用的ssize_t返回值，应返回EINVAL
+	 * 
+	 * Linux通过将所有读/写调用限制为MAX_RW_COUNT来避免溢出情况
 	 */
 	for (seg = 0; seg < nr_segs; seg++) {
-		ssize_t len = (ssize_t)iov[seg].iov_len;
+		ssize_t len = (ssize_t)iov[seg].iov_len;  // 获取当前段的长度
 
+		// 检查内存访问权限
 		if (!access_ok(iov[seg].iov_base, len)) {
 			if (iov != *iovp)
 				kfree(iov);
@@ -1396,13 +1423,15 @@ ssize_t __import_iovec(int type, const struct iovec __user *uvec,
 			return -EFAULT;
 		}
 
+		// 检查总长度是否超过MAX_RW_COUNT限制
 		if (len > MAX_RW_COUNT - total_len) {
 			len = MAX_RW_COUNT - total_len;
 			iov[seg].iov_len = len;
 		}
-		total_len += len;
+		total_len += len;  // 累加总长度
 	}
 
+	// 初始化iovec迭代器
 	iov_iter_init(i, type, iov, nr_segs, total_len);
 	if (iov == *iovp)
 		*iovp = NULL;
@@ -1410,6 +1439,7 @@ ssize_t __import_iovec(int type, const struct iovec __user *uvec,
 		*iovp = iov;
 	return total_len;
 }
+
 
 /**
  * import_iovec() - Copy an array of &struct iovec from userspace
@@ -1437,6 +1467,7 @@ ssize_t import_iovec(int type, const struct iovec __user *uvec,
 		 unsigned nr_segs, unsigned fast_segs,
 		 struct iovec **iovp, struct iov_iter *i)
 {
+	// 调用__import_iovec函数，检查是否为兼容模式并传递参数
 	return __import_iovec(type, uvec, nr_segs, fast_segs, iovp, i,
 			      in_compat_syscall());
 }

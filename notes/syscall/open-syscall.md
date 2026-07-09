@@ -119,56 +119,50 @@ flowchart TD
 
 ### 函数调用栈
 
-```plantuml
-@startsalt
-{{T
-+ do_sys_open
-++ build_open_how       | 初始化open_how flags, openat2的参数
-++ do_sys_openat2
-+++ build_open_flags    | 将open_how flags转换为openat2的open_flags
-+++ FD_ADD(how->flags, do_file_open(dfd, name, &op)) | 调用do_file_open打开文件，并添加到当前进程的文件描述符表中
-+++ do_file_open    | 打开文件
-++++ set_nameidata | 设置nameidata结构体
-+++++ __set_nameidata | 设置nameidata结构体， current->nameidata 复用
-++++ path_openat
-+++++ alloc_empty_file | 分配struct file结构体
-+++++ do_tmpfile | if __O_TMPFILE标识查找临时文件
-+++++ do_o_path | if O_PATH方式打开，可以查看文件描述信息，但是不真正打开文件
-+++++ path_init | else 初始化path结构体，开始path walk
-+++++ link_path_walk    | 开头跳过连续的 /
-++++++ for循环处理每个路径分量
-+++++++ mnt_idmap        | 获取mnt的uid，gid map
-+++++++ may_lookup | 检查权限
-+++++++ hash_name
-+++++++ walk_component
-++++++++ handle_dots    | 处理.和..
-++++++++ lookup_fast | 快速查找，从dcache中找
-++++++++ lookup_slow | 慢速查找，从inode中找
-+++++++++ d_alloc_parallel | 分配新的dentry，并添加到dcache中，同时处理好多进程同时访问的问题
-+++++++++ __lookup_slow
-++++++++++ inode->i_op->lookup == ext4_lookup | 调用文件系统的lookup函数，比如ext4_lookup
-+++++++++++ 检查文件名长度
-+++++++++++ ext4_lookup_entry | 查找文件名对应的inode
-++++++++++++ ext4_fname_prepare_lookup | 准备查找，初始化struct ext4_filename fname
-++++++++++++ __ext4_find_entry | 查找文件名对应的inode
-+++++++++++++ ext4_has_inline_data | 检查文件是否有内联数据, 文件内容很少的情况下, 直接inline到inode剩余空间
-+++++++++++++ ext4_find_inline_entry | 查找内联数据
-++++++++++++++ ext4_get_inode_loc | 获取inode位置
-+++++++++++++++ __ext4_get_inode_loc | 获取inode位置，buffer_head指向inode所在block
-++++++++++++++ ext4_raw_inode | 获取inode中inline起始位置
-++++++++++++++ ext4_search_dir | 从inline数据中查找目录
-++++++++++++ ext4_fname_free_filename | 释放fname，未开加密为空
-++++++++ step_into | 查找到当前路径分量，进入下一级，如果dentry是挂载点，会进入挂载点
-+++++ open_last_lookups
-+++++ do_open | 打开文件
-++++++ vfs_open
-+++++++ do_dentry_open  | 将 inode->i_fop 赋给 file->f_op
-++++++++ f->f_op->open | 通过函数指针调用ext4_file_open
-+++++++++ ext4_file_open | 更新最后挂载路径，绑定jounal inode
-+++++ terminate_walk | 结束path walk
-++++ restore_nameidata | 恢复nameidata结构体
-}}
-@endsalt
+```
+do_sys_open(dfd, filename, flags, mode)
+ ├─ build_open_how(flags, mode)                 # 初始化open_how flags, openat2的参数
+ └─ do_sys_openat2(dfd, filename, &how)
+      ├─ build_open_flags(how, &op)             # 将open_how flags转换为open_flags
+      ├─ FD_ADD(how->flags, do_file_open(dfd, name, &op))  # 打开文件并添加到fd表
+      └─ do_file_open(dfd, name, &op)
+           ├─ set_nameidata(&nd, dfd, pathname, NULL)
+           │   └─ __set_nameidata()             # 设置nameidata, current->nameidata复用
+           └─ path_openat(&nd, op, flags)
+                ├─ alloc_empty_file()            # 分配struct file结构体
+                ├─ do_tmpfile()                  # __O_TMPFILE: 创建临时文件
+                ├─ do_o_path()                   # O_PATH: 只查看不打开
+                ├─ path_init()                   # 初始化path结构体, 开始path walk
+                ├─ link_path_walk()              # 逐级解析路径分量
+                │   └─ walk_component()          # 处理每个路径分量
+                │        ├─ handle_dots()        # 处理 . 和 ..
+                │        ├─ lookup_fast()        # dcache快速查找
+                │        └─ lookup_slow()        # 从inode慢速查找
+                │             ├─ d_alloc_parallel()  # 分配dentry, 添加到dcache
+                │             └─ __lookup_slow()
+                │                  └─ inode->i_op->lookup()  →  ext4_lookup()
+                │                       ├─ 检查文件名长度
+                │                       ├─ ext4_lookup_entry()     # 查找文件名对应inode
+                │                       │   ├─ ext4_fname_prepare_lookup()  # 准备查找
+                │                       │   ├─ __ext4_find_entry()         # 查找inode
+                │                       │   │   ├─ ext4_has_inline_data()  # 检查inline data
+                │                       │   │   └─ ext4_find_inline_entry()# 从inline查找
+                │                       │   │        ├─ ext4_get_inode_loc()     # 获取inode位置
+                │                       │   │        │   └─ __ext4_get_inode_loc()# inode所在block
+                │                       │   │        ├─ ext4_raw_inode()    # inode中inline起始
+                │                       │   │        └─ ext4_search_dir()   # 从inline找目录
+                │                       │   └─ ext4_fname_free_filename()   # 释放fname
+                │                       └─ ...
+                │        └─ step_into()          # 进入下一级/处理挂载点
+                ├─ open_last_lookups()
+                ├─ do_open()
+                │   └─ vfs_open()
+                │        └─ do_dentry_open()     # inode->i_fop → file->f_op
+                │             └─ f->f_op->open() → ext4_file_open()
+                │                                  # 更新挂载路径, 绑定journal inode
+                ├─ terminate_walk()              # 结束path walk
+                └─ ...
+           └─ restore_nameidata()               # 恢复nameidata
 ```
 
 # 深层次分析
