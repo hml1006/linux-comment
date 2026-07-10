@@ -382,6 +382,7 @@ asmlinkage void noinstr el0t_64_sync_handler(struct pt_regs *regs)
     switch (ESR_ELx_EC(esr)) {
     case ESR_ELx_EC_SVC64:       // svc 指令 → 系统调用
         el0_svc(regs);           // → do_el0_svc → invoke_syscall
+                                 // 详细流程见 §8.3
         break;
     case ESR_ELx_EC_DABT_LOW:    // 数据访问异常 (用户态缺页)
         el0_da(regs, esr);
@@ -492,7 +493,86 @@ el0t_64_irq (汇编)
        └─ kernel_exit 0              // 恢复用户态上下文 → tramp_exit → eret
 ```
 
-### 8.3 内核态 vs 用户态中断核心差异
+### 8.3 系统调用路径 (el0_svc)
+
+`el0_svc` 是用户态系统调用的核心处理函数，由 `el0t_64_sync_handler` 在检测到 `ESR_ELx_EC_SVC64` 异常类型时调用。
+
+```
+el0t_64_sync                                         // entry_handler 汇编入口
+  ├── kernel_entry 0, 64                             // 保存用户态上下文 + 内核环境初始化
+  │   ├── 保存 x0-x29 到栈上
+  │   ├── 保存 ELR_EL1 (返回PC) 和 SPSR_EL1 (PSTATE)
+  │   ├── 清空通用寄存器 (clear_gp_regs)              // 防内核泄露用户态数据
+  │   ├── 从 __entry_task 加载 current task           // ldr_this_cpu tsk, __entry_task
+  │   ├── sp_el0 = current task                       // 快速访问 current
+  │   ├── 关闭单步调试 (disable_step_tsk)
+  │   ├── MTE / PAC / SSBD 配置                       // 硬件安全特性初始化
+  │   ├── 软件 PAN: 禁用用户页表 (ttbr0_el1 置零)      // Privileged Access Never
+  │   └── PMR 保存 (Pseudo-NMI)                       // ICC_PMR_EL1
+  │
+  ├── mov x0, sp                                      // pt_regs 作为参数
+  ├── bl el0t_64_sync_handler                         // → entry-common.c
+  │   └── el0t_64_sync_handler(regs)
+  │       └── switch (ESR_ELx_EC(esr))                // 读 ESR_EL1 分析异常类型
+  │           └── case ESR_ELx_EC_SVC64:              // SVC 指令 → 系统调用
+  │               └── el0_svc(regs)                    // entry-common.c:718
+  │                   ├── arm64_enter_from_user_mode(regs)   // RCU / context tracking
+  │                   │   └── __enter_from_user_mode
+  │                   │       └── enter_from_user_mode       // arm64: 空实现
+  │                   ├── cortex_a76_erratum_1463225_svc_handler()  // A76 CPU errata workaround
+  │                   ├── fpsimd_syscall_enter()       // 保存 FP/SIMD 状态并关闭
+  │                   │                               // 内核态默认禁用浮点/SIMD
+  │                   ├── local_daif_restore(DAIF_PROCCTX)  // 恢复 DAIF flag，允许 IRQ
+  │                   ├── do_el0_svc(regs)                    // syscall.c:149
+  │                   │   └── el0_svc_common(regs,            // syscall.c:73
+  │                   │       regs->regs[8],                   // x8 传递系统调用号
+  │                   │       __NR_syscalls, sys_call_table)
+  │                   │       │
+  │                   │       │  // regs->regs[8]  = 系统调用号 (如 __NR_read=63)
+  │                   │       │  // sys_call_table  = 系统调用函数指针数组
+  │                   │       │  // sys_call_table[scno] = 对应的 sys_xxx 函数
+  │                   │       │
+  │                   │       ├── regs->orig_x0 = regs->regs[0]  // 保存原始参数
+  │                   │       ├── regs->syscallno = scno          // 记录系统调用号
+  │                   │       ├── 检查 _TIF_MTE_ASYNC_FAULT 等线程标志
+  │                   │       ├── syscall_trace_enter(regs)       // ptrace/seccomp 跟踪
+  │                   │       ├── invoke_syscall(regs, scno, ...) // syscall.c:38
+  │                   │       │   ├── add_random_kstack_offset()  // 随机化内核栈偏移
+  │                   │       │   ├── syscall_fn = sys_call_table[scno]  // 查表获取函数指针
+  │                   │       │   │   // 使用 array_index_nospec() 防止 Spectre v1 绕过
+  │                   │       │   ├── __invoke_syscall(regs, syscall_fn) // syscall.c:33
+  │                   │       │   │   └── syscall_fn(regs)        // 执行系统调用函数
+  │                   │       │   │       // 函数名规则: __arm64_sys_##sname
+  │                   │       │   │       // 如 __arm64_sys_read → sys_read
+  │                   │       │   │       // 返回值通过 syscall_set_return_value() 设置
+  │                   │       │   └── choose_random_kstack_offset()  // 栈偏移随机化
+  │                   │       └── [trace_exit] syscall_trace_exit(regs)  // 退出跟踪
+  │                   ├── arm64_exit_to_user_mode(regs)     // 检查信号/调度/resched
+  │                   │   ├── -- TIF_NEED_RESCHED → schedule()
+  │                   │   ├── TIF_SIGPENDING → do_signal()
+  │                   │   └── TIF_NOTIFY_RESUME → do_notify_resume()
+  │                   └── fpsimd_syscall_exit()             // 恢复 FP/SIMD 状态
+  │
+  └── b ret_to_user                                 // 返回用户态路径
+
+ret_to_user (entry.S)
+  ├── enable_step_tsk (单步调试处理)
+  └── kernel_exit 0                                 // 恢复用户态上下文
+      ├── [EL1] 禁用 DAIF (disable_daif)
+      ├── 恢复 ICC_PMR_EL1 (Pseudo-NMI)
+      ├── 加载 ELR_EL1, SPSR_EL1
+      ├── 软件 PAN 恢复 (ttbr0_el1 恢复用户页表)
+      ├── 恢复用户 SP (sp_el0)
+      ├── SCS 保存 / MTE 清除异步标签
+      ├── 用户 PAC 密钥安装 / 用户 GCR 配置 / SSBD 禁用
+      ├── 恢复 x0-x29
+      ├── KPTI: vbar_el1 = tramp_vectors, br tramp_exit
+      │   └── tramp_unmap_kernel: ttbr1_el1 → tramp_pg_dir (移出内核映射)
+      │       // 后续用户态无法访问内核页表 (Meltdown 缓解)
+      └── eret                                      // 返回用户态，恢复 PSTATE
+```
+
+### 8.4 内核态 vs 用户态中断核心差异
 
 | 差异点 | el1h (内核态) | el0 (用户态) |
 |--|--|--|

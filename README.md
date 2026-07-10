@@ -38,11 +38,9 @@
 
 ## [文件系统](./notes/fs.md)
 
-# 中断过程
+# Exception和Interrupt过程
 
-## [中断向量简单流程](./notes/linux-interrupt.md)
-
-## [中断整体流程分析](./notes/arm64-interrupt-entry-analysis.md)
+## [Exception和Interrupt流程分析](./notes/arm64-interrupt-entry-analysis.md)
 
 # 系统调用
 

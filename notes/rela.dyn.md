@@ -1,122 +1,435 @@
-# R_AARCH64_RELATIVE类型的.rela.dyn 重定位项
+# R_AARCH64_RELATIVE 类型的 .rela.dyn 重定位项
 
-> 嗯，我现在要理解aarch64的GCC编译器是如何生成R_AARCH64_RELATIVE类型的.rela.dyn重定位项的。这个问题对我来说有点复杂，不过我先慢慢理清楚思路。
->
-> 首先，我知道在程序链接和加载的时候，重定位是很重要的步骤。它帮助程序在内存中找到正确的位置，尤其是动态链接的时候。重定位项告诉动态链接器哪些地址需要在加载时调整。那R_AARCH64_RELATIVE类型的重定位项具体是怎么产生的呢？
->
-> 根据之前学的，重定位类型有很多种，比如相对重定位、绝对重定位等等。R_AARCH64_RELATIVE属于相对重定位的一种吗？或者它具体表示什么？我需要查一下AArch64的ABI文档，可能里面有关于这个重定位类型的定义。
->
-> 查了一下，R_AARCH64_RELATIVE重定位项用于指示一个位置，该位置的值需要被替换为加载地址加上一个固定的偏移量。通常这种情况出现在程序中使用了绝对地址的地方，比如全局指针或者静态数据，这些地址在编译时无法确定，因为最终加载地址可能在运行时由动态链接器决定。
->
-> 那什么时候编译器会生成这样的重定位项呢？比如，当代码中有位置无关的可执行文件（PIE）或者动态库（DSO）时，编译器可能会生成相对重定位项。因为在PIE或动态库中，代码和数据的地址在编译时是未知的，需要运行时确定。
->
-> 例如，如果一个全局变量在共享库中被定义，并且代码中通过绝对地址访问它，那么在编译时，这个地址可能需要被重定位。这时候，编译器会生成一个R_AARCH64_RELATIVE条目，告诉动态链接器在加载时将这个地址调整为实际的加载地址加上相应的偏移量。
->
-> 那具体来说，GCC在编译代码时，遇到什么情况会生成这种重定位项？比如，当使用-fPIC或-fPIE选项编译代码时，是否会导致生成更多的RELATIVE重定位？或者是否在特定的数据段中使用绝对地址时会生成？
->
-> 另外，链接器（如ld）在处理这些情况时，会将某些重定位类型转换为R_AARCH64_RELATIVE吗？比如，在链接阶段，某些符号的解析结果可能需要生成RELATIVE类型的重定位，而不是其他类型？
->
-> 比如，在动态库中，对于非延迟绑定的符号，或者对于某些数据重定位，可能生成RELATIVE类型。例如，初始化过的指针变量，其初始值是一个绝对地址，在编译时无法确定，因此需要运行时重定位。这种情况下，编译器会为该指针变量生成一个R_AARCH64_RELATIVE的重定位项，在加载时由动态链接器填充正确的地址。
->
-> 举个具体例子，假设有一个全局变量：
->
-> int a = 10;
->
-> 然后在另一个地方有一个指针指向它：
->
-> int *p = &a;
->
-> 如果这个代码被编译到一个共享库中，那么变量p的初始化值就是a的地址。在编译时，编译器无法知道a的最终地址，所以会在.rela.dyn中生成一个R_AARCH64_RELATIVE的重定位项，指向p的位置，这样在加载时，动态链接器将计算a的实际地址（加载基址+偏移量），并将这个值写入p的位置。
->
-> 那这种情况下，编译器生成的代码或数据布局是如何的？假设变量a和p都被放在数据段中，而p的初始化值在编译时被置为0或者某个相对的偏移，然后通过重定位项在加载时修正。
->
-> 那GCC在这个过程中扮演什么角色？当生成目标文件时，编译器会生成一些重定位信息，但在生成可执行文件或共享库时，链接器才会确定具体的重定位类型。所以，可能编译器生成的是一个普通的绝对地址引用，而链接器在链接时发现该地址无法在链接时确定（比如在共享库中的情况），所以将其转换为R_AARCH64_RELATIVE类型？
->
-> 或者，是否在编译阶段，当使用-fPIC选项时，编译器会主动生成某些特定的重定位类型，比如R_AARCH64_RELATIVE？或者是否在目标文件中使用其他类型，然后链接器将其转换为RELATIVE类型？
->
-> 这个时候可能需要查看GCC和链接器的协作过程。例如，当编译为位置无关代码时，编译器会生成某些指令或数据布局，使得绝对地址的访问通过GOT（全局偏移表）或者通过相对寻址。不过对于数据段中的绝对地址，可能需要运行时重定位，这时候就需要R_AARCH64_RELATIVE类型。
->
-> 例如，对于数据段中的指针变量，它们的初始化值如果是另一个变量的地址，那么在位置无关代码中，这个地址无法在编译时确定，所以必须生成一个重定位项，让动态链接器在加载时处理。这时候，这个重定位项的类型可能就是R_AARCH64_RELATIVE。
->
-> 所以，总结一下，当程序中存在需要在运行时确定绝对地址的数据（如指针变量的初始化值）时，编译器会生成对应的重定位项，而链接器在创建动态库或PIE可执行文件时，会生成R_AARCH64_RELATIVE类型的.rela.dyn项。这些项告诉动态链接器在加载时根据基地址调整这些位置的值。
->
-> 另外，R_AARCH64_RELATIVE的重定位计算方式是：S（重定位位置的地址）的值等于基地址加上被重定位的位置的附加值。例如，在重定位项中，符号索引可能为0，而附加值addend即为变量相对于基地址的偏移。这样，动态链接器会将基地址加上addend，并将结果存储到目标位置。
->
-> 所以，当链接器处理这些情况时，如果某个重定位的符号是绝对的，并且无法在链接时解析（比如在动态库中的情况），则会生成R_AARCH64_RELATIVE类型。这可能发生在数据段的初始化中的绝对地址，或者在代码段中的某些需要绝对地址的位置，不过通常代码段中的地址会通过位置无关的方式处理，而数据段中的绝对地址需要运行时重定位。
->
-> 现在回到问题，GCC编译器是如何生成这些重定位项的。可能的情况是，当编译器在编译源代码时，遇到需要绝对地址的情况（比如初始化全局指针变量），并且目标代码是位置无关的（如使用-fPIC选项），则编译器会在目标文件中生成相应的重定位信息，类型可能是R_AARCH64_ABS64或者其他，但链接器在链接成共享库或PIE可执行文件时，会将这些重定位项转换为R_AARCH64_RELATIVE类型，并放入.rela.dyn节中。
->
-> 所以，GCC生成目标文件时，可能先生成某种类型的重定位项，然后由链接器在链接阶段根据情况决定是否转换为RELATIVE类型。因此，GCC在生成这些重定位项时的角色是产生必要的原始重定位信息，而链接器负责最终生成正确的类型。
->
-> 例如，假设在目标文件中，对一个全局变量的地址引用可能是一个绝对重定位类型，比如R_AARCH64_ABS64。但当链接器处理这个目标文件，并且生成动态库时，如果该符号是定义在本动态库中的，则链接器可能会将这个重定位项转换为R_AARCH64_RELATIVE类型，因为此时符号的地址相对于加载基址的偏移是已知的，但具体的基址在运行时确定，所以需要动态链接器在加载时计算基址加上偏移量，并将结果写入重定位的位置。
->
-> 这样，在链接阶段，链接器会将某些绝对类型的重定位转换为RELATIVE类型，并记录在.rela.dyn中。所以，虽然GCC在编译阶段生成的是其他类型的重定位项，但链接器在生成动态库或PIE时，将其转换为RELATIVE类型。
->
-> 不过，也有可能在某些情况下，编译器直接生成RELATIVE类型的重定位项。比如，当使用某些特定的编译选项时，或者当处理特定的数据构造时。
->
-> 总结起来，生成R_AARCH64_RELATIVE重定位项的流程可能是这样的：
->
-> 1. 源代码中存在需要绝对地址的操作，例如指针变量的初始化，或者静态数组的地址计算。
-> 2. 当使用-fPIC或-fPIE选项编译时，编译器生成位置无关代码，对于数据段的绝对地址引用，无法在编译时确定，因此生成相应的重定位项。
-> 3. 编译器在目标文件中生成对应的重定位项，例如R_AARCH64_ABS64，指定需要重定位的位置和符号。
-> 4. 链接器在链接这些目标文件生成动态库或PIE可执行文件时，对于这些绝对重定位项，如果符号是定义在同一个动态对象中的，那么链接器会将这些重定位项转换为R_AARCH64_RELATIVE类型，并放入.rela.dyn节中，因为它们的最终地址可以通过基址加偏移量计算得到，而无需符号查找。
->
-> 这样，R_AARCH64_RELATIVE类型的重定位项主要是由链接器在链接阶段生成的，而编译器的作用是生成原始的重定位信息。但这个过程需要结合GCC和链接器的行为来分析。
->
-> 所以，回答问题：aarch64的GCC编译器生成R_AARCH64_RELATIVE类型的.rela.dyn重定位项的过程，主要是因为代码中存在需要在运行时确定绝对地址的数据引用（如全局指针的初始化）。当使用位置无关编译选项（如-fPIC或-fPIE）时，编译器会在目标文件中生成相应的重定位信息，而链接器在创建动态库或PIE可执行文件时，将这些重定位转换为R_AARCH64_RELATIVE类型，并记录在.rela.dyn中，以便动态链接器在加载时基于加载地址进行调整。
+## 目录
 
-在AArch64架构中，GCC编译器生成R_AARCH64_RELATIVE类型的.rela.dyn重定位项的过程如下：
+1. [概述](#概述)
+2. [ELF 重定位基础](#elf-重定位基础)
+3. [内核构建过程](#内核构建过程)
+4. [链接脚本布局](#链接脚本布局)
+5. [启动时重定位流程](#启动时重定位流程)
+6. [relocate_kernel 实现](#relocate_kernel-实现)
+7. [RELR 压缩格式](#relr-压缩格式)
+8. [relacheck 安全检查](#relacheck-安全检查)
+9. [init 段生命周期](#init-段生命周期)
+10. [与用户态动态链接对比](#与用户态动态链接对比)
+11. [关键设计点](#关键设计点)
 
-1. 触发场景
-   当代码中存在需要在运行时确定绝对地址的数据引用时，例如：
+---
 
-全局指针的初始化（如int *p = &global_var;）。
+## 概述
 
-静态数据的地址计算（如函数指针或数组的绝对地址）。
+R_AARCH64_RELATIVE 是 AArch64 ELF 格式中的一种重定位类型，语义为：
 
-编译时启用位置无关代码（通过-fPIC或-fPIE选项），此时编译器无法在编译时确定最终加载地址。
-
-2. 编译器处理
-   对于上述场景，GCC在编译阶段会在目标文件（.o）中生成原始重定位信息（如R_AARCH64_ABS64），表示需要重定位的符号和位置。
-
-例如，int *p = &global_var;会生成一个针对global_var的绝对地址引用，编译器会记录该引用的位置和符号。
-
-3. 链接器转换
-   在链接阶段（生成动态库或PIE可执行文件时），链接器（如ld）处理这些重定位项：
-
-如果符号（如global_var）定义在同一动态对象（如共享库或PIE）中，链接器会将其转换为R_AARCH64_RELATIVE类型。
-
-原因：符号的最终地址可通过基址（运行时加载地址） + 固定偏移确定，无需符号查找。
-
-链接器将这些R_AARCH64_RELATIVE项写入.rela.dyn节，供动态链接器使用。
-
-4. 动态链接器处理
-   在程序加载时，动态链接器遍历.rela.dyn中的重定位项：
-
-对于R_AARCH64_RELATIVE项，计算基址 + addend（addend是编译时记录的偏移量）。
-
-将计算结果写入重定位位置（如p的存储地址），完成绝对地址的修正。
-
-示例说明
-假设有以下代码：
-
-```c
-// 编译命令: gcc -fPIC -shared -o libdemo.so demo.c
-int global_var = 42;
-int *p = &global_var;  // 触发R_AARCH64_RELATIVE重定位
+```
+*(r_offset + delta) = r_addend + delta
 ```
 
-编译阶段：GCC为目标文件中的p生成R_AARCH64_ABS64重定位项，指向global_var。
+即：**将目标地址处的值设置为加载基址加上一个固定偏移**。这种重定位不需要符号查找，动态链接器（或内核自举代码）只需知道加载地址（delta）即可完成修正。
 
-链接阶段：链接器发现global_var位于同一共享库中，将其转换为R_AARCH64_RELATIVE项，并记录addend（即global_var在库中的偏移）。
+Linux ARM64 内核在启用 `CONFIG_RELOCATABLE=y`（即 KASLR 支持）时，自身被构建为一个 **PIE（Position Independent Executable）**。内核镜像中包含的所有绝对地址引用（如全局指针的初始化值、函数指针表等）都以 `.rela.dyn` 的形式记录，在启动时由内核自身完成重定位处理。
 
-运行时：动态链接器根据加载基址和addend计算global_var的实际地址，填充到p的位置。
+---
 
-总结
-R_AARCH64_RELATIVE重定位项的生成是编译器与链接器协作的结果：
+## ELF 重定位基础
 
-编译器通过-fPIC或-fPIE生成原始重定位信息。
+### Elf64_Rela 结构体
 
-链接器将同一动态对象内的绝对地址引用转换为R_AARCH64_RELATIVE，写入.rela.dyn。
+```c
+typedef struct {
+    Elf64_Addr r_offset;   /* 需要修正的位置（相对于 section 或虚拟地址） */
+    Elf64_Xword r_info;    /* 高 32 位：符号索引，低 32 位：重定位类型 */
+    Elf64_Sxword r_addend; /* 固定加数（addend） */
+} Elf64_Rela;
+```
 
-动态链接器最终基于加载地址完成重定位，确保位置无关代码的正确运行。
+### R_AARCH64_RELATIVE 的计算方式
+
+```
+信息字段：r_info = (符号索引 << 32) | R_AARCH64_RELATIVE(1027)
+  - 符号索引 = 0（不需要符号查找）
+  - 重定位类型 = 1027（R_AARCH64_RELATIVE）
+
+计算：*(r_offset + delta) = r_addend + delta
+  - delta = 实际加载地址 - 链接时假设的地址
+  - 对于内核：delta = KASLR 偏移量
+```
+
+### 触发场景
+
+编译为位置无关代码（`-fpie`）时，编译器遇到以下情况会生成绝对地址引用：
+
+```c
+// 全局指针初始化 —— 最常见的触发场景
+int global_var = 42;
+int *p = &global_var;  // p 的初始值在编译时无法确定
+
+// 函数指针表
+void (*fn_table[])(void) = { func_a, func_b, func_c };
+
+// 结构体中的函数指针
+struct file_operations fops = {
+    .read = my_read,
+    .write = my_write,
+};
+```
+
+---
+
+## 内核构建过程
+
+### 编译选项
+
+`arch/arm64/kernel/pi/Makefile` 中的关键编译选项：
+
+```makefile
+KBUILD_CFLAGS := ... -fpie ... -ffreestanding -D__DISABLE_EXPORTS
+```
+
+`-fpie` 使编译器生成位置无关代码，所有绝对地址引用都通过 GOT（Global Offset Table）或直接生成重定位项。
+
+### 两步构建流程
+
+```
+源代码 (.c)
+    │
+    ▼
+ 编译: gcc -fpie -c → relocate.o          (普通 ELF 目标文件)
+    │
+    ▼
+ objcopy: --prefix-symbols=__pi_         → relocate.pi.o
+          --remove-section=.note.gnu.property
+    │
+    ▼
+ relacheck: 扫描 .rela.dyn 中的 R_AARCH64_ABS64
+             → 若存在且不在 .rodata.prel64 段中，报错终止
+             → 若在 .rodata.prel64 段中，转换为 R_AARCH64_PREL64
+    │
+    ▼
+ 链接: 所有 .pi.o 文件 → vmlinux           (PIE 可执行文件)
+```
+
+关键点：`objcopy --prefix-symbols=__pi_` 将所有符号加上 `__pi_` 前缀。因此 `relocate.c` 中声明的 `extern rela_start[]` 在最终链接时对应的是链接脚本中的 `__pi_rela_start`。
+
+---
+
+## 链接脚本布局
+
+`arch/arm64/kernel/vmlinux.lds.S` 中定义：
+
+```ld
+.rela.dyn : ALIGN(8) {
+    __pi_rela_start = .;
+    *(.rela .rela*)
+    __pi_rela_end = .;
+}
+
+.relr.dyn : ALIGN(8) {
+    __pi_relr_start = .;
+    *(.relr.dyn)
+    __pi_relr_end = .;
+}
+```
+
+这两个段位于 **init 段** 内（`__init_begin` ~ `__init_end` 之间），在初始化完成后可以被释放。
+
+### 内存布局示意
+
+```
+低地址                         高地址
+├──────────────┬──────────────┬──────────────┤
+│  .init.text   │ .rela.dyn    │ .relr.dyn    │  ← init 段（可释放）
+│  (init 函数)  │ (重定位表)   │ (压缩重定位) │
+├──────────────┴──────────────┴──────────────┤
+│          __pi_rela_start    __pi_relr_end   │
+│                             __pi_relr_start │
+│          __pi_rela_end                      │
+```
+
+---
+
+## 启动时重定位流程
+
+### 整体调用链
+
+```
+head.S: __primary_switch                          [head.S]
+    │
+    │  MMU 已开启（identity mapping）
+    │  x20 = boot_status, x21 = FDT 地址
+    ▼
+bl __pi_early_map_kernel                          [pi/map_kernel.c]
+    │
+    ▼
+early_map_kernel(boot_status, fdt)
+    │
+    ├─ map_fdt(fdt)              —— 映射设备树
+    ├─ memset(__bss_start, ...)  —— 清零 BSS 段 + 初始页表
+    ├─ init_feature_override()   —— 解析 cmdline 特性覆盖
+    ├─ kaslr_early_init()        —— 生成 KASLR 随机偏移
+    │
+    ▼
+map_kernel(kaslr_offset, va_offset, root_level)
+    │
+    │ 第一次遍历（twopass）：
+    │ 将所有段映射为 RW（可写）
+    │ 切换 ttbr1 到 init_pg_dir
+    │
+    ├─ [if CONFIG_RELOCATABLE]
+    │   relocate_kernel(kaslr_offset)    ← 这里处理 .rela.dyn
+    │
+    ├─ [if SCS] scs_patch()     —— 动态 SCS 补丁
+    │
+    │ 取消映射 text 段（避免 TLB 冲突）
+    │ 重新映射 text 段为 ROX
+    │
+    ├─ memcpy(swapper_pg_dir, init_pg_dir)  —— 复制页表到最终位置
+    └─ idmap_cpu_replace_ttbr1(swapper_pg_dir) —— 切换到最终内核页表
+```
+
+### 调用时机
+
+`relocate_kernel` 的调用时机非常关键：
+
+1. **在第一次映射完成后**、**第二次映射（text 段 readonly）之前**执行
+2. 此时内核的 text 段和 data 段都是可写的（RW）
+3. 重定位修正完成后，才将 text 段改为 RX（只读可执行）
+
+这样做是因为重定位需要写入数据段中的绝对地址位置，而 text 段在第一次映射时也是 RW 以便于 SCS 补丁。
+
+---
+
+## relocate_kernel 实现
+
+`arch/arm64/kernel/pi/relocate.c` 的完整实现：
+
+```c
+extern const Elf64_Rela rela_start[], rela_end[];
+extern const u64 relr_start[], relr_end[];
+
+void __init relocate_kernel(u64 offset)
+{
+    u64 *place = NULL;
+
+    // === 阶段一：处理 RELA 格式重定位 ===
+    for (const Elf64_Rela *rela = rela_start; rela < rela_end; rela++) {
+        if (ELF64_R_TYPE(rela->r_info) != R_AARCH64_RELATIVE)
+            continue;   // 只处理 R_AARCH64_RELATIVE，其他类型跳过
+        *(u64 *)(rela->r_offset + offset) = rela->r_addend + offset;
+    }
+
+    // 如果未启用 RELR 或 offset 为 0，直接返回
+    if (!IS_ENABLED(CONFIG_RELR) || !offset)
+        return;
+
+    // === 阶段二：处理 RELR 压缩格式重定位 ===
+    for (const u64 *relr = relr_start; relr < relr_end; relr++) {
+        if ((*relr & 1) == 0) {
+            // 地址项（最低位为 0）：表示一个基地址
+            place = (u64 *)(*relr + offset);
+            *place++ += offset;
+        } else {
+            // 位图项（最低位为 1）：表示后续 63 个字的 bitmap
+            for (u64 *p = place, r = *relr >> 1; r; p++, r >>= 1)
+                if (r & 1)
+                    *p += offset;
+            place += 63;
+        }
+    }
+}
+```
+
+### 关键参数说明
+
+| 参数 | 含义 | 计算方式 |
+|------|------|----------|
+| `offset` | 实际加载地址与链接地址的差值 | `pa_base % MIN_KIMG_ALIGN` + KASLR seed 的高位部分 |
+| `rela_start` | `.rela.dyn` 段起始（由链接脚本定义） | 实际符号为 `__pi_rela_start` |
+| `rela_end` | `.rela.dyn` 段结束 | 实际符号为 `__pi_rela_end` |
+| `relr_start` | `.relr.dyn` 段起始 | 实际符号为 `__pi_relr_start` |
+| `relr_end` | `.relr.dyn` 段结束 | 实际符号为 `__pi_relr_end` |
+
+### offset 的计算
+
+`offset` 的来源是 `early_map_kernel` 中的 `kaslr_offset`：
+
+```c
+asmlinkage void __init early_map_kernel(u64 boot_status, phys_addr_t fdt)
+{
+    u64 kaslr_offset = pa_base % MIN_KIMG_ALIGN;  // 物理地址低位决定
+
+    if (IS_ENABLED(CONFIG_RANDOMIZE_BASE)) {
+        u64 kaslr_seed = kaslr_early_init(fdt_mapped, chosen);
+        kaslr_offset |= kaslr_seed & ~(MIN_KIMG_ALIGN - 1);  // 高位来自随机种子
+    }
+    // ...
+    map_kernel(kaslr_offset, va_base - pa_base, root_level);
+}
+```
+
+- 低位（`pa_base % MIN_KIMG_ALIGN`）：由物理加载地址决定，保证 2MiB block descriptor 对齐
+- 高位（`kaslr_seed & ~(MIN_KIMG_ALIGN - 1)`）：来自 FDT 中 `/chosen` 节点的 `kaslr-seed` 属性
+
+---
+
+## RELR 压缩格式
+
+RELR（Relative Relocation）是一种压缩存储相对重定位项的格式，大幅减小 `.rela.dyn` 段的大小。
+
+### 编码格式
+
+```
+地址流: [ AAAAAAAA  BBBBBBB1  BBBBBBB1  ...  AAAAAAAA  BBBBBB1  ... ]
+            ↑          ↑          ↑                    ↑         ↑
+         地址项     位图项     位图项               地址项    位图项
+```
+
+| 项类型 | 最低位 | 含义 |
+|--------|--------|------|
+| 地址项 | 0 | 表示一个基地址，编码 1 个重定位 |
+| 位图项 | 1 | 编码最多 63 个重定位，bit[n] 表示基地址 + n 个字的位置是否需要重定位 |
+
+### 解码过程
+
+```
+地址项: place = *relr + offset;  *place++ += offset;
+           → 基地址处的字需要加上 offset
+
+位图项: for (bit 0..62)  if (bit[i] == 1)  place[i] += offset;
+           → 后续每个字按 bitmap 指示决定是否加 offset
+           → 处理完后 place += 63 跳过这一组
+```
+
+### 压缩效果
+
+RELR 与 ELF RELA 格式相比：
+
+| 格式 | 每个条目大小 | 典型场景 |
+|------|-------------|----------|
+| Elf64_Rela | 24 字节（r_offset + r_info + r_addend） | 任意类型重定位 |
+| RELR 地址项 | 8 字节 | 每隔 63 个字出现一次 |
+| RELR 位图项 | 8 字节（编码 63 个字） | 连续密集的重定位 |
+
+由于内核数据段中的绝对地址引用通常非常密集（大量函数指针表、全局指针等），RELR 的压缩率通常可达 10:1 以上。
+
+---
+
+## relacheck 安全检查
+
+`relacheck` 是一个主机端工具，在 `objcopy` 之后、链接之前运行，对 `.pi.o` 文件进行安全检查。
+
+### 检查内容
+
+```
+relacheck 扫描所有 SHT_RELA 类型的 section，检查：
+  1. 该 section 操作的目标段是否是 data 段（SHF_ALLOC 且非 SHF_EXECINSTR）
+  2. 若目标段名包含 ".rodata.prel64"：
+       → 将 R_AARCH64_ABS64 转换为 R_AARCH64_PREL64（合法化）
+  3. 若目标段是普通 data 段且存在 R_AARCH64_ABS64：
+       → 报错 "Unexpected absolute relocations" 并删除目标文件
+```
+
+### 为什么需要这个检查
+
+在重定位处理（`relocate_kernel`）执行之前运行的代码中，**不允许存在 R_AARCH64_ABS64 类型的绝对地址引用**。因为：
+
+1. 此时内核尚未完成重定位，绝对地址引用指向的是链接时的地址
+2. 如果代码在重定位前就尝试读取这些绝对地址，会得到错误的值
+3. 所有 `.pi.o` 中的代码都在重定位之前运行（`early_map_kernel` 本身也属于此范畴）
+
+### prel64 机制
+
+对于不可避免需要在重定位前访问的绝对地址，使用 `.init.rodata.prel64` 段：
+
+```c
+// pi.h 中定义
+#define __prel64_initconst    __section(".init.rodata.prel64")
+#define PREL64(type, name)    union { type *name; prel64_t name ## _prel; }
+#define prel64_pointer(__d)   (typeof(__d))prel64_to_pointer(&__d##_prel)
+
+typedef volatile signed long prel64_t;
+
+static inline void *prel64_to_pointer(const prel64_t *offset)
+{
+    if (!*offset)
+        return NULL;
+    return (void *)offset + *offset;  // 相对地址计算，无需重定位
+}
+```
+
+prel64 使用**相对偏移**（地址差）而非绝对地址，因此不需要重定位修正。`relacheck` 将 `.rodata.prel64` 段中的 R_AARCH64_ABS64 转换为 R_AARCH64_PREL64（place-relative 64-bit）。
+
+---
+
+## init 段生命周期
+
+### 段归属
+
+`.rela.dyn` 和 `.relr.dyn` 位于内核的 init 段中，在链接脚本中由 `__init_begin` / `__init_end` 界定。
+
+### 释放时机
+
+```
+start_kernel()
+    │
+    ├─ ... 各种初始化 ...
+    │
+    └─ kernel_init()
+           │
+           ├─ do_basic_setup()
+           │     └─ do_initcalls()
+           │
+           ├─ free_initmem()    ← 释放 init 段（包括 .rela.dyn）
+           │     └─ free_initmem_default()
+           │           └─ free_reserved_area()
+           │                 └─ __free_page() 逐页释放
+           │
+           └─ run_init_process()  ← 启动用户态 init 进程
+```
+
+在 `free_initmem()` 之后，`.rela.dyn` 段占用的物理内存被回收，重定位数据不再需要。
+
+---
+
+## 与用户态动态链接对比
+
+| 特性 | 内核自举重定位 | 用户态动态链接 |
+|------|---------------|---------------|
+| **处理者** | `relocate_kernel()` | `ld-linux.so` (ld.so) |
+| **输入段** | `.rela.dyn` + `.relr.dyn` | `.rela.dyn` + `.rela.plt` |
+| **处理时机** | MMU 开启后、start_kernel 之前 | 进程加载时，在 main() 之前 |
+| **加载地址** | 由 bootloader 决定 + KASLR 随机 | 由内核的 `load_elf_binary` 决定 |
+| **符号解析** | 不需要（所有符号在同一个镜像内） | 需要查找共享库符号 |
+| **R_AARCH64_RELATIVE** | 仅需要此类型 | 也需要此类型 |
+| **R_AARCH64_ABS64/ GLOB_DAT** | 不出现（relacheck 校验） | 用于跨共享库的符号引用 |
+| **段生命周期** | init 段，完成后释放 | 整个进程生命周期 |
+| **压缩格式** | RELR 支持 | 部分 ld.so 支持 RELR |
+
+### 共同点
+
+两者对 R_AARCH64_RELATIVE 的处理逻辑完全相同：
+
+```
+*(addr + delta) = val + delta
+```
+
+唯一的区别是 `delta` 的来源：内核中 `delta = kaslr_offset`，用户态中 `delta = load_base`（ELF 加载基址）。
+
+---
+
+## 关键设计点
+
+1. **PIE 内核**：ARM64 内核构建为 PIE 可执行文件，使得 KASLR 成为可能，代价是需要在启动时自举重定位
+
+2. **两阶段映射**：`map_kernel` 的两阶段设计（先 RW 后 ROX）确保重定位可以在 text 段可写时完成，最终保证 text 段只读
+
+3. **RELR 压缩**：利用数据段中绝对地址引用的密集性，用位图压缩重定位表，大幅减少 init 段大小
+
+4. **relacheck 安全校验**：强制保证重定位前执行的代码中没有绝对地址引用，避免使用未修正的地址
+
+5. **prel64 相对引用**：对于确实需要在重定位前访问的地址，使用 place-relative 64 位偏移量，避免绝对地址依赖
+
+6. **init 段可释放**：重定位表位于 init 段，在 `free_initmem()` 时被释放，不占用运行时内存
+
+7. **`__pi_` 符号前缀**：通过 objcopy 的 `--prefix-symbols=__pi_` 将 PI 代码的符号统一加前缀，避免与普通内核符号冲突
+
+8. **KASLR offset 的构成**：低位由物理加载地址决定（保证 2MiB 对齐），高位来自 FDT 随机种子，兼顾了页表映射约束和随机性
