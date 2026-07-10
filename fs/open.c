@@ -1550,9 +1550,9 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 	 * 检查是否是可重启的错误码，如果是则转换为EINTR。
 	 */
 	if (retval == -ERESTARTSYS ||
-	    retval == -RESTARTNOINTR ||
-	    retval == -RESTARTNOHAND ||
-	    retval == -RESTART_RESTARTBLOCK)
+	    retval == -ERESTARTNOINTR ||
+	    retval == -ERESTARTNOHAND ||
+	    retval == -ERESTART_RESTARTBLOCK)
 		retval = -EINTR;
 
 	return retval;
