@@ -336,148 +336,204 @@ pci_host_probe
 
 # PCI 驱动注册流程
 
+`__pci_register_driver` 有 3 种调用路径:
+
+**路径 1: `module_pci_driver` 宏** (最常用, 适用于可加载模块)
+```c
+// include/linux/pci.h:1695
+#define module_pci_driver(__pci_driver) \
+    module_driver(__pci_driver, pci_register_driver, pci_unregister_driver)
+
+// module_driver 展开为 (include/linux/device/driver.h:266):
+//   static int __init __pci_driver##_init(void) { return pci_register_driver(&__pci_driver); }
+//   module_init(__pci_driver##_init);
+```
+
+**路径 2: `builtin_pci_driver` 宏** (适用于内置驱动)
+```c
+// include/linux/pci.h:1708
+#define builtin_pci_driver(__pci_driver) \
+    builtin_driver(__pci_driver, pci_register_driver)
+
+// builtin_driver 展开为 (include/linux/device/driver.h:293):
+//   static int __init __pci_driver##_init(void) { return pci_register_driver(&__pci_driver); }
+//   device_initcall(__pci_driver##_init);
+```
+
+**路径 3: 直接调用 `pci_register_driver`** (少数驱动在自定义 init 函数中调用)
+```c
+// include/linux/pci.h:1673
+// pci_register_driver 必须定义为宏, 以便 KBUILD_MODNAME 在调用处展开
+#define pci_register_driver(driver) \
+    __pci_register_driver(driver, THIS_MODULE, KBUILD_MODNAME)
+```
+
 ```text
-# PCI 驱动注册流程 - 函数调用栈 (__pci_register_driver → pci_device_probe)
+# PCI 驱动注册流程 - 函数调用栈 (do_initcalls → pci_device_probe)
 #
-# 与 PCI 设备枚举不同, PCI 驱动可以通过 initcall 或模块加载注册
+# PCI 驱动通过 initcall 或模块加载注册, 最终都进入 __pci_register_driver
 # 注册时遍历总线上已存在的设备, 尝试匹配和绑定
 # 匹配成功后调用驱动的 probe 函数
 
-__pci_register_driver
-  │  # PCI 驱动注册入口
-  │  # 参数: struct pci_driver * (如 e1000_driver)
-  │  # 设置 drv->driver.bus = &pci_bus_type
-  │  # 设置 drv->driver.probe = pci_device_probe
-  │  # 设置 drv->driver.remove = pci_device_remove
-  │  # 设置 drv->driver.suspend = pci_device_suspend
-  │  # 设置 drv->driver.resume = pci_device_resume
+kernel_init
+  │  # 内核 init 进程入口, 1 号进程执行所有初始化
   │
-  ├─ pci_driver_fn_idx
-  │   # 计算 PCI 驱动函数的索引
-  │   # 用于错误处理时回滚
-  │
-  └─ driver_register
-      │  # 通用驱动注册接口 (设备模型核心)
+  └─ kernel_init_freeable
+      │  # 可释放的 init 阶段
       │
-      └─ bus_add_driver
-          │  # 将驱动添加到总线驱动列表
-          │  # 在 sysfs 中创建 driver 目录
-          │  # 如 /sys/bus/pci/drivers/e1000/
+      └─ do_basic_setup
+          │  # 驱动/子系统的基本设置入口
           │
-          ├─ driver_register_sysfs
-          │   │  # 注册驱动的 sysfs 属性
-          │   │
-          │   └─ sysfs_create_groups
-          │       # 创建驱动属性组
-          #       # 如 /sys/bus/pci/drivers/e1000/uevent
-          │
-          ├─ driver_add_groups
-          │   # 添加驱动默认属性组
-          │   # 如 /sys/bus/pci/drivers/e1000/module
-          │
-          └─ driver_attach
-              │  # 遍历总线上的所有设备, 尝试匹配
+          └─ do_initcalls
+              │  # 遍历所有 initcall 级别并执行
+              │  # 所有设备驱动的 init 函数都在此调用
               │
-              └─ bus_for_each_dev
-                  │  # 遍历 pci_bus_type 设备链表
-                  │  # 对每个设备调用 __driver_attach
+              └─ do_initcall_level
+                  │  # 执行指定 initcall 级别的所有函数
+                  │  # 如 device_initcall 级别 (level 6)
                   │
-                  └─ __driver_attach
-                      │  # 检查驱动是否能匹配设备
-                      │  # 匹配成功则调用 driver_probe_device
+                  └─ do_one_initcall
+                      │  # 执行单个 initcall 函数
                       │
-                      ├─ driver_match_device
-                      │   │  # 调用 bus->match (pci_bus_match)
-                      │   │  # 检查设备 ID 是否匹配
-                      │   │
-                      │   └─ pci_bus_match
-                      │       │  # PCI 总线匹配函数
-                      │       │  # 参数: struct device *dev, struct device_driver *drv
-                      │       │
-                      │       └─ pci_match_device
-                      │           │  # PCI 设备匹配核心
-                      │           │  # 依次检查驱动支持的 pci_device_id 表
-                      │           │
-                      │           └─ pci_match_id
-                      │               │  # 遍历 pci_driver->id_table
-                      │               │  # 按以下优先级匹配:
-                      │               │
-                      │               └─ pci_device_id 匹配顺序:
-                      │                   │  1. vendor & device 精确匹配
-                      │                   │     drv->id_table[i].vendor == dev->vendor
-                      │                   │     drv->id_table[i].device == dev->device
-                      │                   │
-                      │                   │  2. class 匹配
-                      │                   │     drv->id_table[i].class == dev->class
-                      │                   │     class_mask 控制匹配精度
-                      │                   │
-                      │                   │  3. subvendor & subdevice 匹配
-                      │                   │     用于特定子系统修订版的匹配
-                      │                   │
-                      │                   │  4. PCI_ANY_ID 通配符
-                      │                   │     vendor == PCI_ANY_ID (0xFFFF)
-                      │                   │     匹配所有厂商的设备
-                      │                   │
-                      │                   └─ 匹配结果:
-                      │                       # 成功: 返回匹配的 pci_device_id 指针
-                      │                       # 失败: 返回 NULL, 驱动不绑定此设备
-                      │
-                      └─ driver_probe_device
-                          │  # 驱动-设备匹配成功后, 准备 probe
+                      └─ xxx_driver_init
+                          │  # module_pci_driver / builtin_pci_driver 宏展开的 init 函数
+                          │  # 如 e1000_driver_init, ahci_driver_init, nvme_driver_init
+                          │  # 内部调用 pci_register_driver(&xxx_driver)
                           │
-                          └─ __driver_probe_device
-                              │  # 检查设备是否已绑定驱动
-                              │  # 获取设备锁, 确保设备可用
+                          └─ pci_register_driver
+                              │  # 宏, 展开为:
+                              │  # __pci_register_driver(driver, THIS_MODULE, KBUILD_MODNAME)
                               │
-                              └─ really_probe
-                                  │  # 真正执行设备探测
-                                  │  # 管理设备生命周期状态
+                              └─ __pci_register_driver
+                                  │  # PCI 驱动注册核心
+                                  │  # 参数: struct pci_driver * (如 e1000_driver)
+                                  │  # 设置 drv->driver.bus = &pci_bus_type
+                                  │  # 设置 drv->driver.owner = owner
+                                  │  # 设置 drv->driver.mod_name = mod_name
+                                  │  # 初始化 dynids 动态 ID 列表
                                   │
-                                  ├─ driver_sysfs_add
-                                  │   # 在 sysfs 中创建设备-驱动链接
-                                  #   # /sys/bus/pci/drivers/e1000/0000:00:xx.x
-                                  │
-                                  ├─ call_driver_probe
-                                  │   │  # 调用 bus->probe 或 drv->probe
-                                  │   │
-                                  │   └─ pci_device_probe
-                                  │       │  # PCI 设备探测
-                                  │       │  # 参数: struct device *dev
-                                  │       │  # 从 dev 中获取 struct pci_dev *
-                                  │       │
-                                  │       ├─ pci_assign_device_fixed
-                                  │       │   # 分配固定的 PCI 资源
-                                  │       │   # 如固件已分配的 BAR 地址
-                                  │       │
-                                  │       ├─ pci_pm_init
-                                  │       │   # 初始化 PCI 电源管理
-                                  │       │   # 读取 PM Capabilities
-                                  │       │   # 设置设备电源状态
-                                  │       │
-                                  │       ├─ pci_pme_init
-                                  │       │   # 初始化 PME (Power Management Event)
-                                  │       │   # 支持从低功耗状态唤醒
-                                  │       │
-                                  │       ├─ pci_acpi_setup
-                                  │       │   # ACPI 设置 (如果启用)
-                                  │       │   # 配置 ACPI 电源状态
-                                  │       │
-                                  │       ├─ pci_msi_setup_pci_dev
-                                  │       │   # 初始化 MSI/MSI-X 中断
-                                  │       │   # 读取 MSI Capability
-                                  │       │   # 计算可用 MSI 向量数
-                                  │       │
-                                  │       └─ pci_driver->probe
-                                  │           # 调用具体 PCI 驱动的 probe
-                                  #           # 如 e1000_probe
-                                  #           # 初始化硬件, 注册网络设备
-                                  │
-                                  ├─ pm_runtime_put_suppliers
-                                  │   # 运行时电源管理: 释放引用
-                                  │
-                                  └─ devm_kfree
-                                      # 释放设备资源管理数据
-                                      # 清理 probe 过程中的临时分配
+                                  └─ driver_register
+                                      │  # 通用驱动注册接口 (设备模型核心)
+                                      │
+                                      └─ bus_add_driver
+                                          │  # 将驱动添加到总线驱动列表
+                                          │  # 在 sysfs 中创建 driver 目录
+                                          │  # 如 /sys/bus/pci/drivers/e1000/
+                                          │
+                                          ├─ driver_register_sysfs
+                                          │   │  # 注册驱动的 sysfs 属性
+                                          │   │
+                                          │   └─ sysfs_create_groups
+                                          │       # 创建驱动属性组
+                                          #       # 如 /sys/bus/pci/drivers/e1000/uevent
+                                          │
+                                          ├─ driver_add_groups
+                                          │   # 添加驱动默认属性组
+                                          │   # 如 /sys/bus/pci/drivers/e1000/module
+                                          │
+                                          └─ driver_attach
+                                              │  # 遍历总线上的所有设备, 尝试匹配
+                                              │
+                                              └─ bus_for_each_dev
+                                                  │  # 遍历 pci_bus_type 设备链表
+                                                  │  # 对每个设备调用 __driver_attach
+                                                  │
+                                                  └─ __driver_attach
+                                                      │  # 检查驱动是否能匹配设备
+                                                      │  # 匹配成功则调用 driver_probe_device
+                                                      │
+                                                      ├─ driver_match_device
+                                                      │   │  # 调用 bus->match (pci_bus_match)
+                                                      │   │  # 检查设备 ID 是否匹配
+                                                      │   │
+                                                      │   └─ pci_bus_match
+                                                      │       │  # PCI 总线匹配函数
+                                                      │       │  # 参数: struct device *dev, struct device_driver *drv
+                                                      │       │
+                                                      │       └─ pci_match_device
+                                                      │           │  # PCI 设备匹配核心
+                                                      │           │  # 依次检查驱动支持的 pci_device_id 表
+                                                      │           │
+                                                      │           └─ pci_match_id
+                                                      │               │  # 遍历 pci_driver->id_table
+                                                      │               │  # 按以下优先级匹配:
+                                                      │               │
+                                                      │               └─ pci_device_id 匹配顺序:
+                                                      │                   │  1. vendor & device 精确匹配
+                                                      │                   │     drv->id_table[i].vendor == dev->vendor
+                                                      │                   │     drv->id_table[i].device == dev->device
+                                                      │                   │
+                                                      │                   │  2. class 匹配
+                                                      │                   │     drv->id_table[i].class == dev->class
+                                                      │                   │     class_mask 控制匹配精度
+                                                      │                   │
+                                                      │                   │  3. subvendor & subdevice 匹配
+                                                      │                   │     用于特定子系统修订版的匹配
+                                                      │                   │
+                                                      │                   │  4. PCI_ANY_ID 通配符
+                                                      │                   │     vendor == PCI_ANY_ID (0xFFFF)
+                                                      │                   │     匹配所有厂商的设备
+                                                      │                   │
+                                                      │                   └─ 匹配结果:
+                                                      │                       # 成功: 返回匹配的 pci_device_id 指针
+                                                      │                       # 失败: 返回 NULL, 驱动不绑定此设备
+                                                      │
+                                                      └─ driver_probe_device
+                                                          │  # 驱动-设备匹配成功后, 准备 probe
+                                                          │
+                                                          └─ __driver_probe_device
+                                                              │  # 检查设备是否已绑定驱动
+                                                              │  # 获取设备锁, 确保设备可用
+                                                              │
+                                                              └─ really_probe
+                                                                  │  # 真正执行设备探测
+                                                                  │  # 管理设备生命周期状态
+                                                                  │
+                                                                  ├─ driver_sysfs_add
+                                                                  │   # 在 sysfs 中创建设备-驱动链接
+                                                                  #   # /sys/bus/pci/drivers/e1000/0000:00:xx.x
+                                                                  │
+                                                                  ├─ call_driver_probe
+                                                                  │   │  # 调用 bus->probe 或 drv->probe
+                                                                  │   │
+                                                                  │   └─ pci_device_probe
+                                                                  │       │  # PCI 设备探测
+                                                                  │       │  # 参数: struct device *dev
+                                                                  │       │  # 从 dev 中获取 struct pci_dev *
+                                                                  │       │
+                                                                  │       ├─ pci_assign_device_fixed
+                                                                  │       │   # 分配固定的 PCI 资源
+                                                                  │       │   # 如固件已分配的 BAR 地址
+                                                                  │       │
+                                                                  │       ├─ pci_pm_init
+                                                                  │       │   # 初始化 PCI 电源管理
+                                                                  │       │   # 读取 PM Capabilities
+                                                                  │       │   # 设置设备电源状态
+                                                                  │       │
+                                                                  │       ├─ pci_pme_init
+                                                                  │       │   # 初始化 PME (Power Management Event)
+                                                                  │       │   # 支持从低功耗状态唤醒
+                                                                  │       │
+                                                                  │       ├─ pci_acpi_setup
+                                                                  │       │   # ACPI 设置 (如果启用)
+                                                                  │       │   # 配置 ACPI 电源状态
+                                                                  │       │
+                                                                  │       ├─ pci_msi_setup_pci_dev
+                                                                  │       │   # 初始化 MSI/MSI-X 中断
+                                                                  │       │   # 读取 MSI Capability
+                                                                  │       │   # 计算可用 MSI 向量数
+                                                                  │       │
+                                                                  │       └─ pci_driver->probe
+                                                                  │           # 调用具体 PCI 驱动的 probe
+                                                                  #           # 如 e1000_probe
+                                                                  #           # 初始化硬件, 注册网络设备
+                                                                  │
+                                                                  ├─ pm_runtime_put_suppliers
+                                                                  │   # 运行时电源管理: 释放引用
+                                                                  │
+                                                                  └─ devm_kfree
+                                                                      # 释放设备资源管理数据
+                                                                      # 清理 probe 过程中的临时分配
 
 # pci_device_id 结构 (定义: include/linux/mod_devicetable.h):
 #

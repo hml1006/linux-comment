@@ -120,7 +120,7 @@
 
 # 驱动
 ## 驱动相关结构体
-### [device](./notes/device.md)
+### [device](./notes/driver/device.md)
 
 ## nvme驱动
-### [nvme执行过程](./notes/nvme-pcie-host-analysis.md)
+### [nvme执行过程](./notes/driver/nvme-pcie-host-analysis.md)
