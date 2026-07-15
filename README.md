@@ -24,6 +24,10 @@
 
 ## [memory order](notes/armv8a-arch/12.Memory_Order.md)
 
+# Linux内核代码分析
+
+## [内核代码结构](notes/analysis_report.md)
+
 # arm64 Linux启动过程
 
 ## [初始启动代码head.S](./notes/head.S.md)
@@ -80,9 +84,7 @@
 
 ### [stat / fstat / statx / xattr](./notes/syscall/stat-xattr-syscall.md)
 
-
 ## 扩展属性
-
 
 ## 文件系统挂载与结构
 
@@ -119,8 +121,15 @@
 ---
 
 # 驱动
+
 ## 驱动相关结构体
+
 ### [device](./notes/driver/device.md)
 
+## 块设备驱动
+
+### [块设备驱动分析](./notes/driver/block_layer_analysis.md)
+
 ## nvme驱动
+
 ### [nvme执行过程](./notes/driver/nvme-pcie-host-analysis.md)
