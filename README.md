@@ -25,12 +25,13 @@
 - [R_AARCH64_RELATIVE 重定位](./notes/rela.dyn.md)
 - [start_kernel 流程](./notes/start_kernel.md)
 - [SMP 启动过程](./notes/smp_start.md)
-- [PCI 初始化](./notes/device.md)
+- [PCI 初始化](./notes/driver/pcie.md)
 - [文件系统](./notes/fs.md)
 
 ## 4. 异常与中断
 
-- [Exception 和 Interrupt 流程分析](./notes/arm64-interrupt-entry-analysis.md)
+- [中断子系统概览](./notes/interrupt/interrupt_subsystem_analysis.md)
+- [Exception 和 Interrupt 流程分析](./notes/interrupt/arm64-interrupt-entry-analysis.md)
 
 ## 5. 系统调用
 
@@ -73,6 +74,12 @@
 ## 6. 内存管理
 
 - [内存分配与分析](./notes/memory/memory_management.md)
+
+## 7. 时间子系统
+
+- [硬件定时器模块分析](./notes/time/arm64-timer-hardware-config.md)
+
+- [时间子系统概览](./notes/time/time_subsystem_analysis.md)
 
 ## 7. 驱动
 
