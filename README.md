@@ -1,135 +1,81 @@
-# armv8a CPU 知识详解
+# Linux Kernel 源码分析笔记
 
-## [arm cortex-a55简介](notes/armv8a-arch/1.summary.md)
+## 1. ARMv8a 体系结构
 
-## [电源管理](notes/armv8a-arch/2.powermanage.md)
+- [arm cortex-a55 简介](notes/armv8a-arch/1.summary.md)
+- [电源管理](notes/armv8a-arch/2.powermanage.md)
+- [MMU](notes/armv8a-arch/3.MMU.md)
+- [RAS](notes/armv8a-arch/4.RAS.md)
+- [GIC 中断控制器](notes/armv8a-arch/5.GIC.md)
+- [Debug](notes/armv8a-arch/6.Debug.md)
+- [寄存器](notes/armv8a-arch/7.register.md)
+- [指令集](notes/armv8a-arch/8.instructions.md)
+- [ABI](notes/armv8a-arch/9.ABI.md)
+- [异常和中断](notes/armv8a-arch/10.exception_intr.md)
+- [Cache](notes/armv8a-arch/11.Cache.md)
+- [Memory Order](notes/armv8a-arch/12.Memory_Order.md)
 
-## [MMU](notes/armv8a-arch/3.MMU.md)
+## 2. Linux 内核概览
 
-## [RAS](notes/armv8a-arch/4.RAS.md)
+- [内核代码结构](notes/analysis_report.md)
 
-## [GIC中断控制器](notes/armv8a-arch/5.GIC.md)
+## 3. arm64 启动过程
 
-## [Debug](notes/armv8a-arch/6.Debug.md)
+- [初始启动代码 head.S](./notes/head.S.md)
+- [R_AARCH64_RELATIVE 重定位](./notes/rela.dyn.md)
+- [start_kernel 流程](./notes/start_kernel.md)
+- [SMP 启动过程](./notes/smp_start.md)
+- [PCI 初始化](./notes/device.md)
+- [文件系统](./notes/fs.md)
 
-## [寄存器](notes/armv8a-arch/7.register.md)
+## 4. 异常与中断
 
-## [指令集](notes/armv8a-arch/8.instructions.md)
+- [Exception 和 Interrupt 流程分析](./notes/arm64-interrupt-entry-analysis.md)
 
-## [ABI](notes/armv8a-arch/9.ABI.md)
+## 5. 系统调用
 
-## [异常和中断](notes/armv8a-arch/10.exception_intr.md)
+- [系统调用分类列表](./notes/syscall/arm64-syscall-table.md)
 
-## [cache](notes/armv8a-arch/11.Cache.md)
+### 5.1 文件描述符操作
 
-## [memory order](notes/armv8a-arch/12.Memory_Order.md)
+- [close](./notes/syscall/close-syscall-full-path.md) | [close_range](./notes/syscall/close_range-syscall.md) | [dup](./notes/syscall/dup-syscall.md) | [dup3](./notes/syscall/dup3-syscall.md)
 
-# Linux内核代码分析
+### 5.2 文件 I/O
 
-## [内核代码结构](notes/analysis_report.md)
+- [read](./notes/syscall/read-syscall.md) | [write](./notes/syscall/write-syscall.md) | [readv](./notes/syscall/readv-syscall-full-path.md) | [writev](./notes/syscall/writev-syscall-full-path.md)
+- [pread64](./notes/syscall/pread64-syscall.md) | [pwrite64](./notes/syscall/pwrite64-syscall.md) | [preadv / pwritev](./notes/syscall/preadv-pwritev-syscall.md)
+- [splice / tee / vmsplice](./notes/syscall/splice-syscall.md) | [sendfile / copy_file_range](./notes/syscall/sendfile-copy-range-syscall.md)
 
-# arm64 Linux启动过程
+### 5.3 文件元数据与同步
 
-## [初始启动代码head.S](./notes/head.S.md)
+- [stat / fstat / statx / xattr](./notes/syscall/stat-xattr-syscall.md) | [fsync / fdatasync / sync / syncfs / sync_file_range](./notes/syscall/sync-syscall.md)
 
-## [R_AARCH64_RELATIVE类型的.rela.dyn 重定位项](./notes/rela.dyn.md)
+### 5.4 目录与路径操作
 
-## [start_kernel流程](./notes/start_kernel.md)
+- [open](./notes/syscall/open-syscall.md)
 
-## [SMP启动过程](./notes/smp_start.md)
+### 5.5 内存管理
 
-## [pci初始化](./notes/device.md)
+- [mmap / munmap / mprotect / madvise / brk](./notes/syscall/memory-syscall-analysis.md)
 
-## [文件系统](./notes/fs.md)
+### 5.6 定时器与时间
 
-# Exception和Interrupt过程
+- [timer / time](./notes/syscall/timer-time-syscall.md)
 
-## [Exception和Interrupt流程分析](./notes/arm64-interrupt-entry-analysis.md)
+### 5.7 进程与调度
 
-# 系统调用
+- [进程控制概览](./notes/syscall/process-syscall-analysis.md) | [调度概览](./notes/syscall/sched-cred-signal-syscall.md)
 
-## [系统调用分类列表](./notes/syscall/arm64-syscall-table.md)
+### 5.8 网络与事件通知
 
-## 文件描述符操作
+- [网络 Socket 概览](./notes/net-syscall.md) | [epoll / aio / io_uring 概览](./notes/syscall/epoll-aio-io_uring-syscall.md)
 
-### [close](./notes/syscall/close-syscall-full-path.md)
+## 6. 内存管理
 
-### [close_range](./notes/syscall/close_range-syscall.md)
+- [内存分配与分析](./notes/memory/memory_management.md)
 
-### [dup](./notes/syscall/dup-syscall.md)
+## 7. 驱动
 
-### [dup3](./notes/syscall/dup3-syscall.md)
-
-## 文件I/O
-
-### [read](./notes/syscall/read-syscall.md)
-
-### [write](./notes/syscall/write-syscall.md)
-
-### [readv](./notes/syscall/readv-syscall-full-path.md)
-
-### [writev](./notes/syscall/writev-syscall-full-path.md)
-
-### [pread64](./notes/syscall/pread64-syscall.md)
-
-### [pwrite64](./notes/syscall/pwrite64-syscall.md)
-
-### [preadv / pwritev](./notes/syscall/preadv-pwritev-syscall.md)
-
-### [splice / tee / vmsplice](./notes/syscall/splice-syscall.md)
-
-### [sendfile / copy_file_range](./notes/syscall/sendfile-copy-range-syscall.md)
-
-## 文件元数据与属性
-
-### [stat / fstat / statx / xattr](./notes/syscall/stat-xattr-syscall.md)
-
-## 扩展属性
-
-## 文件系统挂载与结构
-
-### [fsync / fdatasync / sync / syncfs / sync_file_range](./notes/syscall/sync-syscall.md)
-
-## 目录与路径操作
-
-### [open](./notes/syscall/open-syscall.md)
-
-## 内存管理
-
-### [mmap / munmap / mprotect / madvise / brk](./notes/syscall/memory-syscall-analysis.md)
-
-## 定时器与时间
-
-### [timer / time](./notes/syscall/timer-time-syscall.md)
-
-## 进程控制
-
-### [概览](./notes/syscall/process-syscall-analysis.md)
-
-## 进程调度
-
-### [概览](./notes/syscall/sched-cred-signal-syscall.md)
-
-## 网络与Socket
-
-### [概览](./notes/net-syscall.md)
-
-## 事件通知
-
-### [概览](./notes/syscall/epoll-aio-io_uring-syscall.md)
-
----
-
-# 驱动
-
-## 驱动相关结构体
-
-### [device](./notes/driver/device.md)
-
-## 块设备驱动
-
-### [块设备驱动分析](./notes/driver/block_layer_analysis.md)
-
-## nvme驱动
-
-### [nvme执行过程](./notes/driver/nvme-pcie-host-analysis.md)
+- [device 结构体](./notes/driver/device.md)
+- [块设备驱动分析](./notes/driver/block_layer_analysis.md)
+- [NVMe 驱动执行过程](./notes/driver/nvme-pcie-host-analysis.md)
