@@ -15,6 +15,17 @@
 - [5. device_driver 结构体](#5-device_driver-结构体)
 - [6. bus_type 结构体](#6-bus_type-结构体)
 - [7. device 结构体](#7-device-结构体)
+- [8. PCIe 设备关键数据结构](#8-pcie-设备关键数据结构)
+  - [8.1 pci_host_bridge —— 主机桥控制器](#81-pci_host_bridge--主机桥控制器)
+  - [8.2 pci_bus —— PCI 总线](#82-pci_bus--pci-总线)
+  - [8.3 pci_dev —— PCI 设备](#83-pci_dev--pci-设备)
+  - [8.4 pci_driver —— PCI 设备驱动](#84-pci_driver--pci-设备驱动)
+  - [8.5 pci_device_id —— 设备匹配 ID](#85-pci_device_id--设备匹配-id)
+  - [8.6 pci_ops —— 配置空间访问方法](#86-pci_ops--配置空间访问方法)
+  - [8.7 resource —— 资源描述](#87-resource--资源描述)
+  - [8.8 pci_slot —— 物理插槽](#88-pci_slot--物理插槽)
+  - [8.9 pci_dynid —— 动态设备 ID](#89-pci_dynid--动态设备-id)
+  - [8.10 数据结构关系图](#810-数据结构关系图)
 
 ---
 
@@ -339,6 +350,7 @@ pci_host_probe
 `__pci_register_driver` 有 3 种调用路径:
 
 **路径 1: `module_pci_driver` 宏** (最常用, 适用于可加载模块)
+
 ```c
 // include/linux/pci.h:1695
 #define module_pci_driver(__pci_driver) \
@@ -350,6 +362,7 @@ pci_host_probe
 ```
 
 **路径 2: `builtin_pci_driver` 宏** (适用于内置驱动)
+
 ```c
 // include/linux/pci.h:1708
 #define builtin_pci_driver(__pci_driver) \
@@ -361,6 +374,7 @@ pci_host_probe
 ```
 
 **路径 3: 直接调用 `pci_register_driver`** (少数驱动在自定义 init 函数中调用)
+
 ```c
 // include/linux/pci.h:1673
 // pci_register_driver 必须定义为宏, 以便 KBUILD_MODNAME 在调用处展开
@@ -835,4 +849,366 @@ struct device {
     dma_skip_sync     : bool    # 跳过 DMA 同步
     dma_iommu         : bool    # 使用 IOMMU DMA
 };
+
+---
+
+## 8. PCIe 设备关键数据结构
+
+> 本节分析 PCIe 设备在 probe 和 register 过程中涉及的核心数据结构
+> 这些结构体定义了从主机桥控制器到具体设备、从驱动到资源的完整层次
+
+### 8.1 pci_host_bridge —— 主机桥控制器
+
+**定义**: `include/linux/pci.h:627`
+
+PCI 主机桥控制器，代表一个 PCI 域（Segment）的根桥，是 PCI 子系统的顶层入口。
+
+```c
+struct pci_host_bridge {
+    struct device   dev;                // 内嵌通用设备结构
+    struct pci_bus  *bus;               // 根总线指针
+    struct pci_ops  *ops;               // 配置空间访问方法
+    struct pci_ops  *child_ops;         // 子设备配置空间访问方法
+    void            *sysdata;           // 架构私有数据
+    int             busnr;              // 根总线起始编号
+    int             domain_nr;          // PCI 域编号
+    unsigned char    pos;               // 桥配置偏移
+
+    struct list_head windows;            // 地址窗口资源列表
+
+    u8              (*swizzle_irq)(struct pci_dev *, u8 *);  // IRQ 路由
+    int             (*map_irq)(const struct pci_dev *, u8, u8);  // IRQ 映射
+
+    unsigned int    ignore_reset_delay : 1;  // 忽略复位延迟
+    unsigned int    no_ext_tags : 1;         // 不支持扩展标签
+    unsigned int    native_aer : 1;          // 原生 AER 支持
+    unsigned int    native_pcie_hotplug : 1; // 原生热插拔
+    unsigned int    preserve_config : 1;     // 保留 BIOS 配置
+    unsigned int    size_windows : 1;        // 窗口大小已确定
+
+    struct list_head    pci_host_bridge_list;  // 全局链表节点
+};
+```
+
+**关键字段说明**:
+
+- `dev`：内嵌通用设备，用于设备模型注册和 sysfs 展示
+- `bus`：指向根总线的指针，根总线是扫描的起点
+- `ops`：ECAM 或其他配置空间访问方法，所有子设备通过此接口访问配置空间
+- `windows`：地址窗口列表，描述主机桥能访问的 MMIO/I/O 空间范围
+- `domain_nr`：PCI 域编号，多根桥系统用于区分不同域
+
+### 8.2 pci_bus —— PCI 总线
+
+**定义**: `include/linux/pci.h:698`
+
+代表一条 PCI 总线，通过 `parent`/`children` 形成树状拓扑结构。
+
+```c
+struct pci_bus {
+    struct list_head node;              // 全局总线链表节点
+    struct pci_bus  *parent;            // 父总线
+    struct list_head children;           // 子总线链表
+    struct list_head devices;            // 本总线上的设备链表
+    struct pci_dev  *self;              // 桥设备自身（若为下级总线）
+
+    struct list_head slots;              // 物理插槽列表
+    struct resource *resource[PCI_BRIDGE_RESOURCE_WINDOWS + 1];  // 总线资源窗口
+
+    struct pci_ops  *ops;               // 配置空间访问方法
+    void            *sysdata;           // 架构私有数据
+
+    struct device   *dev;               // 总线设备（sysfs）
+    unsigned char    number;            // 总线编号
+    unsigned char    primary;           // 桥的 Primary 总线号
+    unsigned char    secondary;         // 桥的 Secondary 总线号
+    unsigned char    subordinate;       // 桥的 Subordinate 总线号
+
+    unsigned int    bus_flags;          // 总线标志
+    unsigned char    max_bus_speed;     // 最大总线速度
+    unsigned char    cur_bus_speed;     // 当前总线速度
+
+    char            name[48];           // 总线名称
+
+    int             bridge_d3;          // 桥是否支持 D3 状态
+    unsigned char    pci_bus_type;      // 总线类型（PCI/PCIe）
+};
+```
+
+**关键字段说明**:
+
+- `number`/`primary`/`secondary`/`subordinate`：总线号，用于配置空间路由
+- `self`：对于下级总线，指向 PCI-PCI 桥设备；对于根总线为 NULL
+- `resource[]`：桥的地址窗口（MMIO/I/O 范围），用于转发事务
+- `ops`：配置空间访问方法，继承自 `pci_host_bridge->ops`
+
+### 8.3 pci_dev —— PCI 设备
+
+**定义**: `include/linux/pci.h:329`
+
+代表一个 PCI/PCIe 功能设备，是 PCI 子系统中最重要的数据结构。
+
+```c
+struct pci_dev {
+    struct list_head bus_list;           // 总线设备链表节点
+    struct pci_bus  *bus;               // 所属总线
+    struct pci_bus  *subordinate;       // 桥设备的下级总线
+
+    void            *sysdata;           // 架构私有数据
+    struct proc_dir_entry *procent;     // /proc 条目
+
+    unsigned int    devfn;              // 设备功能号 (slot<<3 | func)
+    unsigned short  vendor;             // 厂商 ID
+    unsigned short  device;             // 设备 ID
+    unsigned short  subsystem_vendor;   // 子系统厂商 ID
+    unsigned short  subsystem_device;   // 子系统设备 ID
+
+    unsigned int    class;              // 类代码 (Base|Sub|IF)
+    u8              revision;           // 修订版本
+    u8              hdr_type;           // 配置头类型
+    u8              pcie_cap;           // PCIe 能力偏移
+    u8              msi_cap;            // MSI 能力偏移
+    u8              msix_cap;           // MSI-X 能力偏移
+    u8              msi_enabled;        // MSI 已启用
+    u8              msix_enabled;       // MSI-X 已启用
+
+    struct pci_driver *driver;           // 绑定的驱动
+    u64              dma_mask;           // DMA 地址掩码
+    struct device    dev;                // 内嵌通用设备结构
+    int              cfg_size;           // 配置空间大小
+
+    struct resource  resource[DEVICE_COUNT_RESOURCE];  // BAR 资源数组
+
+    unsigned int    irq;                // 中断号
+    struct pci_slot *slot;              // 所属物理插槽
+
+    unsigned int    no_d1d2 : 1;        // 不支持 D1/D2 电源状态
+    unsigned int    d3_delay;           // D3 状态延迟
+    unsigned int    d3cold_delay;       // D3cold 延迟
+
+    /* 电源管理 */
+    pci_power_t     current_state;      // 当前电源状态
+    int             pm_cap;             // PM 能力偏移
+};
+```
+
+**关键字段说明**:
+
+- `devfn`：编码了设备号 (slot) 和功能号 (function)，配置空间访问使用此编码
+- `vendor/device`：唯一标识一个 PCI 设备类型，用于驱动匹配
+- `resource[]`：最多 6 个 BAR 寄存器（PCI）/ 2 个（PCIe PF），描述设备 MMIO/I/O 地址范围
+- `driver`：指向匹配成功的 `pci_driver`，驱动 probe 成功后设置
+- `subordinate`：仅对桥设备有意义，指向下级总线
+- `pcie_cap/msi_cap/msix_cap`：PCIe 能力链表中各能力的偏移位置
+
+### 8.4 pci_driver —— PCI 设备驱动
+
+**定义**: `include/linux/pci.h:1019`
+
+代表一个 PCI 设备驱动程序，提供 probe/remove 等回调接口。
+
+```c
+struct pci_driver {
+    struct list_head    node;               // 全局驱动链表节点
+    const char          *name;              // 驱动名称
+    const struct pci_device_id *id_table;   // 支持的设备 ID 表
+
+    int  (*probe)(struct pci_dev *dev, const struct pci_device_id *id);
+    void (*remove)(struct pci_dev *dev);
+    int  (*suspend)(struct pci_dev *dev, pm_message_t state);
+    int  (*resume)(struct pci_dev *dev);
+    void (*shutdown)(struct pci_dev *dev);
+    int  (*sriov_configure)(struct pci_dev *dev, int num_vfs);  // SR-IOV 配置
+    int  (*sriov_set_msix_vec_count)(struct pci_dev *vf, int msix_vec_count);
+    const struct pci_error_handlers *err_handler;  // AER 错误处理
+    struct device_driver    driver;             // 内嵌通用驱动
+    int     (*dma_configure)(struct device *dev);
+};
+```
+
+**关键字段说明**:
+
+- `id_table`：驱动支持的设备 ID 列表，`pci_match_device()` 遍历此表进行匹配
+- `probe`：匹配成功后的探测回调，是驱动初始化的入口
+- `driver`：内嵌通用驱动，`driver_register(drv->driver)` 实现了真正的注册逻辑
+- `err_handler`：可选，提供 PCIe AER 错误恢复回调
+
+### 8.5 pci_device_id —— 设备匹配 ID
+
+**定义**: `include/linux/mod_devicetable.h:24`
+
+用于驱动和 PCI 设备之间的匹配，涵盖 vendor/device/class 多种匹配方式。
+
+```c
+struct pci_device_id {
+    __u32   vendor;             // 厂商 ID（PCI_ANY_ID 表示通配）
+    __u32   device;             // 设备 ID
+    __u32   subvendor;          // 子系统厂商 ID
+    __u32   subdevice;          // 子系统设备 ID
+    __u32   class;              // 类代码
+    __u32   class_mask;         // 类代码掩码
+    kernel_ulong_t driver_data; // 驱动私有数据
+};
+```
+
+**匹配规则**:
+
+- `pci_match_one_device(id, dev)` 按优先级依次匹配
+- 匹配顺序：vendor/device → subvendor/subdevice → class
+- 优先级：精确匹配 > 子系统匹配 > 类匹配
+- `PCI_ANY_ID` 宏 (`0xFFFF`) 表示通配符，匹配任何值
+
+### 8.6 pci_ops —— 配置空间访问方法
+
+**定义**: `include/linux/pci.h:867`
+
+架构相关的配置空间访问接口，PCI 枚举和驱动配置空间操作都通过此接口。
+
+```c
+struct pci_ops {
+    int (*read)(struct pci_bus *bus, unsigned int devfn,
+                int where, int size, u32 *val);
+    int (*write)(struct pci_bus *bus, unsigned int devfn,
+                 int where, int size, u32 val);
+    void __iomem *(*map_bus)(struct pci_bus *bus, unsigned int devfn,
+                             int where);
+};
+```
+
+**关键字段说明**:
+
+- `read/write`：配置空间读写操作，参数为 bus/devfn/偏移/宽度
+- `map_bus`：可选，返回配置空间映射的虚拟地址，用于 ECAM 直接访问
+- 典型实现：ECAM（Enhanced Configuration Access Mechanism）通过 MMIO 映射配置空间
+- `pci_host_bridge->ops` 传递给根总线，子总线继承同一套 ops
+
+### 8.7 resource —— 资源描述
+
+**定义**: `include/linux/ioport.h:22`
+
+描述 I/O 端口、内存、IRQ 等资源，构成设备地址空间的基础。
+
+```c
+struct resource {
+    resource_size_t start;                  // 资源起始地址
+    resource_size_t end;                    // 资源结束地址
+    const char      *name;                  // 资源名称
+    unsigned long   flags;                  // 资源类型标志
+    unsigned long   desc;                   // 资源描述符
+    struct resource *parent, *sibling, *child;  // 资源树链接
+};
+```
+
+**常用资源类型标志**:
+
+```c
+#define IORESOURCE_IO        0x00000100  // I/O 端口空间
+#define IORESOURCE_MEM       0x00000200  // 内存空间
+#define IORESOURCE_IRQ       0x00000400  // 中断资源
+#define IORESOURCE_DMA       0x00000800  // DMA 通道
+#define IORESOURCE_PREFETCH  0x00002000  // 可预取
+#define IORESOURCE_READONLY  0x00004000  // 只读
+#define IORESOURCE_CACHEABLE 0x00008000  // 可缓存
+#define IORESOURCE_WINDOW    0x00200000  // 桥窗口资源
+```
+
+**在 PCI 中的应用**:
+
+- `pci_dev->resource[]`：每个 BAR 对应一个 resource，描述设备 MMIO/I/O 地址范围
+- `pci_bus->resource[]`：桥的地址窗口，决定转发哪些地址范围到下级总线
+- `pci_host_bridge->windows`：主机桥的地址窗口，决定系统能访问的 PCI 地址空间
+
+### 8.8 pci_slot —— 物理插槽
+
+**定义**: `include/linux/pci.h:72`
+
+代表一个物理插槽，用于热插拔和 sysfs 展示。
+
+```c
+struct pci_slot {
+    struct pci_bus  *bus;               // 所属总线
+    struct list_head list;               // 总线插槽链表节点
+    struct hotplug_slot *hotplug;        // 热插拔信息
+    unsigned char    number;             // 插槽编号
+    struct kobject   kobj;               // sysfs kobject
+};
+```
+
+**关键字段说明**:
+
+- `hotplug`：热插拔控制器接口，非空时启用热插拔功能
+- `number`：物理插槽编号，通常对应主板上的物理槽位
+- `pci_dev->slot` 指向设备所属的物理插槽
+
+### 8.9 pci_dynid —— 动态设备 ID
+
+**定义**: `drivers/pci/pci-driver.c:27`
+
+用于 sysfs `new_id` 接口运行时添加新设备 ID，无需卸载驱动。
+
+```c
+struct pci_dynid {
+    struct list_head    node;           // 链表节点
+    struct pci_device_id id;            // 动态添加的设备 ID
+};
+```
+
+**使用场景**:
+
+- 驱动加载后通过 sysfs `echo vendor device > /sys/bus/pci/drivers/xxx/new_id` 添加新 ID
+- 驱动 probe 时，`pci_match_device()` 同时遍历 `id_table` 和 `dynids` 链表
+- 用于硬件开发调试、FPGA 原型验证等场景
+
+### 8.10 数据结构关系图
+
+```
+pci_host_bridge                             // 主机桥（PCI 域）
+  ├── dev ─────────→ struct device           // 内嵌通用设备
+  ├── bus ─────────→ pci_bus                // 根总线
+  │   ├── parent ──→ pci_bus (NULL)         // 根总线无父
+  │   ├── children ─→ list_head             // 子总线链表
+  │   │                └── pci_bus (下级)
+  │   │                    ├── self ───────→ pci_dev (桥设备)
+  │   │                    ├── parent ─────→ pci_bus (上级)
+  │   │                    └── devices ────→ list_head
+  │   ├── devices ──→ list_head
+  │   │                └── pci_dev
+  │   │                    ├── dev ───────→ struct device
+  │   │                    ├── bus ───────→ pci_bus (所属总线)
+  │   │                    ├── driver ────→ pci_driver
+  │   │                    │   ├── id_table → pci_device_id[]
+  │   │                    │   ├── probe() 回调
+  │   │                    │   └── driver ─→ device_driver
+  │   │                    ├── resource[] → struct resource (BAR)
+  │   │                    ├── slot ─────→ pci_slot
+  │   │                    └── subordinate → pci_bus (桥设备)
+  │   ├── ops ───────→ pci_ops              // 配置空间访问
+  │   └── resource[] → struct resource[]    // 桥窗口资源
+  │
+  ├── ops ─────────→ pci_ops                // 配置空间访问方法
+  └── windows ─────→ list_head              // 地址窗口资源列表
+                        └── struct resource (主机桥地址窗口)
+
+pci_driver
+  ├── node ───────→ list_head (全局驱动链表)
+  ├── id_table ───→ pci_device_id[] (静态匹配表)
+  └── dynids ─────→ list_head (动态 ID 链表)
+                       └── pci_dynid
+                           └── id ──→ pci_device_id
+
+匹配流程:
+  pci_bus_match(dev, drv)
+    └── pci_match_device(drv, dev)
+        ├── pci_match_one_device(id_table[i], dev)  // 遍历静态表
+        └── pci_match_one_device(dynid[j], dev)     // 遍历动态 ID
+
+注册流程:
+  __pci_register_driver(drv)
+    └── drv->driver.bus = &pci_bus_type    // 绑定到 PCI 总线类型
+    └── driver_register(&drv->driver)       // 设备模型核心注册
+        └── bus_add_driver()
+            └── driver_attach()             // 遍历已有设备匹配
+```
+
+```
 ```

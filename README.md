@@ -81,8 +81,20 @@
 
 - [时间子系统概览](./notes/time/time_subsystem_analysis.md)
 
-## 7. 驱动
+## 8. 进程调度子系统
 
-- [device 结构体](./notes/driver/device.md)
+- [调度子系统概览](./notes/schedule/schedule_subsystem_analysis.md)
+- [PREEMPT_RT实时抢占分析](./notes/schedule/preempt_rt_analysis.md)
+
+## 9. PCIe驱动
+
+- [PCI驱动相关结构体](./notes/driver/pcie-struct.md)
 - [块设备驱动分析](./notes/driver/block_layer_analysis.md)
 - [NVMe 驱动执行过程](./notes/driver/nvme-pcie-host-analysis.md)
+
+## 10. 网络子系统
+
+- [网络子系统概览](./notes/network/network_subsystem_analysis.md)
+- [VFS 与 Socket 层分析](./notes/network/socket_layer_analysis.md)
+- [TCP/IP 协议栈分析](./notes/network/tcp_ip_protocol_stack_analysis.md)
+- [Intel 网卡驱动分析](./notes/network/intel_nic_driver_analysis.md)
