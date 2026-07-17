@@ -21,12 +21,11 @@
 
 ## 3. arm64 启动过程
 
-- [初始启动代码 head.S](./notes/head.S.md)
-- [R_AARCH64_RELATIVE 重定位](./notes/rela.dyn.md)
-- [start_kernel 流程](./notes/start_kernel.md)
-- [SMP 启动过程](./notes/smp_start.md)
+- [初始启动代码 head.S](./notes/boot/head.S.md)
+- [R_AARCH64_RELATIVE 重定位](./notes/boot/rela.dyn.md)
+- [start_kernel 流程](./notes/boot/start_kernel.md)
+- [SMP 启动过程](./notes/boot/smp_start.md)
 - [PCI 初始化](./notes/driver/pcie.md)
-- [文件系统](./notes/fs.md)
 
 ## 4. 中断管理
 
@@ -69,7 +68,7 @@
 
 ### 5.8 网络与事件通知
 
-- [网络 Socket 概览](./notes/net-syscall.md) | [epoll / aio / io_uring 概览](./notes/syscall/epoll-aio-io_uring-syscall.md)
+- [网络 Socket 概览](./notes/boot/net-syscall.md) | [epoll / aio / io_uring 概览](./notes/syscall/epoll-aio-io_uring-syscall.md)
 
 ## 6. 内存管理
 
@@ -137,3 +136,29 @@
   - [13-background_kthread](./notes/async/13-background_kthread.md)
   - [14-io_uring](./notes/async/14-io_uring.md)
   - [15-fasync_sigio](./notes/async/15-fasync_sigio.md)
+
+## 13. 内核数据结构与算法
+
+- [数据结构与算法分析](./notes/dsaa/dsaa_analysis.md)
+  - [双向循环链表 (list_head)](#) | [哈希链表 (hlist_head)](#) | [红黑树 (rb_node)](#) | [XArray](#) | [伙伴系统](#) | [位图](#) | [引用计数 (kref)](#) | [Maple Tree](#)
+
+
+## 14. 文件系统
+
+- [文件系统总览](./notes/fs/fs.md)
+  - [01-procfs — 进程文件系统](./notes/fs/special/01-procfs.md)
+  - [02-sysfs — 内核对象文件系统](./notes/fs/special/02-sysfs.md)
+  - [03-debugfs — 内核调试文件系统](./notes/fs/special/03-debugfs.md)
+  - [04-ramfs/tmpfs — 内存文件系统](./notes/fs/special/04-ramfs-tmpfs.md)
+  - [05-bdevfs — 块设备文件系统](./notes/fs/special/05-bdevfs.md)
+  - [06-sockfs — Socket 文件系统](./notes/fs/special/06-sockfs.md)
+  - [07-ext4 — 第四代扩展文件系统](./notes/fs/special/07-ext4.md)
+  - [08-cgroup — 控制组文件系统](./notes/fs/special/08-cgroup.md)
+  - [09-devtmpfs — 设备节点文件系统](./notes/fs/special/09-devtmpfs.md)
+  - [10-configfs — 用户空间配置内核对象文件系统](./notes/fs/special/10-configfs.md)
+  - [11-securityfs — 安全模块文件系统](./notes/fs/special/11-securityfs.md)
+  - [12-bpf — BPF 文件系统](./notes/fs/special/12-bpf.md)
+  - [13-pipefs — 管道文件系统](./notes/fs/special/13-pipefs.md)
+  - [14-hugetlbfs — 大页文件系统](./notes/fs/special/14-hugetlbfs.md)
+  - [15-rpc_pipefs — RPC 管道文件系统](./notes/fs/special/15-rpc_pipefs.md)
+  - [16-devpts — 伪终端文件系统](./notes/fs/special/16-devpts.md)
