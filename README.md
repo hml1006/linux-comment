@@ -28,9 +28,9 @@
 - [PCI 初始化](./notes/driver/pcie.md)
 - [文件系统](./notes/fs.md)
 
-## 4. 异常与中断
+## 4. 中断管理
 
-- [中断子系统概览](./notes/interrupt/interrupt_subsystem_analysis.md)
+- [GIC中断控制器](./notes/interrupt/arm64_interrupt_subsystem_analysis.md)
 - [Exception 和 Interrupt 流程分析](./notes/interrupt/arm64-interrupt-entry-analysis.md)
 
 ## 5. 系统调用
@@ -78,7 +78,6 @@
 ## 7. 时间子系统
 
 - [硬件定时器模块分析](./notes/time/arm64-timer-hardware-config.md)
-
 - [时间子系统概览](./notes/time/time_subsystem_analysis.md)
 
 ## 8. 进程调度子系统
@@ -98,3 +97,43 @@
 - [VFS 与 Socket 层分析](./notes/network/socket_layer_analysis.md)
 - [TCP/IP 协议栈分析](./notes/network/tcp_ip_protocol_stack_analysis.md)
 - [Intel 网卡驱动分析](./notes/network/intel_nic_driver_analysis.md)
+
+## 11. 并发与同步
+
+- [并发与同步总览](./notes/sync/concurrency_sync_analysis.md)
+  - [01-概述与选择指南](./notes/sync/01-overview.md)
+  - [02-原子操作](./notes/sync/02-atomic-ops.md)
+  - [03-自旋锁](./notes/sync/03-spinlock.md)
+  - [04-互斥锁](./notes/sync/04-mutex.md)
+  - [05-RT互斥锁与优先级继承](./notes/sync/05-rtmutex.md)
+  - [06-读写信号量](./notes/sync/06-rwsem.md)
+  - [07-信号量](./notes/sync/07-semaphore.md)
+  - [08-RCU机制](./notes/sync/08-rcu.md)
+  - [09-顺序锁](./notes/sync/09-seqlock.md)
+  - [10-Per-CPU变量](./notes/sync/10-percpu.md)
+  - [11-完成量](./notes/sync/11-completion.md)
+  - [12-等待队列](./notes/sync/12-waitqueue.md)
+  - [13-本地锁](./notes/sync/13-local_lock.md)
+  - [14-Per-CPU RWSEM](./notes/sync/14-percpu-rwsem.md)
+  - [15-Lockdep锁验证](./notes/sync/15-lockdep.md)
+  - [16-内存屏障](./notes/sync/16-memory-barriers.md)
+  - [17-Guard作用域管理](./notes/sync/17-guard-scope.md)
+
+## 12. 异步执行机制
+
+- [异步执行机制概要](./notes/async/async-execution-summary.md)
+  - [01-irq_work](./notes/async/01-irq_work.md)
+  - [02-softirq](./notes/async/02-softirq.md)
+  - [03-bh-workqueue](./notes/async/03-bh-workqueue.md)
+  - [04-tasklet](./notes/async/04-tasklet.md)
+  - [05-timer-hrtimer](./notes/async/05-timer-hrtimer.md)
+  - [06-rcu-callback](./notes/async/06-rcu-callback.md)
+  - [07-workqueue](./notes/async/07-workqueue.md)
+  - [08-threaded-irq](./notes/async/08-threaded-irq.md)
+  - [09-kthread](./notes/async/09-kthread.md)
+  - [10-async_schedule](./notes/async/10-async_schedule.md)
+  - [11-task_work](./notes/async/11-task_work.md)
+  - [12-notifier_chain](./notes/async/12-notifier_chain.md)
+  - [13-background_kthread](./notes/async/13-background_kthread.md)
+  - [14-io_uring](./notes/async/14-io_uring.md)
+  - [15-fasync_sigio](./notes/async/15-fasync_sigio.md)

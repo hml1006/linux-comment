@@ -622,174 +622,219 @@ kernel_exit 0
 
 ## 10 完整流程图
 
-```mermaid
-graph TB
-    subgraph A[异常中断发生]
-        A1[CPU 自动保存 PSTATE 到 SPSR_EL1]
-        A2[保存返回地址到 ELR_EL1]
-        A3[设置 DAIF 屏蔽所有异常]
-        A4[根据 EL 和 SP 选择向量]
-        A5[跳转 VBAR_EL1 + 偏移]
-    end
+```text
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                             异常中断发生 (CPU 硬件)                              │
+│                                                                                 │
+│  1. CPU 自动保存 PSTATE → SPSR_EL1                                              │
+│  2. 保存返回地址 → ELR_EL1                                                      │
+│  3. 设置 DAIF 屏蔽所有异常                                                      │
+│  4. 根据 EL(当前异常级别) 和 SP(栈指针选择) 选择向量表索引                       │
+│  5. 跳转 VBAR_EL1 + 偏移量 → 进入异常向量表                                    │
+└────────────────────────────────────────┬────────────────────────────────────────┘
+                                         │
+                                         ▼
+              ┌──────────────────────────────────────────────────────────┐
+              │              KPTI tramp 路径 (仅 CONFIG_UNMAP_KERNEL_AT_EL0) │
+              │                                                          │
+              │    来源 EL0?                                             │
+              │    ┌──── 是 ────┐                                         │
+              │    │            │                                         │
+              │    ▼            │               来源 EL1 或无 KPTI        │
+              │  从 tramp_pg_dir  │  ────────────────────────────────────────►
+              │  切换到 swapper_pg_dir                                    │
+              │    │                                                      │
+              │    ▼                                                      │
+              │  vbar_el1 切回完整 vectors                                 │
+              │    │                                                      │
+              │    ▼                                                      │
+              │  ret 跳回 vectors (跳过第1条指令, 避免重复 KPTI 清理)      │
+              └────────────────────┬─────────────────────────────────────┘
+                                   │
+                                   ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                       向量表分发 — kernel_ventry 宏                            │
+│                                                                               │
+│                            ┌──── EL0? ────┐                                   │
+│                            │               │                                   │
+│                            ▼               │                                   │
+│                      EL0 清理:             │  EL1: 直接分配栈帧               │
+│                      恢复 x30             │                                   │
+│                            │               │                                   │
+│                            └───────┬───────┘                                   │
+│                                    ▼                                           │
+│                             分配 PT_REGS_SIZE 栈帧                             │
+│                                    │                                           │
+│                               ┌────┴────┐                                      │
+│                               │ 栈溢出检测│                                     │
+│                               └────┬────┘                                      │
+│                            正常    │    溢出                                    │
+│                              │     │     │                                      │
+│                              ▼     │     ▼                                     │
+│                        跳转 entry  │  切换到 overflow_stack                    │
+│                         handler    │     │                                      │
+│                                    │  ┌──┴──┐                                   │
+│                                    │  │已在 │                                   │
+│                                    │  │溢出栈│    首次溢出                      │
+│                                    │  └──┬──┘  ──────────────────────►          │
+│                                    │  panic                              跳转  │
+│                                    │                                    entry  │
+│                                    │                                    handler│
+└────────────────────────────────────┬───────────────────────────────────────────┘
+                                     │
+                                     ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                    entry_handler 通用入口                             │
+│                                                                      │
+│   kernel_entry {el, regsize}  ← 现场保存 (见下方详细展开)             │
+│        │                                                            │
+│        ▼                                                            │
+│   调用 C handler (bl el{el}{ht}_{regsize}_{label}_handler)           │
+│        │                                                            │
+│     ┌──┴──┐                                                         │
+│     │EL0? │                                                         │
+│     └──┬──┘                                                         │
+│    是  │  否                                                         │
+│     │  │  │                                                         │
+│     ▼  │  ▼                                                         │
+│ ret_to │ ret_to                                                     │
+│ _user  │ _kernel                                                    │
+│        │                                                            │
+└────────┼────────────────────────────────────────────────────────────┘
+         │
+         │
+┌────────┴───────────────────────────────────────────────────────────────────────┐
+│                      kernel_entry 现场保存 (详细展开)                           │
+│                                                                                │
+│   保存 x0-x29 到栈                                                             │
+│        │                                                                       │
+│     ┌──┴──┐                                                                    │
+│     │EL0? │                                                                    │
+│     └──┬──┘                                                                    │
+│     是  │  否                                                                   │
+│     │  │  │                                                                   │
+│     ▼  │  ▼                                                                   │
+│  清空通用寄存器  │  保存 ELR_EL1, SPSR_EL1                                     │
+│  从 __entry_task  │                                                             │
+│  加载 current task │                                                             │
+│  sp_el0 = current │                                                             │
+│  关闭单步调试     │                                                             │
+│  MTE/PAC/SSBD 配置 │                                                             │
+│     │              │                                                             │
+│     └──────┬───────┘                                                             │
+│            ▼                                                                     │
+│     保存 ELR_EL1, SPSR_EL1                                                       │
+│            │                                                                     │
+│            ▼                                                                     │
+│     软件 PAN: 禁止用户页表 (ttbr0_el1 置零)                                       │
+│            │                                                                     │
+│            ▼                                                                     │
+│     PMR 保存 (Pseudo-NMI)                                                        │
+└──────────────────────────────────────────────────────────────────────────────────┘
 
-    subgraph B[KPTI tramp 路径 - CONFIG_UNMAP_KERNEL_AT_EL0]
-        B1{来源 EL0}
-        B2[从 tramp_pg_dir 切换到 swapper_pg_dir]
-        B3[vbar_el1 切回完整 vectors]
-        B4[ret 跳回 vectors 跳过第1条指令]
-    end
+C handler 分发 (选择路径):
 
-    subgraph C[向量表分发 - kernel_ventry]
-        C1{el == 0}
-        C2[EL0 清理 - 恢复 x30]
-        C3[分配 PT_REGS_SIZE 栈帧]
-        C4{栈溢出检测}
-        C5[切换到 overflow_stack]
-        C6[__bad_stack - panic]
-        C7[跳转 entry_handler]
-    end
+┌────────────────────────────────┐  ┌────────────────────────────────┐
+│  路径 A: 内核态中断             │  │  路径 B: 用户态中断             │
+│  el1h_64_irq_handler           │  │  el0t_64_irq_handler           │
+│        │                        │  │        │                        │
+│        ▼                        │  │        ▼                        │
+│  el1_interrupt(regs,            │  │  el0_interrupt(regs,           │
+│   handle_arch_irq)              │  │   handle_arch_irq)             │
+│        │                        │  │        │                        │
+│        ▼                        │  │        ▼                        │
+│  重新使能 IRQ (DAIF_PROCCTX     │  │  arm64_enter_from_user_mode()  │
+│  _NOIRQ)                       │  │        │                        │
+│        │                        │  │        ▼                        │
+│     ┌──┴──┐                     │  │  重新使能 IRQ                    │
+│     │伪NMI│                     │  │        │                        │
+│     └──┬──┘                     │  │        ▼                        │
+│    是  │  否                     │  │  irq_enter_rcu()               │
+│     │  │  │                     │  │  do_interrupt_handler()         │
+│     ▼  │  ▼                     │  │  irq_exit_rcu()                 │
+│  __el1 │ __el1                  │  │        │                        │
+│  _pnmi  │ _irq                   │  │        ▼                        │
+│     │  │  │                     │  │  arm64_exit_to_user_mode()     │
+│     └──┴──┘                     │  └────────────────────────────────┘
+│        │                        │
+│        ▼                        │
+│  do_interrupt_handler(regs,     │
+│   handle_arch_irq)              │
+│        │                        │
+│        ▼                        │
+│  GIC 分发 → 设备驱动 handler    │
+│        │                        │
+│        ▼                        │
+│  exit_to_kernel_mode()          │
+└────────────────────────────────┘
 
-    subgraph D[entry_handler 通用入口]
-        D1[kernel_entry el regsize]
-        D2[调用 C handler]
-        D3{el == 0}
-        D4[ret_to_user]
-        D5[ret_to_kernel]
-    end
+┌────────────────────────────────┐  ┌────────────────────────────────┐
+│  路径 C: 用户态同步异常         │  │  路径 D: 内核态同步异常         │
+│  el0t_64_sync_handler          │  │  el1h_64_sync_handler          │
+│        │                        │  │        │                        │
+│        ▼                        │  │        ▼                        │
+│  读 ESR_EL1 分析异常类型        │  │  读 ESR_EL1 分析异常类型        │
+│        │                        │  │        │                        │
+│  ┌─────┴──────┐                 │  │  ┌─────┴──────┐                 │
+│  │ EC 字段     │                 │  │  │ EC 字段     │                 │
+│  └─────┬──────┘                 │  │  └─────┬──────┘                 │
+│        │                        │  │        │                        │
+│   ┌────┼────┬──────┐           │  │   ┌────┼────┬──────┐           │
+│   ▼    ▼    ▼      ▼           │  │   ▼    ▼    ▼      ▼           │
+│ SVC64 DABT IABT  其他           │  │ DABT IABT UNKNOWN 其他         │
+│       LOW   LOW                 │  │ CUR  CUR                      │
+│ 系统  数据  指令  浮点/SVE      │  │ 内核  内核  未定义             │
+│ 调用  缺页  缺页  未定义等       │  │ 缺页  缺页  指令              │
+└────────────────────────────────┘  └────────────────────────────────┘
 
-    subgraph E[kernel_entry 现场保存]
-        E1[保存 x0-x29 到栈]
-        E2{el == 0}
-        E3[清空 GP 寄存器]
-        E4[从 __entry_task 加载 current]
-        E5[sp_el0 = current task]
-        E6[关闭单步调试]
-        E7[MTE / PAC / SSBD 配置]
-        E8[保存 ELR_EL1 SPSR_EL1]
-        E9[软件 PAN 配置 禁止用户页表]
-        E10[PMR 保存 Pseudo-NMI]
-    end
+返回路径 (由前面 ret_to_user / ret_to_kernel 汇聚):
 
-    subgraph F[中断处理 - el1h_64_irq_handler]
-        F1[el1h_64_irq_handler]
-        F2[el1_interrupt regs handle_arch_irq]
-        F3[重新使能 IRQ DAIF_PROCCTX_NOIRQ]
-        F4{伪 NMI}
-        F5[__el1_pnmi]
-        F6[__el1_irq]
-        F7[do_interrupt_handler  GIC 分发]
-        F8[设备驱动中断 handler]
-        F9[exit_to_kernel_mode]
-    end
-
-    subgraph G[中断处理 - el0t_64_irq_handler]
-        G1[el0t_64_irq_handler]
-        G2[el0_interrupt regs handle_arch_irq]
-        G3[arm64_enter_from_user_mode]
-        G4[重新使能 IRQ]
-        G5[irq_enter_rcu  do_interrupt_handler]
-        G6[irq_exit_rcu]
-        G7[arm64_exit_to_user_mode]
-    end
-
-    subgraph H[同步异常处理 - el0t_64_sync_handler]
-        H1[el0t_64_sync_handler]
-        H2[读 ESR_EL1 分析异常类型]
-        H3{EC 字段}
-        H4[ESR_ELx_EC_SVC64  系统调用]
-        H5[ESR_ELx_EC_DABT_LOW  数据缺页]
-        H6[ESR_ELx_EC_IABT_LOW  指令缺页]
-        H7[其他 浮点 SVE 未定义等]
-    end
-
-    subgraph I[同步异常处理 - el1h_64_sync_handler]
-        I1[el1h_64_sync_handler]
-        I2[读 ESR_EL1]
-        I3{EC 字段}
-        I4[ESR_ELx_EC_DABT_CUR  内核缺页]
-        I5[ESR_ELx_EC_IABT_CUR]
-        I6[ESR_ELx_EC_UNKNOWN  未定义指令]
-    end
-
-    subgraph J[kernel_exit 返回路径]
-        J1[kernel_exit el]
-        J2[EL1 禁用 DAIF]
-        J3[恢复 PMR Pseudo-NMI]
-        J4[加载 ELR_EL1 SPSR_EL1]
-        J5{el == 0}
-        J6[恢复用户页表 PAN]
-        J7[恢复用户 SP sp_el0]
-        J8[安装用户 PAC 密钥]
-        J9[MTE SSBD 用户配置]
-        J10[恢复 x0-x29]
-        J11{KPTI 开启}
-        J12[vbar_el1 = tramp_vectors]
-        J13[br tramp_exit]
-        J14[恢复 x30 SP]
-        J15[eret 返回]
-    end
-
-    A1 --> A2 --> A3 --> A4 --> A5
-    A5 --> B1
-    B1 -- EL0 且 KPTI --> B2 --> B3 --> B4
-    B4 --> C1
-    B1 -- EL1 或无 KPTI --> C1
-    A4 -- el1t 不使用 --> C1
-
-    C1 -- EL0 --> C2
-    C1 -- EL1 --> C3
-    C2 --> C3
-    C3 --> C4
-    C4 -- 正常 --> C7
-    C4 -- 溢出 --> C5
-    C5 -- 已在溢出栈 --> C6
-    C5 -- 首次溢出 --> C7
-
-    C7 --> D1 --> D2
-    D2 --> D3
-    D3 -- EL0 --> D4
-    D3 -- EL1 --> D5
-
-    D1 --> E1 --> E2
-    E2 -- EL0 --> E3 --> E4 --> E5 --> E6 --> E7
-    E2 -- EL1 --> E8
-    E7 --> E8
-    E8 --> E9 --> E10
-
-    D2 -.- F1
-    D2 -.- G1
-    D2 -.- H1
-    D2 -.- I1
-
-    F1 --> F2 --> F3 --> F4
-    F4 -- 是 --> F5 --> F7
-    F4 -- 否 --> F6 --> F7
-    F7 --> F8 --> F9
-
-    G1 --> G2 --> G3 --> G4 --> G5
-    G5 --> G6 --> G7
-
-    H1 --> H2 --> H3
-    H3 -- SVC64 --> H4
-    H3 -- DABT_LOW --> H5
-    H3 -- IABT_LOW --> H6
-    H3 -- 其他EC --> H7
-
-    I1 --> I2 --> I3
-    I3 -- DABT_CUR --> I4
-    I3 -- IABT_CUR --> I5
-    I3 -- UNKNOWN --> I6
-
-    D4 --> J1
-    D5 --> J1
-    J1 --> J2 --> J3 --> J4 --> J5
-    J5 -- EL0 --> J6 --> J7 --> J8 --> J9
-    J5 -- EL1 --> J10
-    J9 --> J10
-    J10 --> J11
-    J11 -- 是 --> J12 --> J13
-    J13 --> J14 --> J15
-    J11 -- 否 --> J15
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                              kernel_exit 返回路径                                 │
+│                                                                                  │
+│   kernel_exit {el}                                                               │
+│        │                                                                         │
+│        ▼                                                                         │
+│   [EL1] 禁用 DAIF                                                                │
+│        │                                                                         │
+│        ▼                                                                         │
+│   恢复 PMR (Pseudo-NMI)                                                          │
+│        │                                                                         │
+│        ▼                                                                         │
+│   加载 ELR_EL1, SPSR_EL1 (恢复返回地址和 PSTATE)                                  │
+│        │                                                                         │
+│     ┌──┴──┐                                                                      │
+│     │EL0? │                                                                      │
+│     └──┬──┘                                                                      │
+│     是  │  否                                                                     │
+│     │  │  │                                                                     │
+│     ▼  │  ▼                                                                     │
+│  恢复用户页表  │  恢复 x0-x29                                                    │
+│  (PAN 恢复)   │                                                                  │
+│  恢复用户 SP  │                                                                  │
+│  安装用户 PAC │                                                                  │
+│  MTE/SSBD 配置│                                                                  │
+│     │              │                                                             │
+│     └──────┬───────┘                                                             │
+│            ▼                                                                     │
+│     恢复 x0-x29                                                                  │
+│            │                                                                     │
+│         ┌──┴──┐                                                                  │
+│         │KPTI │  (仅 EL0 返回)                                                   │
+│         └──┬──┘                                                                  │
+│         是  │  否                                                                 │
+│         │  │  │                                                                 │
+│         ▼  │  ▼                                                                 │
+│  vbar_el1 = │  eret 返回                                                         │
+│  tramp_vectors │                                                                 │
+│         │     │                                                                 │
+│         ▼     │                                                                 │
+│  br tramp_exit │                                                                │
+│  (切换页表)   │                                                                 │
+│         │     │                                                                 │
+│         ▼     │                                                                 │
+│  eret 返回 ◄──┘                                                                 │
+└──────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
