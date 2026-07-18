@@ -207,21 +207,27 @@
 ## 6. 内存管理
 
 ### 6.1 概述与核心框架
+
 - [内存管理总体概览与核心框架](./notes/memory/01-overview-core.md)
 
 ### 6.2 内存回收与交换
+
 - [内存回收与交换](./notes/memory/02-reclaim-swap.md)
 
 ### 6.3 内核对象与页缓存
+
 - [内核对象与页缓存](./notes/memory/03-page-cache-objects.md)
 
 ### 6.4 控制与隔离
+
 - [控制与隔离](./notes/memory/04-control-isolation.md)
 
 ### 6.5 高级特性
+
 - [高级特性](./notes/memory/05-advanced-features.md)
 
 ### 6.6 附录
+
 - [总结](./notes/memory/06-summary.md)
 
 ## 7. 时间子系统
@@ -229,8 +235,9 @@
 - [硬件定时器模块分析](./notes/time/arm64-timer-hardware-config.md)
 - [时间子系统概览](./notes/time/time_subsystem_analysis.md)
 
-## 8. 进程调度子系统
+## 8. 进程管理子系统
 
+- [进程创建退出](./notes/schedule/fork_exec_analysis.md)
 - [调度子系统概览](./notes/schedule/schedule_subsystem_analysis.md)
 - [PREEMPT_RT实时抢占分析](./notes/schedule/preempt_rt_analysis.md)
 
@@ -240,18 +247,23 @@
 - [PCIe总线初始化流程](./notes/driver/pcie.md)
 
 ### 9.1 块设备驱动分析 - 核心框架
+
 - [块设备核心框架](./notes/driver/block-01-core-framework.md)
 
 ### 9.2 I/O调度与策略控制
+
 - [I/O调度与策略控制](./notes/driver/block-02-io-scheduling.md)
 
 ### 9.3 设备管理与调试
+
 - [设备管理与调试](./notes/driver/block-03-device-management.md)
 
 ### 9.4 文件系统交互
+
 - [文件系统交互](./notes/driver/block-04-fs-interaction.md)
 
 ### 9.5 驱动实例分析
+
 - [NVMe驱动实例分析](./notes/driver/block-05-nvme-driver.md)
 - [NVMe PCIe Host驱动深度分析](./notes/driver/nvme-pcie-host-analysis.md)
 
@@ -261,6 +273,7 @@
 - [VFS 与 Socket 层分析](./notes/network/socket_layer_analysis.md)
 - [TCP/IP 协议栈分析](./notes/network/tcp_ip_protocol_stack_analysis.md)
 - [Intel 网卡驱动分析](./notes/network/intel_nic_driver_analysis.md)
+- [完整数据包收发流程](./notes/network/complete_data_flow_analysis.md)
 
 ## 11. 并发与同步
 
