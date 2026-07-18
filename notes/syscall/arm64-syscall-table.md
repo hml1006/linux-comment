@@ -8,15 +8,15 @@
 
 | 分类 | 范围 | 系统调用数 |
 |--|--|--|
-| [文件描述符操作](#1-文件描述符操作) | close, dup, dup3 | 3 |
+| [文件描述符操作](#1-文件描述符操作) | close, dup, dup3, close_range | 4 |
 | [文件 I/O](#2-文件-io) | read, write, pread64, pwrite64, readv, writev, preadv, pwritev, splice, tee, vmsplice, sendfile, copy_file_range | 13 |
-| [文件元数据与属性](#3-文件元数据与属性) | stat, fstat, fstatat, statx, getdents64, access, faccessat, faccessat2, chdir, fchdir, chmod, fchmod, fchmodat, fchmodat2, chown, fchown, fchownat, umask, linkat, unlinkat, symlinkat, mknodat, mkdirat, renameat, renameat2, readlinkat, truncate, ftruncate, fallocate, file_getattr, file_setattr | 32 |
+| [文件元数据与属性](#3-文件元数据与属性) | stat, fstat, fstatat, statx, getdents64, access, faccessat, faccessat2, chdir, fchdir, chmod, fchmod, fchmodat, fchmodat2, chown, fchown, fchownat, umask, linkat, unlinkat, symlinkat, mknodat, mkdirat, renameat, renameat2, readlinkat, truncate, ftruncate, fallocate, file_getattr, file_setattr | 33 |
 | [扩展属性](#4-扩展属性-xattr) | setxattr, lsetxattr, fsetxattr, getxattr, lgetxattr, fgetxattr, listxattr, llistxattr, flistxattr, removexattr, lremovexattr, fremovexattr, setxattrat, getxattrat, listxattrat, removexattrat | 16 |
-| [文件系统挂载与结构](#5-文件系统挂载与结构) | mount, umount, pivot_root, statfs, fstatfs, chroot, sync, syncfs, fsync, fdatasync, sync_file_range, swapon, swapoff, acct, quotactl, quotactl_fd | 16 |
-| [目录与路径操作](#6-目录与路径操作) | getcwd, openat, openat2, open_tree, open_tree_attr, close_range, name_to_handle_at, open_by_handle_at, ioctl, flock | 10 |
+| [文件系统挂载与结构](#5-文件系统挂载与结构) | mount, umount, pivot_root, statfs, fstatfs, chroot, sync, syncfs, fsync, fdatasync, sync_file_range, swapon, swapoff, acct, quotactl, quotactl_fd, statmount, listmount | 17 |
+| [目录与路径操作](#6-目录与路径操作) | getcwd, openat, openat2, open_tree, open_tree_attr, name_to_handle_at, open_by_handle_at, ioctl, flock, open | 10 |
 | [内存管理](#7-内存管理) | mmap, munmap, mremap, brk, mprotect, msync, mlock, munlock, mlockall, munlockall, mincore, madvise, process_madvise, remap_file_pages, mbind, set_mempolicy, get_mempolicy, migrate_pages, move_pages, set_mempolicy_home_node, pkey_mprotect, pkey_alloc, pkey_free, mseal, map_shadow_stack | 25 |
-| [进程控制](#8-进程控制) | exit, exit_group, clone, clone3, fork(vfork), execve, execveat, wait4, waitid, set_tid_address, unshare, getpid, getppid, gettid, sysinfo, prctl, process_mrelease | 18 |
-| [进程调度](#9-进程调度) | sched_setparam, sched_setscheduler, sched_getscheduler, sched_getparam, sched_setaffinity, sched_getaffinity, sched_yield, sched_get_priority_max, sched_get_priority_min, sched_rr_get_interval, sched_setattr, sched_getattr, nice | 13 |
+| [进程控制](#8-进程控制) | exit, exit_group, clone, clone3, fork, execve, execveat, wait4, waitid, set_tid_address, unshare, getpid, getppid, gettid, sysinfo, prctl, process_mrelease | 19 |
+| [进程调度](#9-进程调度) | sched_setparam, sched_setscheduler, sched_getscheduler, sched_getparam, sched_setaffinity, sched_getaffinity, sched_yield, sched_get_priority_max, sched_get_priority_min, sched_rr_get_interval, sched_setattr, sched_getattr, nice | 14 |
 | [进程凭证与权限](#10-进程凭证与权限) | setuid, getuid, setgid, getgid, seteuid, geteuid, setegid, getegid, setreuid, setregid, setresuid, getresuid, setresgid, getresgid, setfsuid, setfsgid, setpgid, getpgid, setsid, getsid, setgroups, getgroups, capget, capset, personality | 25 |
 | [信号处理](#11-信号处理) | kill, tkill, tgkill, rt_sigaction, rt_sigprocmask, rt_sigpending, rt_sigtimedwait, rt_sigqueueinfo, rt_sigreturn, rt_sigsuspend, sigaltstack, pidfd_send_signal, signalfd4 | 13 |
 | [定时器与时间](#12-定时器与时间) | timer_create, timer_settime, timer_gettime, timer_getoverrun, timer_delete, timerfd_create, timerfd_settime, timerfd_gettime, clock_settime, clock_gettime, clock_getres, clock_nanosleep, clock_adjtime, nanosleep, gettimeofday, settimeofday, adjtimex | 17 |
@@ -29,15 +29,15 @@
 | [POSIX 消息队列](#19-posix-消息队列) | mq_open, mq_unlink, mq_timedsend, mq_timedreceive, mq_notify, mq_getsetattr | 6 |
 | [权限与安全](#20-权限与安全) | prctl, seccomp, landlock_create_ruleset, landlock_add_rule, landlock_restrict_self, lsm_get_self_attr, lsm_set_self_attr, lsm_list_modules, getrandom | 9 |
 | [密钥管理](#21-密钥管理) | add_key, request_key, keyctl | 3 |
-| [BPF 与追踪](#22-bpf-与追踪) | bpf, perf_event_open, ptrace, kcmp | 4 |
+| [BPF 与追踪](#22-bpf-与追踪) | bpf, perf_event_open, ptrace | 3 |
 | [内核模块与 kexec](#23-内核模块与-kexec) | init_module, finit_module, delete_module, kexec_load, kexec_file_load | 5 |
 | [线程同步 (futex)](#24-线程同步-futex) | futex, futex_waitv, futex_wake, futex_wait, futex_requeue, set_robust_list, get_robust_list | 7 |
-| [内核通知与监控](#25-内核通知与监控) | syslog, dmesg, reboot, sysfs, sysctl | 5 |
+| [内核通知与监控](#25-内核通知与监控) | syslog, dmesg, reboot, sysfs, sysctl | 8 |
 | [NUMA 内存策略](#26-numa-内存策略) | mbind, set_mempolicy, get_mempolicy, migrate_pages, move_pages, set_mempolicy_home_node | 6 |
 | [系统标识与信息](#27-系统标识与信息) | uname, sethostname, setdomainname, getcpu, gettid, times, sysinfo, cachestat, statmount, listmount, listns | 11 |
-| [用户与组关系](#28-用户与组关系) | pidfd_open, pidfd_getfd, setns, unshare, rseq, rseq_slice_yield, membarrier | 7 |
+| [用户与组关系](#28-用户与组关系) | pidfd_open, pidfd_getfd, setns, unshare, rseq, rseq_slice_yield, membarrier, kcmp | 8 |
 | [内存文件系统](#29-内存文件系统) | memfd_create, memfd_secret | 2 |
-| [其他/杂项](#30-其他杂项) | restart_syscall, syscall, vhangup, pivot_root, kcmp, cacheflush, arc_settls, arc_gettls, arc_usr_cmpxchg, set_thread_area, riscv_hwprobe, riscv_flush_icache, or1k_atomic | 13 |
+| [其他/杂项](#30-其他杂项) | restart_syscall, syscall, vhangup, readahead, getitimer, setitimer, getrlimit, setrlimit, getrusage, prlimit64, process_vm_readv, process_vm_writev, cacheflush, arc_settls, arc_gettls, arc_usr_cmpxchg, set_thread_area, riscv_hwprobe, riscv_flush_icache, or1k_atomic | 20 |
 
 ---
 
@@ -103,6 +103,11 @@
 | 47 | fallocate | `fd: int, mode: int, offset: off_t, len: off_t` | 预分配/释放文件空间 |
 | 468 | file_getattr | `fd: int, path: const char*, flags: unsigned int, ...` | 获取文件属性（扩展） |
 | 469 | file_setattr | `fd: int, path: const char*, flags: unsigned int, ...` | 设置文件属性（扩展） |
+| — | stat | `path: const char*, statbuf: struct stat*` | 获取文件状态（通过 newfstatat 实现，无独立 ARM64 编号） |
+| — | access | `path: const char*, mode: int` | 检查文件访问权限（通过 faccessat 实现，无独立 ARM64 编号） |
+| — | chmod | `path: const char*, mode: mode_t` | 改变文件权限（通过 fchmodat 实现，无独立 ARM64 编号） |
+| — | chown | `path: const char*, owner: uid_t, group: gid_t` | 改变文件所有者（通过 fchownat 实现，无独立 ARM64 编号） |
+| — | fstatat | `dfd: int, path: const char*, statbuf: struct stat*, flags: int` | 获取文件状态（通过 newfstatat 实现，无独立 ARM64 编号） |
 
 ### 4. 扩展属性 (xattr)
 
@@ -145,6 +150,7 @@
 | 443 | quotactl_fd | `fd: int, cmd: int, id: unsigned int, addr: void*` | 通过 fd 进行磁盘配额操作 |
 | 457 | statmount | `mnt_id: __u64, buf: struct statmnt*, size: size_t, flags: unsigned int` | 获取挂载点统计信息 |
 | 458 | listmount | `root_mnt_id: __u64, last_mnt_id: __u64, list: __u64*, size: size_t, flags: unsigned int` | 列出已挂载文件系统 |
+| — | umount | `target: const char*` | 卸载文件系统（旧版，通过 umount2 实现，无独立 ARM64 编号） |
 
 ### 6. 目录与路径操作
 
@@ -159,6 +165,7 @@
 | 265 | open_by_handle_at | `mount_fd: int, handle: struct file_handle*, flags: int` | 通过文件句柄打开文件 |
 | 29 | ioctl | `fd: int, cmd: unsigned int, arg: ...` | 设备控制接口 |
 | 32 | flock | `fd: int, operation: int` | 文件建议锁 |
+| — | open | `path: const char*, flags: int, mode: mode_t` | 打开文件（通过 openat 实现，无独立 ARM64 编号） |
 
 ### 7. 内存管理
 
@@ -204,6 +211,7 @@
 | 179 | sysinfo | `info: struct sysinfo*` | 获取系统总体信息 |
 | 167 | prctl | `option: int, arg2: unsigned long, arg3: unsigned long, arg4: unsigned long, arg5: unsigned long` | 进程控制操作（多功能） |
 | 448 | process_mrelease | `pidfd: int, flags: unsigned int` | 释放进程死亡时的内存 |
+| — | fork | 无参数 | 创建子进程（通过 clone 实现，无独立 ARM64 编号，vfork 也映射至此） |
 
 ### 9. 进程调度
 
@@ -221,6 +229,7 @@
 | 127 | sched_rr_get_interval | `pid: pid_t, tp: struct timespec*` | 获取 RR 调度的时间片 |
 | 274 | sched_setattr | `pid: pid_t, attr: struct sched_attr*, flags: unsigned int` | 扩展版设置调度属性 |
 | 275 | sched_getattr | `pid: pid_t, attr: struct sched_attr*, size: unsigned int, flags: unsigned int` | 扩展版获取调度属性 |
+| — | nice | `inc: int` | 降低/恢复进程优先级（通过 setpriority 模拟，无独立 ARM64 编号） |
 
 ### 10. 进程凭证与权限
 
@@ -249,6 +258,8 @@
 | 90 | capget | `header: cap_user_header_t, data: cap_user_data_t` | 获取进程能力 |
 | 91 | capset | `header: cap_user_header_t, data: const cap_user_data_t` | 设置进程能力 |
 | 92 | personality | `persona: unsigned long` | 设置进程执行域 |
+| — | seteuid | `euid: uid_t` | 设置有效用户 ID（通过 setreuid 实现，无独立 ARM64 编号） |
+| — | setegid | `egid: gid_t` | 设置有效组 ID（通过 setregid 实现，无独立 ARM64 编号） |
 
 ### 11. 信号处理
 
@@ -438,6 +449,9 @@
 |--|--|--|--|
 | 116 | syslog | `type: int, buf: char*, len: int` | 内核日志管理（dmesg） |
 | 142 | reboot | `magic: int, magic2: int, cmd: unsigned int, arg: void*` | 重启/关机/暂停系统 |
+| — | dmesg | `type: int, buf: char*, len: int` | 内核日志管理（syslog 的别名，通过 syslog 实现，无独立 ARM64 编号） |
+| — | sysfs | `option: int, ...` | 获取文件系统类型信息（已废弃，无独立 ARM64 编号） |
+| — | sysctl | `args: struct __sysctl_args*` | 内核参数查询/设置（已废弃，通过 /proc/sys 替代，无独立 ARM64 编号） |
 
 ### 26. NUMA 内存策略
 
@@ -496,6 +510,15 @@
 | 261 | prlimit64 | `pid: pid_t, resource: int, new_limit: const struct rlimit64*, old_limit: struct rlimit64*` | 扩展版 get/setrlimit（64位） |
 | 270 | process_vm_readv | `pid: pid_t, liov: const struct iovec*, liovcnt: int, riov: const struct iovec*, riovcnt: int, flags: unsigned long` | 跨进程读内存 |
 | 271 | process_vm_writev | `pid: pid_t, liov: const struct iovec*, liovcnt: int, riov: const struct iovec*, riovcnt: int, flags: unsigned long` | 跨进程写内存 |
+| — | syscall | `number: unsigned long, ...` | 间接系统调用（通过编号调用任意 syscall，无独立 ARM64 编号） |
+| 244 | cacheflush | `addr: unsigned long, scope: unsigned long, flags: unsigned long` | 缓存刷写（ARC/CSKY/NIOS2 架构专用，ARM64 上为 stub） |
+| 245 | arc_settls | `tls: unsigned long` | 设置线程本地存储（ARC 架构专用） |
+| 246 | arc_gettls | 无参数 | 获取线程本地存储（ARC 架构专用） |
+| 248 | arc_usr_cmpxchg | `oldval: unsigned long, newval: unsigned long, ...` | 用户态比较交换（ARC 架构专用） |
+| 244 | set_thread_area | `u_info: struct user_desc*` | 设置线程本地存储段（CSKY 架构专用） |
+| 258 | riscv_hwprobe | `pairs: struct riscv_hwprobe*, pair_count: size_t, cpu: unsigned long, flags: unsigned long` | RISC-V 硬件探测 |
+| 259 | riscv_flush_icache | `start: unsigned long, end: unsigned long, flags: unsigned long` | 刷写指令缓存（RISC-V 专用） |
+| 244 | or1k_atomic | `type: unsigned long, ...` | OpenRISC 原子操作 |
 
 ---
 
