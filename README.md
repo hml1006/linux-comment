@@ -339,3 +339,129 @@
   - [14-hugetlbfs — 大页文件系统](./notes/fs/special/14-hugetlbfs.md)
   - [15-rpc_pipefs — RPC 管道文件系统](./notes/fs/special/15-rpc_pipefs.md)
   - [16-devpts — 伪终端文件系统](./notes/fs/special/16-devpts.md)
+
+## 15. 调试功能
+
+### 15.1 调试功能总览
+
+- [调试功能总览](./notes/debug/debug.md)
+
+### 15.2 编译时静态检查
+
+- [编译时静态检查](./notes/debug/25-compile_check.md)
+  - **Clang 上下文与锁分析 (Context & Locking Analysis)** — Linux 7.0 引入，利用 Clang 22+ 在编译时静态检查内核同步原语使用是否正确
+  - **Clang 静态分析支持** — 内核增强对 Clang 静态分析工具的支持，编译阶段发现代码缺陷
+  - **`DEBUG_BUGVERBOSE_DETAILED`** — 触发 `BUG()` 或 `WARN()` 时提供更详细的错误信息
+
+### 15.3 内存错误检测
+
+- [KASAN — 内存错误检测](./notes/debug/11-kasan.md)
+  — 检测内核中的越界访问和释放后使用等内存错误 (mm/kasan/)
+- [UBSAN — 未定义行为检测](./notes/debug/12-ubsan.md)
+  — 检测整数溢出、除零错误等未定义行为
+- [SLUB Debug — 内存分配器调试](./notes/debug/13-slub_debug.md)
+  — 内存分配器 SLUB 自带调试选项，检测内存损坏、越界访问等
+- [kmemleak — 内存泄漏检测](./notes/debug/06-kmemleak.md)
+- [KCSAN — 并发数据竞争检测](./notes/debug/07-kcsan.md)
+- [DMA 调试 — DMA API 调试](./notes/debug/14-dma_debug.md)
+- [debug_objects — 对象生命周期调试](./notes/debug/15-debug_objects.md)
+
+### 15.4 并发与同步调试
+
+- [lockdep — 锁依赖分析](./notes/debug/08-lockdep.md)
+- [lock_debug — 锁调试功能](./notes/debug/16-lock_debug.md)
+  — 包含 spinlock_debug、mutex-debug、irqflag-debug、lock_events
+- [traceoff_on_warning](./notes/debug/26-trace_debug.md)
+  — 内核启动参数，触发 `WARN()` 时自动关闭追踪功能 (`/proc/sys/kernel/traceoff_on_warning`)
+
+### 15.5 跟踪与性能分析
+
+- [ftrace — 函数级追踪](./notes/debug/04-ftrace.md)
+- [ftrace 子功能](./notes/debug/27-ftrace_features.md)
+  — 函数调用图、事件追踪、调度追踪、中断关闭追踪、抢占延迟追踪、硬件延迟追踪、操作系统噪声追踪
+- [perf — 性能分析工具](./notes/debug/17-perf.md)
+  — 性能分析工具，基于 `perf_events`，分析 CPU 性能计数器、软件事件、tracepoint 等
+- [Tracepoints — 静态跟踪点](./notes/debug/18-tracepoints.md)
+  — 内核中静态定义的跟踪点，使用 `TRACE_EVENT` 宏埋点，开销极低
+- [BPF — 内核可编程框架](./notes/debug/19-bpf.md)
+  — 允许用户在不修改内核源码的情况下注入安全、高性能的代码
+- [hist_debug](./notes/debug/26-trace_debug.md)
+  — 启用 `CONFIG_HIST_TRIGGERS_DEBUG` 后，显示每个事件直方图的内部数据（`/sys/kernel/tracing/events/<event>/hist_debug`）
+
+### 15.6 动态插桩
+
+- [kprobe/uprobe — 内核与用户空间探针](./notes/debug/05-kprobe.md)
+
+### 15.7 日志与打印
+
+- [printk — 内核日志系统](./notes/debug/20-printk.md)
+  — 内核基础日志输出函数，配合 `dmesg` 查看内核日志
+- [动态调试 (Dynamic Debug) — 运行时调试打印](./notes/debug/20-printk.md)
+  — 运行时动态开启/关闭特定文件、函数或行的 `pr_debug()`/`dev_dbg()` 打印
+
+### 15.8 内核调试器
+
+- [KDB — 内核内置调试器](./notes/debug/02-kdb.md)
+- [KGDB — GDB 远程调试](./notes/debug/03-kgdb.md)
+
+### 15.9 Panic 相关调试
+
+- [Panic 触发与行为控制](./notes/debug/28-panic_debug.md)
+  — BUG_ON()、panic_on_oops、panic_on_warn、panic_timeout、panic_print、panic_on_taint 等
+
+#### 15.9.1 触发 Panic
+
+- **BUG_ON()** ([详细说明](./notes/debug/28-panic_debug.md))
+  — 开发者主动触发的 panic，条件为真时调用 `panic()`
+- **Kernel Oops → Panic** ([详细说明](./notes/debug/28-panic_debug.md))
+  — 通过 `CONFIG_PANIC_ON_OOPS=y` 或内核启动参数 `oops=panic`，将 Oops 升级为 panic
+- **`panic_on_warn`** ([详细说明](./notes/debug/28-panic_debug.md))
+  — 让 `WARN_ON` 警告也触发 panic
+- **SysRq 手动触发** ([详细说明](./notes/debug/28-panic_debug.md))
+  — `echo c > /proc/sysrq-trigger` 人为触发 panic，用于测试崩溃转储机制
+
+#### 15.9.2 控制 Panic 行为
+
+- **`panic_timeout`** ([详细说明](./notes/debug/28-panic_debug.md))
+  — panic 后自动重启的等待秒数，可运行时配置、启动参数或编译时预设
+- **`panic_on_oops`** ([详细说明](./notes/debug/28-panic_debug.md))
+  — 控制发生 Oops 时是否 panic
+- **`panic_print`** ([详细说明](./notes/debug/28-panic_debug.md))
+  — 控制 panic 时打印哪些额外调试信息
+- **`panic_on_taint`** ([详细说明](./notes/debug/28-panic_debug.md))
+  — 系统被"污染"（tainted）后触发 panic
+
+#### 15.9.3 崩溃后诊断与信息收集
+
+- [Kdump + crash — 崩溃转储与分析](./notes/debug/21-kdump.md)
+  — Kdump 是内核崩溃转储机制，panic 时启动第二个内核保存内存镜像（vmcore）；crash 工具用于分析 vmcore 文件
+- [pstore / Ramoops — 崩溃日志持久化](./notes/debug/22-pstore.md)
+  — 利用保留的 RAM 区域存储崩溃日志，重启后可从 `/sys/fs/pstore/` 读取上次崩溃信息
+- [pvpanic — 虚拟化崩溃通知](./notes/debug/23-pvpanic.md)
+  — 虚拟化场景下，Guest panic 时通知 Host
+
+### 15.10 动态调试
+
+- [debugfs — 调试文件系统](./notes/debug/09-debugfs.md)
+
+### 15.11 运行时验证
+
+- [Runtime Verification — 运行时行为验证框架](./notes/debug/10-runtime_verification.md)
+  - [nrp — 不可重入监视器](./notes/debug/10-runtime_verification.md)
+  - [opid — 进程 ID 监视器](./notes/debug/10-runtime_verification.md)
+  - [pagefault — 页故障监视器](./notes/debug/10-runtime_verification.md)
+  - [sched — 调度监视器](./notes/debug/10-runtime_verification.md)
+  - [rtapp — 实时应用监视器](./notes/debug/10-runtime_verification.md)
+  - [sco — 系统调用顺序监视器](./notes/debug/10-runtime_verification.md)
+
+### 15.12 虚拟化相关调试
+
+- [kvm_stat — KVM 运行时统计](./notes/debug/24-kvm_stat.md)
+  — 检索 KVM 虚拟机运行时统计信息
+- [KVM 调试](./notes/debug/29-kvm_debug.md)
+  — KVM debugfs 接口、Guest Debug 支持、ARM64 VGIC 调试、Hyp 调试等
+
+### 15.13 特殊调试功能
+
+- [特殊调试功能](./notes/debug/30-special_debug.md)
+  — 调度器调试、时间子系统调试、内核符号表 (kallsyms)、VGIC 调试、Hyp 调试等

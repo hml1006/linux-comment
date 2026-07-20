@@ -5,6 +5,7 @@
 RCU (Read-Copy-Update) 是一种无锁同步机制，允许多个读者并发访问共享数据，而写者通过"复制-修改-提交"的方式更新数据，并延迟回收旧版本。
 
 **核心思想：**
+
 - 读者无锁：读操作没有任何锁开销 (不需要原子操作、内存屏障)
 - 写者复制：修改数据时先复制一份，在副本上修改
 - 延迟回收：等待所有现有读者完成后再释放旧数据
@@ -17,10 +18,10 @@ RCU (Read-Copy-Update) 是一种无锁同步机制，允许多个读者并发访
                                         ┌─ 宽限期 ─┐
 读者 1:  ──R───────R──────────────────────R───────────→
 读者 2:  ──────R──────R─────────────────────────────────→
-写者:     ──────W(移除指针)────────────────W(回收旧数据)──→
-                                        ↑
-                                    宽限期结束
-                                    所有之前的读者已完成
+写者:     ──────W(移除指针)────────────────────────────W(回收旧数据)──→
+                                                   ↑
+                                                宽限期结束
+                                                所有之前的读者已完成
 ```
 
 **宽限期条件：** 所有在写者移除指针之前就已经开始的 RCU 读端都必须已经结束。
@@ -329,6 +330,7 @@ void call_srcu(struct srcu_struct *ssp, struct rcu_head *head,
 ```
 
 **SRCU 使用场景：**
+
 - 读者需要睡眠 (如等待 I/O)
 - 读者需要获取 mutex
 - 读者需要执行可能导致调度的操作
@@ -377,31 +379,31 @@ static inline void __rcu_read_lock(void)
 
 ### 8.7.2 差异
 
-| 特性 | 非 RT | PREEMPT_RT |
-|------|-------|------------|
-| 读者抢占 | 读端禁用抢占 | 读端可抢占 |
-| 宽限期 | 上下文切换 + 用户态 | 显式跟踪读者 |
-| 读端延迟 | 低 | 略高 (跟踪开销) |
-| 兼容性 | 完全 | 需额外配置 |
+| 特性     | 非 RT               | PREEMPT_RT      |
+| -------- | ------------------- | --------------- |
+| 读者抢占 | 读端禁用抢占        | 读端可抢占      |
+| 宽限期   | 上下文切换 + 用户态 | 显式跟踪读者    |
+| 读端延迟 | 低                  | 略高 (跟踪开销) |
+| 兼容性   | 完全                | 需额外配置      |
 
 ## 8.8 使用场景
 
-| 场景 | 使用变体 | 说明 |
-|------|---------|------|
-| 指针保护 | 标准 RCU | 受保护指针的读-复制-更新 |
-| 链表遍历 | 标准 RCU | list_for_each_entry_rcu() |
-| 文件系统路径 | SRCU | 路径遍历中可睡眠 |
-| BPF trampoline | Tasks RCU | 等待所有任务退出 |
-| 网络路由表 | 标准 RCU | 路由表读多写少 |
+| 场景           | 使用变体  | 说明                      |
+| -------------- | --------- | ------------------------- |
+| 指针保护       | 标准 RCU  | 受保护指针的读-复制-更新  |
+| 链表遍历       | 标准 RCU  | list_for_each_entry_rcu() |
+| 文件系统路径   | SRCU      | 路径遍历中可睡眠          |
+| BPF trampoline | Tasks RCU | 等待所有任务退出          |
+| 网络路由表     | 标准 RCU  | 路由表读多写少            |
 
 ## 8.9 关键文件
 
-| 文件 | 说明 |
-|------|------|
-| [include/linux/rcupdate.h](file:///home/louis/code/linux/include/linux/rcupdate.h) | RCU 核心 API |
-| [include/linux/rcu_sync.h](file:///home/louis/code/linux/include/linux/rcu_sync.h) | RCU 同步辅助 |
-| [include/linux/srcu.h](file:///home/louis/code/linux/include/linux/srcu.h) | SRCU API |
-| [kernel/rcu/tree.c](file:///home/louis/code/linux/kernel/rcu/tree.c) | Tree RCU 实现 |
-| [kernel/rcu/tree.h](file:///home/louis/code/linux/kernel/rcu/tree.h) | Tree RCU 数据结构 |
-| [kernel/rcu/srcu.c](file:///home/louis/code/linux/kernel/rcu/srcu.c) | SRCU 实现 |
-| [kernel/rcu/tasks.h](file:///home/louis/code/linux/kernel/rcu/tasks.h) | Tasks RCU 实现 |
+| 文件                                                                              | 说明              |
+| --------------------------------------------------------------------------------- | ----------------- |
+| [include/linux/rcupdate.h](file:///home/louis/code/linux/include/linux/rcupdate.h) | RCU 核心 API      |
+| [include/linux/rcu_sync.h](file:///home/louis/code/linux/include/linux/rcu_sync.h) | RCU 同步辅助      |
+| [include/linux/srcu.h](file:///home/louis/code/linux/include/linux/srcu.h)         | SRCU API          |
+| [kernel/rcu/tree.c](file:///home/louis/code/linux/kernel/rcu/tree.c)               | Tree RCU 实现     |
+| [kernel/rcu/tree.h](file:///home/louis/code/linux/kernel/rcu/tree.h)               | Tree RCU 数据结构 |
+| [kernel/rcu/srcu.c](file:///home/louis/code/linux/kernel/rcu/srcu.c)               | SRCU 实现         |
+| [kernel/rcu/tasks.h](file:///home/louis/code/linux/kernel/rcu/tasks.h)             | Tasks RCU 实现    |
