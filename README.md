@@ -35,6 +35,7 @@
 ## 5. 系统调用
 
 - [系统调用分类列表](./notes/syscall/arm64-syscall-table.md)
+- [vdso 实现机制](./notes/syscall/vdso.md)
 
 ### 5.1 文件描述符操作
 
