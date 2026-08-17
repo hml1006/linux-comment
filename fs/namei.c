@@ -17,7 +17,6 @@
 
 #include "linux/dcache.h"
 #include "linux/printk.h"
-#include <linux/dbg.h>
 #include <linux/init.h>
 #include <linux/export.h>
 #include <linux/slab.h>
@@ -1585,7 +1584,6 @@ static int __traverse_mounts(struct path *path, unsigned flags, bool *jumped,
 	bool need_mntput = false;
 	int ret = 0;
 
-	dentry_dbg(path->dentry, "mnt->mnt_root.d_name.name %s\n", mnt->mnt_root->d_name.name);
 	while (flags & DCACHE_MANAGED_DENTRY) {
 		/* Allow the filesystem to manage the transit without i_rwsem
 		 * being held. */
@@ -1645,7 +1643,6 @@ static inline int traverse_mounts(struct path *path, bool *jumped,
 {
 	unsigned flags = smp_load_acquire(&path->dentry->d_flags);
 
-	dentry_dbg(path->dentry, "traverse\n");
 	/* fastpath */
 	if (likely(!(flags & DCACHE_MANAGED_DENTRY))) {
 		*jumped = false;
@@ -1698,7 +1695,6 @@ static bool __follow_mount_rcu(struct nameidata *nd, struct path *path)
 	struct dentry *dentry = path->dentry;
 	unsigned int flags = dentry->d_flags;
 
-	dentry_dbg(dentry, "dentry->d_flags: %x\n", flags);
 	if (unlikely(nd->flags & LOOKUP_NO_XDEV))
 		return false;
 
@@ -1719,7 +1715,6 @@ static bool __follow_mount_rcu(struct nameidata *nd, struct path *path)
 			if (mounted) {
 				path->mnt = &mounted->mnt;
 				dentry = path->dentry = mounted->mnt.mnt_root;
-				dentry_dbg(dentry, "found mnt\n");
 				nd->state |= ND_JUMPED;
 				nd->next_seq = read_seqcount_begin(&dentry->d_seq);
 				flags = dentry->d_flags;
@@ -1742,7 +1737,6 @@ static inline int handle_mounts(struct nameidata *nd, struct dentry *dentry,
 	bool jumped;
 	int ret;
 
-	dentry_dbg(dentry, "nd->last.name: %s\n", nd->last.name);
 	path->mnt = nd->path.mnt;
 	path->dentry = dentry;
 	if (nd->flags & LOOKUP_RCU) {
@@ -1868,9 +1862,6 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 	struct dentry *dentry, *parent = nd->path.dentry; /* dentry: 查找结果目录项，parent: 父目录项 */
 	int status = 1; /* 目录项验证状态，默认为1（有效） */
 
-	/* 打印调试信息，输出当前正在查找的文件/目录名 */
-	nd_dbg(nd, "nd->last=%s\n",
-		nd->last.name);
 	/*
 	 * Rename seqlock is not required here because in the off chance
 	 * of a false negative due to a concurrent rename, the caller is
@@ -1914,8 +1905,6 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 		/* 如果目录项不在缓存中，直接返回 NULL */
 		if (unlikely(!dentry))
 			return NULL;
-		/* 打印查找到的 dentry 调试信息 */
-		dentry_dbg(dentry, "__d_lookup nd->last=%s\n", nd->last.name);
 		/* 在非 RCU 模式下验证目录项的有效性 */
 		status = d_revalidate(nd->inode, &nd->last, dentry, nd->flags);
 	}
@@ -1927,9 +1916,6 @@ static struct dentry *lookup_fast(struct nameidata *nd)
 		dput(dentry); /* 释放目录项引用 */
 		return ERR_PTR(status); /* 返回错误状态 */
 	}
-	/* 打印最终成功查找的调试信息 */
-	dentry_dbg(dentry, "nd->last=%s\n",
-		nd->last.name);
 	return dentry; /* 返回成功查找到且有效的目录项 */
 }
 
@@ -1954,8 +1940,6 @@ static struct dentry *__lookup_slow(const struct qstr *name,
 	struct dentry *dentry, *old;
 	struct inode *inode = dir->d_inode;
 
-	/* 调试信息：打印正在查找的目录项名称 */
-	dentry_dbg(dir, "search for name = %s\n", name->name);
 	/* 如果目录已经是无效（死亡）状态，直接返回-ENOENT错误 */
 	if (unlikely(IS_DEADDIR(inode)))
 		return ERR_PTR(-ENOENT);
@@ -2003,7 +1987,6 @@ static noinline struct dentry *lookup_slow(const struct qstr *name,
 
 	// 信号量
 	inode_lock_shared(inode);
-	dentry_dbg(dir, "search for name = %s\n", name->name);
 	res = __lookup_slow(name, dir, flags);
 	inode_unlock_shared(inode);
 	return res;
@@ -2172,7 +2155,6 @@ static noinline const char *step_into_slowpath(struct nameidata *nd, int flags,
 	struct inode *inode;
 	int err;
 	
-	dentry_dbg(dentry, "nd->last.name: %s\n", nd->last.name);
 	err = handle_mounts(nd, dentry, &path);
 	if (unlikely(err < 0))
 		return ERR_PTR(err);
@@ -2360,7 +2342,6 @@ static __always_inline const char *walk_component(struct nameidata *nd, int flag
 		/* 处理特殊的"."和".."目录项 */
 		return handle_dots(nd, nd->last_type);
 	}
-	nd_dbg(nd, "nd->last_name = %s\n", nd->last.name);
 	// 从dentry_cache中查找dentry
 	dentry = lookup_fast(nd);
 	/* 如果快速查找返回错误，则将错误指针转换为对应的字符串指针并返回 */
@@ -2372,9 +2353,6 @@ static __always_inline const char *walk_component(struct nameidata *nd, int flag
 		/* 如果慢速查找返回错误，则将错误指针转换为对应的字符串指针并返回 */
 		if (IS_ERR(dentry))
 			return ERR_CAST(dentry);
-		/* 如果在磁盘中成功找到dentry，打印调试信息 */
-		if (dentry)
-			dentry_dbg(dentry, "found\n");
 	}
 	/* 如果处于深度遍历状态且没有WALK_MORE标志，则释放当前的链接 */
 	if (unlikely(nd->depth) && !(flags & WALK_MORE))
@@ -2703,10 +2681,8 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 	// 如果路径名为空（例如只包含 '/' 的情况）
 	if (unlikely(!*name)) {
 		nd->dir_mode = 0; // short-circuit the 'hardening' idiocy，短路处理，避免硬ening相关的无谓操作
-		nd_dbg(nd, "return 0, name = %p\n", name);
 		return 0;
 	}
-	nd_dbg(nd, "name = %s\n", name);
 
 	// 循环遍历路径中的每一个分量
 	/* At this point we know we have a real path component. */
@@ -2724,11 +2700,9 @@ static int link_path_walk(const char *name, struct nameidata *nd)
 			return err;
 
 		nd->last.name = name; // 记录当前分量名的起始位置
-		nd_dbg(nd, "before hash name = %s\n", name);
 		
 		// 对当前路径分量进行哈希计算，并提取最后一个字用于后续判断
 		name = hash_name(nd, name, &lastword);
-		nd_dbg(nd, "after hash name = %s\n", name);
 
 		// 判断目录是 '..' 还是 '.'
 		switch(lastword) {
@@ -2776,7 +2750,6 @@ OK:
 				nd->dir_vfsuid = i_uid_into_vfsuid(idmap, nd->inode); // 记录目录的 VFS UID
 				nd->dir_mode = nd->inode->i_mode; // 记录目录的模式/权限
 				nd->flags &= ~LOOKUP_PARENT; // 清除 LOOKUP_PARENT 标志，查找结束
-				nd_dbg(nd, "return 0 && depth == 0, name = %s\n", name);
 				return 0;
 			}
 			/* last component of nested symlink */
@@ -3007,9 +2980,6 @@ static int path_lookupat(struct nameidata *nd, unsigned flags, struct path *path
 	const char *s = path_init(nd, flags);
 	int err;
 
-	/* 调试输出：打印当前正在查找的路径 */
-	dbg("path: %s\n", nd->pathname);
-
 	/* 如果标志位要求向下查找（LOOKUP_DOWN）且路径起始指针有效 */
 	if (unlikely(flags & LOOKUP_DOWN) && !IS_ERR(s)) {
 		/* 处理向下查找的逻辑（通常用于处理起始点为符号链接等情况） */
@@ -3072,7 +3042,6 @@ int filename_lookup(int dfd, struct filename *name, unsigned flags,
 	if (IS_ERR(name))
 		return PTR_ERR(name);
 	set_nameidata(&nd, dfd, name, root);
-	dbg("filename: %s\n", name->name);
 	retval = path_lookupat(&nd, flags | LOOKUP_RCU, path);
 	if (unlikely(retval == -ECHILD))
 		retval = path_lookupat(&nd, flags, path);
@@ -3872,7 +3841,6 @@ int user_path_at(int dfd, const char __user *name, unsigned flags,
 		 struct path *path)
 {
 	CLASS(filename_flags, filename)(name, flags);
-	dbg("mount dir: %s\n", filename->name);
 	// 根据文件名查找
 	// path->dentry: 指向挂载点目录（如 /mnt/usb）在父文件系统中的 dentry
 	// path->mnt: 指向这个挂载点所属的父文件系统的 vfsmount 实例
@@ -4651,8 +4619,6 @@ static struct dentry *lookup_open(struct nameidata *nd, struct file *file,
 	int error, create_error = 0;
 	umode_t mode = op->mode;
 
-	dentry_dbg(nd->path.dentry, "nd->last.name = %s, nd->pathname = %s\n", nd->last.name, nd->pathname);
-
 	if (unlikely(IS_DEADDIR(dir_inode)))
 		return ERR_PTR(-ENOENT);
 
@@ -4678,7 +4644,6 @@ static struct dentry *lookup_open(struct nameidata *nd, struct file *file,
 	}
 	if (dentry->d_inode) {
 		/* Cached positive dentry: will open in f_op->open */
-		dentry_dbg(dentry, "dentry->d_name.name = %s, dentry->d_inode->i_ino = %lu\n", dentry->d_name.name, dentry->d_inode->i_ino);
 		return dentry;
 	}
 
@@ -4715,7 +4680,6 @@ static struct dentry *lookup_open(struct nameidata *nd, struct file *file,
 		dentry = atomic_open(&nd->path, dentry, file, open_flag, mode);
 		if (unlikely(create_error) && dentry == ERR_PTR(-ENOENT))
 			dentry = ERR_PTR(create_error);
-		dentry_dbg(dentry, "after atomic_open dentry->d_inode->i_ino = %lu\n", dentry->d_inode->i_ino);
 		return dentry;
 	}
 
@@ -4756,7 +4720,6 @@ static struct dentry *lookup_open(struct nameidata *nd, struct file *file,
 		error = create_error;
 		goto out_dput;
 	}
-	dentry_dbg(dentry, "finish => dentry->d_inode = %p\n", dentry->d_inode);
 	return dentry;
 
 out_dput:
@@ -4773,8 +4736,6 @@ static struct dentry *lookup_fast_for_open(struct nameidata *nd, int open_flag)
 {
 	struct dentry *dentry;
 
-	dentry_dbg(nd->path.dentry, "nd->last.name = %s, nd->pathname = %s\n", nd->last.name, nd->pathname);
-
 	if (open_flag & O_CREAT) {
 		if (trailing_slashes(nd))
 			return ERR_PTR(-EISDIR);
@@ -4790,9 +4751,6 @@ static struct dentry *lookup_fast_for_open(struct nameidata *nd, int open_flag)
 	dentry = lookup_fast(nd);
 	if (IS_ERR_OR_NULL(dentry))
 		return dentry;
-	dentry_dbg(dentry, "lookup_fast found name: %s, inode: %p\n", dentry->d_name.name, dentry->d_inode);
-	inode_dbg(dentry->d_inode, "inode: %p\n", dentry->d_inode);
-
 	if (open_flag & O_CREAT) {
 		/* Discard negative dentries. Need inode_lock to do the create */
 		if (!dentry->d_inode) {
@@ -4821,8 +4779,6 @@ static const char *open_last_lookups(struct nameidata *nd,
 			put_link(nd);
 		return handle_dots(nd, nd->last_type);
 	}
-
-	dentry_dbg(nd->path.dentry, "nd->last.name = %s, nd->pathname = %s\n", nd->last.name, nd->pathname);
 
 	/* We _can_ be in RCU mode here */
 	dentry = lookup_fast_for_open(nd, open_flag);
@@ -4889,7 +4845,6 @@ retry:
 finish_lookup:
 	if (nd->depth)
 		put_link(nd);
-	dentry_dbg(dentry, "finish_lookup dentry->d_name.name = %s\n", dentry->d_name.name);
 	res = step_into(nd, WALK_TRAILING, dentry);
 	if (unlikely(res))
 		nd->flags &= ~(LOOKUP_OPEN|LOOKUP_CREATE|LOOKUP_EXCL);
@@ -4908,7 +4863,6 @@ static int do_open(struct nameidata *nd,
 	int acc_mode;
 	int error;
 
-	dentry_dbg(nd->path.dentry, "file %p\n", file);
 	if (!(file->f_mode & (FMODE_OPENED | FMODE_CREATED))) {
 		error = complete_walk(nd);
 		if (error)
@@ -5148,8 +5102,6 @@ static struct file *path_openat(struct nameidata *nd,
 	if (IS_ERR(file))
 		return file;
 
-	nd_dbg(nd, "will open\n");
-
 	/* 根据文件标志位分派不同的打开处理逻辑 */
 	if (unlikely(file->f_flags & __O_TMPFILE)) {
 		error = do_tmpfile(nd, flags, op, file); // 处理临时文件的创建与打开
@@ -5231,7 +5183,6 @@ struct file *do_file_open(int dfd, struct filename *pathname,
 
 	// 设置进程文件查找结构,保存旧的
 	set_nameidata(&nd, dfd, pathname, NULL);
-	nd_dbg((&nd), "nameidata initlized\n");
 
 	// 查找path并打开文件
 	/* 首先尝试使用RCU快速路径进行查找和打开，以提高效率 */

@@ -19,7 +19,6 @@
  *  Assorted race fixes, rewrite of ext4_get_block() by Al Viro, 2000
  */
 
-#include <linux/dbg.h>
 #include <linux/fs.h>
 #include <linux/mount.h>
 #include <linux/time.h>
@@ -1060,7 +1059,6 @@ struct buffer_head *ext4_getblk(handle_t *handle, struct inode *inode,
 		    || handle != NULL || create == 0);
 	ASSERT(create == 0 || !nowait);
 
-	inode_dbg(inode, "block: %u\n", block);
 	map.m_lblk = block;
 	map.m_len = 1;
 	err = ext4_map_blocks(handle, inode, &map, map_flags);
@@ -1126,7 +1124,6 @@ struct buffer_head *ext4_bread(handle_t *handle, struct inode *inode,
 	struct buffer_head *bh;
 	int ret;
 
-	inode_dbg(inode, "block: %u\n", block);
 	bh = ext4_getblk(handle, inode, block, map_flags);
 	if (IS_ERR(bh))
 		return bh;
@@ -5134,9 +5131,6 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	// 计算inode在第几个block：在inode表起始块基础上加上块内偏移
 	block += (inode_offset / inodes_per_block);
 
-	sb_dbg(sb, "inode: %lu, block_group: %u, block: %llu, offset: %lu\n",
-		ino, iloc->block_group, block, iloc->offset);
-
 	// 找到这个block的buffer_head：通过块号获取对应的缓冲区头部
 	bh = sb_getblk(sb, block);
 	if (unlikely(!bh))
@@ -5310,7 +5304,6 @@ int ext4_get_inode_loc(struct inode *inode, struct ext4_iloc *iloc)
 	ext4_fsblk_t err_blk = 0;
 	int ret;
 
-	inode_dbg(inode, "\n");
 	// 根据super block，inode number查找
 	ret = __ext4_get_inode_loc(inode->i_sb, inode->i_ino, inode, iloc,
 					&err_blk);

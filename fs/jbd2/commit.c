@@ -10,7 +10,6 @@
  * part of the ext2fs journaling system.
  */
 
-#include <linux/dbg.h>
 #include <linux/time.h>
 #include <linux/fs.h>
 #include <linux/jbd2.h>
@@ -238,7 +237,6 @@ static int journal_submit_data_buffers(journal_t *journal,
 	struct jbd2_inode *jinode;
 	int err, ret = 0;
 
-	blk_dbg(journal->j_sb_buffer->b_bdev, "journal_submit_data_buffers\n");
 	spin_lock(&journal->j_list_lock);
 	list_for_each_entry(jinode, &commit_transaction->t_inode_list, i_list) {
 		if (!(jinode->i_flags & JI_WRITE_DATA))
@@ -406,7 +404,6 @@ void jbd2_journal_commit_transaction(journal_t *journal)
 	LIST_HEAD(io_bufs);
 	LIST_HEAD(log_bufs);
 
-	blk_dbg(journal->j_sb_buffer->b_bdev, "journal_submit_data_buffers\n");
 	if (jbd2_journal_has_csum_v2or3(journal))
 		csum_size = sizeof(struct jbd2_journal_block_tail);
 

@@ -10,7 +10,6 @@
  * most "normal" filesystems (but you don't /have/ to use this:
  * the NFS filesystem used to do this differently, for example)
  */
-#include "linux/dbg.h"
 #include <linux/export.h>
 #include <linux/compiler.h>
 #include <linux/dax.h>
@@ -889,7 +888,6 @@ noinline int __filemap_add_folio(struct address_space *mapping,
 	folio->mapping = mapping;
 	folio->index = xas.xa_index;
 
-	sb_dbg(mapping->host->i_sb, "folio %p, index %lu, pages %lu\n", folio, index, nr);
 	for (;;) {
 		int order = -1;
 		void *entry, *old = NULL;
@@ -982,7 +980,6 @@ int filemap_add_folio(struct address_space *mapping, struct folio *folio,
 	struct mem_cgroup *tmp;
 	bool kernel_file = test_bit(AS_KERNEL_FILE, &mapping->flags);
 
-	sb_dbg(mapping->host->i_sb, "mapping %p, folio %p\n", mapping, folio);
 	if (kernel_file)
 		tmp = set_active_memcg(root_mem_cgroup);
 	ret = mem_cgroup_charge(folio, NULL, gfp);
@@ -1924,7 +1921,6 @@ void *filemap_get_entry(struct address_space *mapping, pgoff_t index)
 	XA_STATE(xas, &mapping->i_pages, index);
 	struct folio *folio;
 
-	sb_dbg(mapping->host->i_sb, "index %lu\n", index);
 	rcu_read_lock();
 repeat:
 	xas_reset(&xas);
@@ -1973,8 +1969,7 @@ struct folio *__filemap_get_folio_mpol(struct address_space *mapping,
 {
 	struct folio *folio;
 
-	sb_dbg(mapping->host->i_sb, "index %lu\n", index);
-repeat:
+	repeat:
 	folio = filemap_get_entry(mapping, index);
 	if (xa_is_value(folio))
 		folio = NULL;
@@ -2041,7 +2036,6 @@ no_page:
 			if (order > min_order)
 				alloc_gfp |= __GFP_NORETRY | __GFP_NOWARN;
 			folio = filemap_alloc_folio(alloc_gfp, order, policy);
-			sb_dbg(mapping->host->i_sb, "alloc folio %p\n", folio);
 			if (!folio)
 				continue;
 

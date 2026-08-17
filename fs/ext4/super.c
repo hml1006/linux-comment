@@ -17,7 +17,6 @@
  *        David S. Miller (davem@caip.rutgers.edu), 1995
  */
 
-#include "linux/dbg.h"
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/fs.h>
@@ -175,7 +174,6 @@ MODULE_ALIAS("ext3");
 static inline void __ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 				  bio_end_io_t end_io, bool simu_fail)
 {
-	blk_dbg(bh->b_bdev, "end_io %p, simu_fail %d\n", end_io, simu_fail);
 	// 模拟fail，用于开发测试
 	if (simu_fail) {
 		clear_buffer_uptodate(bh);
@@ -211,7 +209,6 @@ void ext4_read_bh_nowait(struct buffer_head *bh, blk_opf_t op_flags,
 {
 	BUG_ON(!buffer_locked(bh));
 
-	blk_dbg(bh->b_bdev, "end_io %p\n", end_io);
 	// 如果当前buffer是最新，说明其他task已经访问过，直接用这个buffer
 	if (ext4_buffer_uptodate(bh)) {
 		unlock_buffer(bh);
@@ -323,9 +320,6 @@ void ext4_sb_breadahead_unmovable(struct super_block *sb, sector_t block)
 	struct buffer_head *bh = bdev_getblk(sb->s_bdev, block,
 			sb->s_blocksize, GFP_NOWAIT);
 
-	// 打印调试信息：块号和对应的缓冲区头指针
-	sb_dbg(sb, "block %llu, buffer_head %p\n", block, bh);
-	
 	/* 检查缓冲区头是否有效（大概率有效，使用了 likely 优化分支预测） */
 	if (likely(bh)) {
 		/* 尝试无阻塞地锁定缓冲区，成功返回非0值 */

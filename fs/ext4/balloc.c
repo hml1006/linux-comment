@@ -12,7 +12,6 @@
  *        David S. Miller (davem@caip.rutgers.edu), 1995
  */
 
-#include <linux/dbg.h>
 #include <linux/time.h>
 #include <linux/capability.h>
 #include <linux/fs.h>
@@ -312,7 +311,6 @@ struct ext4_group_desc * ext4_get_group_desc(struct super_block *sb,
 		offset * EXT4_DESC_SIZE(sb));
 	if (bh)
 		*bh = bh_p;
-	sb_dbg(sb, "found group desc: %p, group number: %d\n", desc, block_group);
 	return desc;
 }
 

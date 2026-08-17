@@ -493,12 +493,6 @@ static struct bio *bio_alloc_percpu_cache(struct bio_set *bs)
 	cache->free_list = bio->bi_next;
 	cache->nr--;
 	put_cpu();
-
-	if (nr_vecs)
-		// bio_vec和bio一起分配，内存连续的，每个bio_vec记录page，offset，len
-		bio_init_inline(bio, bdev, nr_vecs, opf);
-	else
-		bio_init(bio, bdev, NULL, nr_vecs, opf);
 	bio->bi_pool = bs;
 
 	kmemleak_alloc(bio_slab_addr(bio),

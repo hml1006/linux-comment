@@ -77,7 +77,6 @@
  * needed.
  */
 
-#include "linux/dbg.h"
 #ifndef __KERNEL__
 #include "jfs_user.h"
 #else
@@ -431,7 +430,6 @@ void jbd2_journal_cancel_revoke(handle_t *handle, struct journal_head *jh)
 	struct buffer_head *bh = jh2bh(jh);
 	struct address_space *bh_mapping = bh->b_folio->mapping;
 
-	blk_dbg(jh->b_bh->b_bdev, "handle %p, journal_head %p\n", handle, jh);
 	jbd2_debug(4, "journal_head %p, cancelling revoke\n", jh);
 
 	/* Is the existing Revoke bit valid?  If so, we trust it, and

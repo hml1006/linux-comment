@@ -14,7 +14,6 @@
  * filesystem).
  */
 
-#include "linux/dbg.h"
 #include <linux/time.h>
 #include <linux/fs.h>
 #include <linux/jbd2.h>
@@ -958,7 +957,6 @@ do_get_write_access(handle_t *handle, struct journal_head *jh,
 
 	journal = transaction->t_journal;
 
-	blk_dbg(jh->b_bh->b_bdev, "journal_head %p\n", jh);
 	jbd2_debug(5, "journal_head %p, force_copy %d\n", jh, force_copy);
 
 	JBUFFER_TRACE(jh, "entry");
@@ -1238,7 +1236,6 @@ int jbd2_journal_get_write_access(handle_t *handle, struct buffer_head *bh)
 	journal_t *journal;
 	int rc;
 
-	blk_dbg(bh->b_bdev, "buffer_head %p\n", bh);
 	if (is_handle_aborted(handle))
 		return -EROFS;
 
@@ -1292,7 +1289,6 @@ int jbd2_journal_get_create_access(handle_t *handle, struct buffer_head *bh)
 {
 	transaction_t *transaction = handle->h_transaction;
 	journal_t *journal;
-	blk_dbg(bh->b_bdev, "handle %p\n", handle);
 	struct journal_head *jh = jbd2_journal_add_journal_head(bh);
 	int err;
 

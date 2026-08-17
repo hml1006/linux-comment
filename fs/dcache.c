@@ -15,7 +15,6 @@
  * the dcache entry is deleted or garbage collected.
  */
 
-#include <linux/dbg.h>
 #include <linux/ratelimit.h>
 #include <linux/string.h>
 #include <linux/mm.h>
@@ -2500,11 +2499,6 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 	if (unlikely(parent->d_flags & DCACHE_OP_COMPARE))
 		return __d_lookup_rcu_op_compare(parent, name, seqp);
 
-	/* 定义局部数组用于调试打印，限制最大长度为31以防溢出 */
-	char search_name[32] = {0};
-	strncpy(search_name, str, hashlen_len(hashlen) >=31 ? 31 : hashlen_len(hashlen));
-	dentry_dbg(parent, "search for: %s\n", search_name);
-
 	/*
 	 * The hash list is protected using RCU.
 	 *
@@ -2588,7 +2582,6 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 
 		/* 记录匹配目录项的序列号，供调用方验证 */
 		*seqp = seq;
-		dentry_dbg(parent, "found: %s\n", search_name);
 		/* 找到匹配项，返回目录项指针 */
 		return dentry;
 	}
@@ -2646,7 +2639,6 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 	struct dentry *found = NULL;
 	struct dentry *dentry;
 
-	dentry_dbg(parent, "search for: %s\n", name->name);
 	/*
 	 * Note: There is significant duplication with __d_lookup_rcu which is
 	 * required to prevent single threaded performance regressions
@@ -2684,7 +2676,6 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 			goto next;
 
 		dentry->d_lockref.count++;
-		dentry_dbg(parent, "found: %s\n", name->name);
 		found = dentry;
 		spin_unlock(&dentry->d_lock);
 		break;
@@ -2805,15 +2796,11 @@ static inline void end_dir_add(struct inode *dir, unsigned int n)
 
 static void d_wait_lookup(struct dentry *dentry)
 {
-	if (d_in_lookup(dentry)) {
-		DECLARE_WAITQUEUE(wait, current);
-		add_wait_queue(dentry->d_wait, &wait);
-		do {
-			set_current_state(TASK_UNINTERRUPTIBLE);
-			spin_unlock(&dentry->d_lock);
-			schedule();
-			spin_lock(&dentry->d_lock);
-		} while (d_in_lookup(dentry));
+	if (likely(d_in_lookup(dentry))) {
+		dentry->d_flags |= DCACHE_LOOKUP_WAITERS;
+		wait_var_event_spinlock(&dentry->d_flags,
+					!d_in_lookup(dentry),
+					&dentry->d_lock);
 	}
 }
 

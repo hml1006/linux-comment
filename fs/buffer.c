@@ -19,7 +19,6 @@
  * async buffer flushing, 1999 Andrea Arcangeli <andrea@suse.de>
  */
 
-#include <linux/dbg.h>
 #include <linux/kernel.h>
 #include <linux/sched/signal.h>
 #include <linux/syscalls.h>
@@ -248,9 +247,6 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 	int all_mapped = 1;
 	// 定义静态的速率限制状态，用于控制警告输出频率
 	static DEFINE_RATELIMIT_STATE(last_warned, HZ, 1);
-
-	// 打印调试信息
-	blk_dbg(bdev, "block: %llu\n", block);
 
 	// 计算page号
 	index = ((loff_t)block << blkbits) / PAGE_SIZE;
@@ -1087,7 +1083,6 @@ __getblk_slow(struct block_device *bdev, sector_t block,
 		return NULL;
 	}
 
-	blk_dbg(bdev, "block: %llu, size: %d\n", block, size);
 	for (;;) {
 		struct buffer_head *bh;
 
@@ -1448,9 +1443,6 @@ lookup_bh_lru(struct block_device *bdev, sector_t block, unsigned size)
 	
 	/* 释放LRU链表自旋锁 */
 	bh_lru_unlock();
-	/* 打印调试信息，记录查找结果 */
-	blk_dbg(bdev, "buffer_head lru: %p\n", ret);
-	
 	/* 返回查找到的缓冲头指针，若未找到则为NULL */
 	return ret;
 }
@@ -1468,7 +1460,6 @@ find_get_block_common(struct block_device *bdev, sector_t block,
 {
 	// 从LRU中查找，找到则会更新LRU
 	struct buffer_head *bh = lookup_bh_lru(bdev, block, size);
-	blk_dbg(bdev, "block: %llu, size: %d, lru bh %p\n", block, size, bh);
 
 	// LRU中没找到，开始查找pagecache
 	if (bh == NULL) {
@@ -1478,14 +1469,12 @@ find_get_block_common(struct block_device *bdev, sector_t block,
 			bh_lru_install(bh);
 	} else
 		touch_buffer(bh);
-	blk_dbg(bdev, "return buffer_head %p\n", bh);
 	return bh;
 }
 
 struct buffer_head *
 __find_get_block(struct block_device *bdev, sector_t block, unsigned size)
 {
-	blk_dbg(bdev, "block %llu, size %u\n", block, size);
 	return find_get_block_common(bdev, block, size, true);
 }
 EXPORT_SYMBOL(__find_get_block);
@@ -1495,7 +1484,6 @@ struct buffer_head *
 __find_get_block_nonatomic(struct block_device *bdev, sector_t block,
 			   unsigned size)
 {
-	blk_dbg(bdev, "block %llu, size %u\n", block, size);
 	return find_get_block_common(bdev, block, size, false);
 }
 EXPORT_SYMBOL(__find_get_block_nonatomic);
@@ -1519,7 +1507,6 @@ struct buffer_head *bdev_getblk(struct block_device *bdev, sector_t block,
 {
 	struct buffer_head *bh;
 
-	blk_dbg(bdev, "block %llu, size %u, gfp %x\n", block, size, gfp);
 	// 允许挂起
 	if (gfpflags_allow_blocking(gfp))
 		bh = __find_get_block_nonatomic(bdev, block, size);

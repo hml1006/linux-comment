@@ -25,7 +25,6 @@
  *	Theodore Ts'o, 2002
  */
 
-#include <linux/dbg.h>
 #include <linux/fs.h>
 #include <linux/pagemap.h>
 #include <linux/time.h>
@@ -132,7 +131,6 @@ static struct buffer_head *__ext4_read_dirblock(struct inode *inode,
 	struct ext4_dir_entry *dirent;
 	int is_dx_block = 0;
 
-	inode_dbg(inode, "name: %s, block: %u\n", d_find_alias_rcu(inode)->d_name.name, block);
 	if (block >= inode->i_size >> inode->i_blkbits) {
 		ext4_error_inode(inode, func, line, block,
 		       "Attempting to read directory block (%u) that is past i_size (%llu)",
@@ -789,8 +787,6 @@ dx_probe(struct ext4_filename *fname, struct inode *dir,
 	u32 hash;
 	ext4_lblk_t block;
 	ext4_lblk_t blocks[EXT4_HTREE_LEVEL];
-	inode_dbg(dir, "name: %s, search for %s\n",
-		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
 	memset(frame_in, 0, EXT4_HTREE_LEVEL * sizeof(frame_in[0]));
 	frame->bh = ext4_read_dirblock(dir, 0, INDEX);
 	if (IS_ERR(frame->bh))
@@ -1554,13 +1550,8 @@ static struct buffer_head *__ext4_find_entry(struct inode *dir,
 	if (namelen > EXT4_NAME_LEN)
 		return NULL;
 
-	inode_dbg(dir, "name: %s, search for %s\n",
-		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
-
 	// 检查目录中是否有inline数据，如果有，从inline中查找
 	if (ext4_has_inline_data(dir)) {
-		inode_dbg(dir, "name: %s, inline found!\n",
-			d_find_alias_rcu(dir)->d_name.name);
 		int has_inline_data = 1;
 		ret = ext4_find_inline_entry(dir, fname, res_dir,
 					     &has_inline_data);
@@ -1760,10 +1751,6 @@ static struct buffer_head *ext4_lookup_entry(struct inode *dir,
 	struct ext4_filename fname;
 	struct buffer_head *bh;
 
-	/* 调试信息：打印父目录路径及要查找的文件名 */
-	inode_dbg(dir, "parent inode path %s, search for %s\n",
-		d_find_alias_rcu(dir)->d_name.name, dentry->d_name.name);
-	
 	// 填充要查找的数据结构
 	err = ext4_fname_prepare_lookup(dir, dentry, &fname);
 	if (err == -ENOENT) /* 如果文件名不存在（大小写不敏感等场景下可能触发） */
@@ -1793,8 +1780,6 @@ static struct buffer_head * ext4_dx_find_entry(struct inode *dir,
 #ifdef CONFIG_FS_ENCRYPTION
 	*res_dir = NULL;
 #endif
-	inode_dbg(dir, "name: %s, search for %s\n",
-		d_find_alias_rcu(dir)->d_name.name, fname->usr_fname->name);
 	// 查找dx frame
 	frame = dx_probe(fname, dir, NULL, frames);
 	if (IS_ERR(frame))
@@ -1857,10 +1842,6 @@ static struct dentry *ext4_lookup(struct inode *dir, struct dentry *dentry, unsi
 	// 检查文件名长度是否超过 ext4 文件系统的最大限制
 	if (dentry->d_name.len > EXT4_NAME_LEN)
 		return ERR_PTR(-ENAMETOOLONG);
-
-	// 调试信息：打印当前目录名和要查找的文件名
-	inode_dbg(dir, "name: %s, search for %s\n",
-		d_find_alias_rcu(dir)->d_name.name, dentry->d_name.name);
 
 	// 在目录中执行实际的目录项查找操作
 	bh = ext4_lookup_entry(dir, dentry, &de);

@@ -17,7 +17,6 @@
 #ifndef _EXT4_H
 #define _EXT4_H
 
-#include <linux/dbg.h>
 #include <linux/refcount.h>
 #include <linux/types.h>
 #include <linux/blkdev.h>
