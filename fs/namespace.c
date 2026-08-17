@@ -8,6 +8,8 @@
  * Heavily rewritten.
  */
 
+#include "linux/dbg.h"
+#include "linux/printk.h"
 #include <linux/syscalls.h>
 #include <linux/export.h>
 #include <linux/capability.h>
@@ -792,6 +794,7 @@ struct mount *__lookup_mnt(struct vfsmount *mnt, struct dentry *dentry)
 	struct hlist_head *head = m_hash(mnt, dentry);
 	struct mount *p;
 
+	dentry_dbg(dentry, "hash search\n");
 	hlist_for_each_entry_rcu(p, head, mnt_hash)
 		if (&p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
 			return p;
@@ -3749,6 +3752,7 @@ static int do_add_mount(struct mount *newmnt, const struct pinned_mountpoint *mp
 		return -EINVAL;
 
 	newmnt->mnt.mnt_flags = mnt_flags;
+	// 把mount嫁接到挂载点
 	return graft_tree(newmnt, mp);
 }
 
@@ -3762,6 +3766,7 @@ static int do_new_mount_fc(struct fs_context *fc, const struct path *mountpoint,
 			   unsigned int mnt_flags)
 {
 	struct super_block *sb;
+	// 执行挂载操作，返回挂载点，会从磁盘加载super block及其他初始化动作
 	struct vfsmount *mnt __free(mntput) = fc_mount(fc);
 	int error;
 
@@ -3780,6 +3785,7 @@ static int do_new_mount_fc(struct fs_context *fc, const struct path *mountpoint,
 
 	mnt_warn_timestamp_expiry(mountpoint, mnt);
 
+	// 添加mount，绑定挂载点
 	LOCK_MOUNT(mp, mountpoint);
 	error = do_add_mount(real_mount(mnt), &mp, mnt_flags);
 	if (!error)
@@ -3800,9 +3806,11 @@ static int do_new_mount(const struct path *path, const char *fstype,
 	const char *subtype = NULL;
 	int err = 0;
 
+	dbg("dev: %s, fstype: %s, path: %s\n", name, fstype, path->dentry->d_name.name);
 	if (!fstype)
 		return -EINVAL;
 
+	// 根据文件系统类型获取文件系统类型结构体
 	type = get_fs_type(fstype);
 	if (!type)
 		return -ENODEV;
@@ -3818,6 +3826,7 @@ static int do_new_mount(const struct path *path, const char *fstype,
 		}
 	}
 
+	// 创建一个文件系统上下文
 	fc = fs_context_for_mount(type, sb_flags);
 	put_filesystem(type);
 	if (IS_ERR(fc))
@@ -3829,6 +3838,7 @@ static int do_new_mount(const struct path *path, const char *fstype,
 	 */
 	fc->oldapi = true;
 
+	// 例如fuse.ntfs-3g
 	if (subtype)
 		err = vfs_parse_fs_string(fc, "subtype", subtype);
 	if (!err && name)
@@ -3838,6 +3848,7 @@ static int do_new_mount(const struct path *path, const char *fstype,
 	if (!err && !mount_capable(fc))
 		err = -EPERM;
 	if (!err)
+		// 挂载文件系统
 		err = do_new_mount_fc(fc, path, mnt_flags);
 
 	put_fs_context(fc);
@@ -4089,6 +4100,7 @@ int path_mount(const char *dev_name, const struct path *path,
 	unsigned int mnt_flags = 0, sb_flags;
 	int ret;
 
+	dbg("dev: %s, type: %s, path: %s\n", dev_name, type_page, path->dentry->d_name.name);
 	/* Discard magic */
 	if ((flags & MS_MGC_MSK) == MS_MGC_VAL)
 		flags &= ~MS_MGC_MSK;
@@ -4168,6 +4180,8 @@ int do_mount(const char *dev_name, const char __user *dir_name,
 	struct path path __free(path_put) = {};
 	int ret;
 
+	dbg("dev: %s, type: %s\n", dev_name, type_page);
+	// 初始化path，path lookup
 	ret = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path);
 	if (ret)
 		return ret;
@@ -4387,8 +4401,11 @@ SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
 	if (IS_ERR(options))
 		goto out_data;
 
+	vfs_dbg_enable();
+	dbg("fs type: %s, dev: %s\n", kernel_type, kernel_dev);
 	ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
 
+	vfs_dbg_disable();
 	kfree(options);
 out_data:
 	kfree(kernel_dev);

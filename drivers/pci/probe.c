@@ -86,6 +86,10 @@ static const struct class pcibus_class = {
 	.dev_groups	= pcibus_groups,
 };
 
+
+/**
+ * 注册 /sys/class/pci_buss/ 目录
+ */
 static int __init pcibus_class_init(void)
 {
 	return class_register(&pcibus_class);
@@ -2599,6 +2603,7 @@ static struct pci_dev *pci_scan_device(struct pci_bus *bus, int devfn)
 	struct pci_dev *dev;
 	u32 l;
 
+	// 判断是否能读取设备厂商id
 	if (!pci_bus_read_dev_vendor_id(bus, devfn, &l, 60*1000))
 		return NULL;
 
@@ -2610,6 +2615,7 @@ static struct pci_dev *pci_scan_device(struct pci_bus *bus, int devfn)
 	dev->vendor = l & 0xffff;
 	dev->device = (l >> 16) & 0xffff;
 
+	// 初始化dev
 	if (pci_setup_device(dev)) {
 		pci_bus_put(dev->bus);
 		kfree(dev);
@@ -2747,6 +2753,7 @@ void pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 
 	pci_reassigndev_resource_alignment(dev);
 
+	// 初始化设备能力
 	pci_init_capabilities(dev);
 
 	/*
@@ -2764,6 +2771,7 @@ void pci_device_add(struct pci_dev *dev, struct pci_bus *bus)
 	pci_set_msi_domain(dev);
 
 	/* Notifier could use PCI capabilities */
+	// 向设备树添加设备
 	ret = device_add(&dev->dev);
 	WARN_ON(ret < 0);
 
@@ -2785,10 +2793,12 @@ struct pci_dev *pci_scan_single_device(struct pci_bus *bus, int devfn)
 		return dev;
 	}
 
+	// 扫描总线上的特定设备
 	dev = pci_scan_device(bus, devfn);
 	if (!dev)
 		return NULL;
 
+	// 添加设备，执行probe
 	pci_device_add(dev, bus);
 
 	return dev;

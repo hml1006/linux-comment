@@ -19,6 +19,7 @@
  *  Assorted race fixes, rewrite of ext4_get_block() by Al Viro, 2000
  */
 
+#include <linux/dbg.h>
 #include <linux/fs.h>
 #include <linux/mount.h>
 #include <linux/time.h>
@@ -603,46 +604,61 @@ out:
 	return retval;
 }
 
+/**
+ * ext4_map_create_blocks - 在Ext4文件系统中为inode分配并映射磁盘块
+ * @handle: 事务处理句柄，用于日志记录
+ * @inode: 需要分配块的目标inode
+ * @map: 块映射结构体，包含逻辑块号、长度以及返回的物理块号和状态标志
+ * @flags: 分配标志，影响块分配的行为（如预分配、清零等）
+ *
+ * 此函数根据inode的类型（ extents 或 indirect blocks ），调用相应的块分配函数，
+ * 并在分配成功后将新的范围插入到extent状态树中。如果需要，还会对分配的新块进行清零操作。
+ *
+ * Return: 成功分配的块数（>0），0表示未分配，负数表示错误码
+ */
 int ext4_map_create_blocks(handle_t *handle, struct inode *inode,
 			   struct ext4_map_blocks *map, int flags)
 {
-	unsigned int status;
-	int err, retval = 0;
+	unsigned int status; // 用于记录extent的状态（已写入或未写入）
+	int err, retval = 0; // err用于存储错误码，retval用于存储块分配操作的返回值
 
 	/*
-	 * We pass in the magic EXT4_GET_BLOCKS_DELALLOC_RESERVE
-	 * indicates that the blocks and quotas has already been
-	 * checked when the data was copied into the page cache.
+	 * 我们传入魔术标志 EXT4_GET_BLOCKS_DELALLOC_RESERVE，
+	 * 这表示当数据被复制到页缓存时，块和配额已经被检查过了。
 	 */
 	if (map->m_flags & EXT4_MAP_DELAYED)
 		flags |= EXT4_GET_BLOCKS_DELALLOC_RESERVE;
 
 	/*
-	 * Here we clear m_flags because after allocating an new extent,
-	 * it will be set again.
+	 * 这里我们清除 m_flags，因为在分配新的 extent 之后，
+	 * 它会被重新设置。
 	 */
 	map->m_flags &= ~EXT4_MAP_FLAGS;
 
 	/*
-	 * We need to check for EXT4 here because migrate could have
-	 * changed the inode type in between.
+	 * 我们需要在这里检查 EXT4，因为迁移（migrate）可能在此期间
+	 * 改变了 inode 的类型。
 	 */
 	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS)) {
+		// 如果 inode 使用 extents 树格式，则调用 extents 映射函数
 		retval = ext4_ext_map_blocks(handle, inode, map, flags);
 	} else {
+		// 否则，使用传统的间接块映射函数
 		retval = ext4_ind_map_blocks(handle, inode, map, flags);
 
 		/*
-		 * We allocated new blocks which will result in i_data's
-		 * format changing. Force the migrate to fail by clearing
-		 * migrate flags.
+		 * 我们分配了新块，这将导致 i_data 的格式发生改变。
+		 * 通过清除迁移标志来强制迁移失败。
 		 */
 		if (retval > 0 && map->m_flags & EXT4_MAP_NEW)
 			ext4_clear_inode_state(inode, EXT4_STATE_EXT_MIGRATE);
 	}
+	
+	// 如果分配失败或没有分配到块，直接返回
 	if (retval <= 0)
 		return retval;
 
+	// 断言检查：分配返回的块数应该等于请求的块数，否则发出警告
 	if (unlikely(retval != map->m_len)) {
 		ext4_warning(inode->i_sb,
 			     "ES len assertion failed for inode %llu: "
@@ -652,28 +668,34 @@ int ext4_map_create_blocks(handle_t *handle, struct inode *inode,
 	}
 
 	/*
-	 * We have to zeroout blocks before inserting them into extent
-	 * status tree. Otherwise someone could look them up there and
-	 * use them before they are really zeroed. We also have to
-	 * unmap metadata before zeroing as otherwise writeback can
-	 * overwrite zeros with stale data from block device.
+	 * 我们必须在将块插入到 extent 状态树之前对它们进行清零。
+	 * 否则，有人可能会在状态树中查找它们，并在它们真正被清零之前使用它们。
+	 * 我们还必须在清零之前取消映射元数据，否则写回操作可能会用
+	 * 块设备中的陈旧数据覆盖零。
 	 */
 	if (flags & EXT4_GET_BLOCKS_ZERO &&
 	    map->m_flags & EXT4_MAP_MAPPED && map->m_flags & EXT4_MAP_NEW) {
+		// 发出清零请求，将新分配的物理块清零
 		err = ext4_issue_zeroout(inode, map->m_lblk, map->m_pblk,
 					 map->m_len);
 		if (err)
 			return err;
 	}
 
+	// 根据映射标志确定要插入到状态树中的extent状态
 	status = map->m_flags & EXT4_MAP_UNWRITTEN ?
 			EXTENT_STATUS_UNWRITTEN : EXTENT_STATUS_WRITTEN;
+			
+	// 将新分配的 extent 插入到 extent 状态树（ES树）中
 	ext4_es_insert_extent(inode, map->m_lblk, map->m_len, map->m_pblk,
 			      status, flags & EXT4_GET_BLOCKS_DELALLOC_RESERVE);
+			      
+	// 读取当前 inode 的 extent 状态序列号，更新映射的序列号以保证缓存一致性
 	map->m_seq = READ_ONCE(EXT4_I(inode)->i_es_seq);
 
-	return retval;
+	return retval; // 返回成功分配的块数
 }
+
 
 /*
  * The ext4_map_blocks() function tries to look up the requested blocks,
@@ -698,169 +720,220 @@ int ext4_map_create_blocks(handle_t *handle, struct inode *inode,
  *
  * It returns the error in case of allocation failure.
  */
+/**
+ * ext4_map_blocks - 在ext4文件系统中查找或分配逻辑块对应的物理块
+ * @handle: 事务处理句柄，用于文件系统的日志操作
+ * @inode: 要操作的文件对应的inode结构体
+ * @map: 块映射结构体，包含输入的逻辑块号、长度，以及输出的物理块号、长度和标志
+ * @flags: 控制标志位，决定查找或分配的行为（如是否创建、是否非阻塞等）
+ *
+ * 该函数首先在内存中的extent状态树中查找逻辑块映射，如果未命中，
+ * 则会尝试在磁盘上的extent树中查询。如果标志位要求分配新的块，
+ * 则会进行实际的块分配操作。同时，该函数还负责处理数据一致性、
+ * 事务日志提交等相关逻辑。
+ *
+ * 返回值：成功时返回映射的块数（大于0），未找到映射时返回0，失败时返回负的错误码。
+ */
 int ext4_map_blocks(handle_t *handle, struct inode *inode,
 		    struct ext4_map_blocks *map, int flags)
 {
+	/* 定义extent状态结构体，用于缓存中查找的结果 */
 	struct extent_status es;
+	/* 记录函数执行结果或映射的块数 */
 	int retval;
+	/* 记录检查块有效性等操作的返回值 */
 	int ret = 0;
+	/* 保存原始请求映射的块长度，后续可能会截断修改 */
 	unsigned int orig_mlen = map->m_len;
 #ifdef ES_AGGRESSIVE_TEST
+	/* 用于激进测试的原始映射副本 */
 	struct ext4_map_blocks orig_map;
 
+	/* 复制一份原始的map，用于后续的重新校验测试 */
 	memcpy(&orig_map, map, sizeof(*map));
 #endif
 
+	/* 初始化map的标志位为0 */
 	map->m_flags = 0;
+	/* 打印调试信息：标志、最大块数、逻辑块号 */
 	ext_debug(inode, "flag 0x%x, max_blocks %u, logical block %lu\n",
 		  flags, map->m_len, (unsigned long) map->m_lblk);
 
 	/*
-	 * ext4_map_blocks returns an int, and m_len is an unsigned int
+	 * ext4_map_blocks返回值为int，而m_len是无符号整型，
+	 * 为了防止返回值溢出，限制m_len的最大值为INT_MAX。
 	 */
 	if (unlikely(map->m_len > INT_MAX))
 		map->m_len = INT_MAX;
 
-	/* We can handle the block number less than EXT_MAX_BLOCKS */
+	/* 我们可以处理小于 EXT_MAX_BLOCKS 的块号 */
 	if (unlikely(map->m_lblk >= EXT_MAX_BLOCKS))
 		return -EFSCORRUPTED;
 
 	/*
-	 * Callers from the context of data submission are the only exceptions
-	 * for regular files that do not hold the i_rwsem or invalidate_lock.
-	 * However, caching unrelated ranges is not permitted.
+	 * 从数据提交上下文调用的调用者是常规文件的唯一例外，
+	 * 它们不持有 i_rwsem 或 invalidate_lock 锁。
+	 * 但是，不允许缓存不相关的范围。
 	 */
 	if (flags & EXT4_GET_BLOCKS_IO_SUBMIT)
+		/* 如果是IO提交上下文，必须确保不缓存无关范围 */
 		WARN_ON_ONCE(!(flags & EXT4_EX_NOCACHE));
 	else
+		/* 否则，检查映射环境的安全性（如是否持有必要的锁） */
 		ext4_check_map_extents_env(inode);
 
-	/* Lookup extent status tree firstly */
+	/* 首先在内存的 extent 状态树中查找 */
 	if (ext4_es_lookup_extent(inode, map->m_lblk, NULL, &es, &map->m_seq)) {
+		/* 如果找到的extent是已写入或未写入状态 */
 		if (ext4_es_is_written(&es) || ext4_es_is_unwritten(&es)) {
+			/* 计算物理块号 = extent起始物理块 + 偏移量 */
 			map->m_pblk = ext4_es_pblock(&es) +
 					map->m_lblk - es.es_lblk;
+			/* 设置映射标志：已映射或未写入 */
 			map->m_flags |= ext4_es_is_written(&es) ?
 					EXT4_MAP_MAPPED : EXT4_MAP_UNWRITTEN;
+			/* 计算本次可映射的块数，不能超过请求的长度 */
 			retval = es.es_len - (map->m_lblk - es.es_lblk);
 			if (retval > map->m_len)
 				retval = map->m_len;
+			/* 更新实际映射的长度 */
 			map->m_len = retval;
 		} else if (ext4_es_is_delayed(&es) || ext4_es_is_hole(&es)) {
+			/* 如果是延迟分配或空洞，物理块号设为0 */
 			map->m_pblk = 0;
+			/* 设置延迟分配标志（如果是空洞则不设置） */
 			map->m_flags |= ext4_es_is_delayed(&es) ?
 					EXT4_MAP_DELAYED : 0;
+			/* 计算连续的延迟分配或空洞的块数 */
 			retval = es.es_len - (map->m_lblk - es.es_lblk);
 			if (retval > map->m_len)
 				retval = map->m_len;
 			map->m_len = retval;
+			/* 延迟分配或空洞返回0 */
 			retval = 0;
 		} else {
+			/* 遇到非法的extent状态，触发内核BUG */
 			BUG();
 		}
 
+		/* 如果设置了缓存无等待查询标志，直接返回查到的结果 */
 		if (flags & EXT4_GET_BLOCKS_CACHED_NOWAIT)
 			return retval;
 #ifdef ES_AGGRESSIVE_TEST
+		/* 在激进测试模式下，重新检查缓存查找的结果是否正确 */
 		ext4_map_blocks_es_recheck(handle, inode, map,
 					   &orig_map, flags);
 #endif
+		/* 如果不需要查询叶子节点中的最后一个块，或者已经映射了请求的全部长度，则跳转到found标签 */
 		if (!(flags & EXT4_GET_BLOCKS_QUERY_LAST_IN_LEAF) ||
 				orig_mlen == map->m_len)
 			goto found;
 
+		/* 恢复原始请求长度，以便后续继续查询 */
 		map->m_len = orig_mlen;
 	}
 	/*
-	 * In the query cache no-wait mode, nothing we can do more if we
-	 * cannot find extent in the cache.
+	 * 在查询缓存无等待模式下，如果在缓存中找不到extent，
+	 * 则无其他操作可做，直接返回0。
 	 */
 	if (flags & EXT4_GET_BLOCKS_CACHED_NOWAIT)
 		return 0;
 
 	/*
-	 * Try to see if we can get the block without requesting a new
-	 * file system block.
+	 * 尝试在不请求分配新文件系统块的情况下获取映射。
+	 * 进入读临界区，保护extent树的并发读取。
 	 */
 	down_read(&EXT4_I(inode)->i_data_sem);
+	/* 在磁盘上的extent树中查询块映射 */
 	retval = ext4_map_query_blocks(handle, inode, map, flags);
+	/* 退出读临界区 */
 	up_read((&EXT4_I(inode)->i_data_sem));
 
 found:
+	/* 如果找到了映射且标志为已映射，检查块的有效性（防止文件系统损坏） */
 	if (retval > 0 && map->m_flags & EXT4_MAP_MAPPED) {
 		ret = check_block_validity(inode, map);
 		if (ret != 0)
 			return ret;
 	}
 
-	/* If it is only a block(s) look up */
+	/* 如果仅仅是查找块（不包含创建标志），则直接返回 */
 	if ((flags & EXT4_GET_BLOCKS_CREATE) == 0)
 		return retval;
 
 	/*
-	 * Returns if the blocks have already allocated
+	 * 如果块已经分配，则返回。
 	 *
-	 * Note that if blocks have been preallocated
-	 * ext4_ext_map_blocks() returns with buffer head unmapped
+	 * 注意，如果块已经被预分配，
+	 * ext4_ext_map_blocks() 返回时 buffer head 仍然是未映射状态。
 	 */
 	if (retval > 0 && map->m_flags & EXT4_MAP_MAPPED)
 		/*
-		 * If we need to convert extent to unwritten
-		 * we continue and do the actual work in
-		 * ext4_ext_map_blocks()
+		 * 如果不需要将已分配的extent转换为未写入状态，
+		 * 则直接返回。否则需要继续往下执行，在
+		 * ext4_ext_map_blocks() 中完成实际的转换工作。
 		 */
 		if (!(flags & EXT4_GET_BLOCKS_CONVERT_UNWRITTEN))
 			return retval;
 
 
+	/* 跟踪inode的变化，用于文件系统一致性日志(fc) */
 	ext4_fc_track_inode(handle, inode);
 	/*
-	 * New blocks allocate and/or writing to unwritten extent
-	 * will possibly result in updating i_data, so we take
-	 * the write lock of i_data_sem, and call get_block()
-	 * with create == 1 flag.
+	 * 分配新块和/或写入未写入的extent可能需要更新 i_data，
+	 * 因此我们获取 i_data_sem 的写锁，并设置 create == 1 标志
+	 * 调用 get_block()。
 	 */
 	down_write(&EXT4_I(inode)->i_data_sem);
+	/* 实际执行块分配或extent转换操作 */
 	retval = ext4_map_create_blocks(handle, inode, map, flags);
+	/* 释放写锁 */
 	up_write((&EXT4_I(inode)->i_data_sem));
 
+	/* 如果分配失败，打印调试信息 */
 	if (retval < 0)
 		ext_debug(inode, "failed with err %d\n", retval);
+	/* 如果未分配到块或失败，直接返回 */
 	if (retval <= 0)
 		return retval;
 
+	/* 块分配成功后，再次检查物理块的有效性 */
 	if (map->m_flags & EXT4_MAP_MAPPED) {
 		ret = check_block_validity(inode, map);
 		if (ret != 0)
 			return ret;
 
 		/*
-		 * Inodes with freshly allocated blocks where contents will be
-		 * visible after transaction commit must be on transaction's
-		 * ordered data list.
+		 * 对于刚分配了新块且内容在事务提交后即可见的inode，
+		 * 必须将其加入到事务的有序数据列表中，以保证数据一致性。
 		 */
 		if (map->m_flags & EXT4_MAP_NEW &&
 		    !(map->m_flags & EXT4_MAP_UNWRITTEN) &&
 		    !(flags & EXT4_GET_BLOCKS_ZERO) &&
 		    !ext4_is_quota_file(inode) &&
 		    ext4_should_order_data(inode)) {
+			/* 计算受影响区域的起始字节和长度 */
 			loff_t start_byte = EXT4_LBLK_TO_B(inode, map->m_lblk);
 			loff_t length = EXT4_LBLK_TO_B(inode, map->m_len);
 
 			if (flags & EXT4_GET_BLOCKS_IO_SUBMIT)
+				/* 在IO提交路径下，等待数据写入完成 */
 				ret = ext4_jbd2_inode_add_wait(handle, inode,
 						start_byte, length);
 			else
+				/* 在普通路径下，记录数据写入操作 */
 				ret = ext4_jbd2_inode_add_write(handle, inode,
 						start_byte, length);
 			if (ret)
 				return ret;
 		}
 	}
+	/* 跟踪受影响的块范围，用于文件系统一致性日志(fc) */
 	ext4_fc_track_range(handle, inode, map->m_lblk, map->m_lblk +
 			    map->m_len - 1);
 	return retval;
 }
+
 
 /*
  * Update EXT4_MAP_FLAGS in bh->b_state. For buffer heads attached to pages
@@ -987,6 +1060,7 @@ struct buffer_head *ext4_getblk(handle_t *handle, struct inode *inode,
 		    || handle != NULL || create == 0);
 	ASSERT(create == 0 || !nowait);
 
+	inode_dbg(inode, "block: %u\n", block);
 	map.m_lblk = block;
 	map.m_len = 1;
 	err = ext4_map_blocks(handle, inode, &map, map_flags);
@@ -1052,6 +1126,7 @@ struct buffer_head *ext4_bread(handle_t *handle, struct inode *inode,
 	struct buffer_head *bh;
 	int ret;
 
+	inode_dbg(inode, "block: %u\n", block);
 	bh = ext4_getblk(handle, inode, block, map_flags);
 	if (IS_ERR(bh))
 		return bh;
@@ -1081,6 +1156,7 @@ int ext4_bread_batch(struct inode *inode, ext4_lblk_t block, int bh_count,
 		}
 	}
 
+	// 批量读取block
 	for (i = 0; i < bh_count; i++)
 		/* Note that NULL bhs[i] is valid because of holes. */
 		if (bhs[i] && !ext4_buffer_uptodate(bhs[i]))
@@ -1089,6 +1165,7 @@ int ext4_bread_batch(struct inode *inode, ext4_lblk_t block, int bh_count,
 	if (!wait)
 		return 0;
 
+	// 等待io完成
 	for (i = 0; i < bh_count; i++)
 		if (bhs[i])
 			wait_on_buffer(bhs[i]);
@@ -3666,17 +3743,29 @@ out:
 	return ret;
 }
 
+/**
+ * ext4_iomap_alloc - 为iomap分配文件系统块
+ * @inode: 指向目标inode的指针
+ * @map: 指向块映射结构的指针，包含逻辑块号和长度等信息
+ * @flags: iomap操作标志位，如IOMAP_ATOMIC、IOMAP_DAX等
+ *
+ * 该函数用于在直接I/O或DAX操作时分配文件系统块，处理日志事务，
+ * 并根据不同的标志位和文件状态选择合适的块分配策略。
+ *
+ * 返回值: 成功时返回映射的块数，失败时返回负的错误码。
+ */
 static int ext4_iomap_alloc(struct inode *inode, struct ext4_map_blocks *map,
 			    unsigned int flags)
 {
-	handle_t *handle;
-	int ret, dio_credits, m_flags = 0, retries = 0;
-	bool force_commit = false;
+	handle_t *handle;         /* 日志事务句柄 */
+	int ret, dio_credits, m_flags = 0, retries = 0; /* ret: 返回值, dio_credits: 日志事务所需的信用值, m_flags: 块分配标志, retries: 重试次数 */
+	bool force_commit = false; /* 是否强制提交事务的标志 */
 
 	/*
 	 * Trim the mapping request to the maximum value that we can map at
 	 * once for direct I/O.
 	 */
+	/* 限制直接I/O单次映射的最大块数，防止请求过长 */
 	if (map->m_len > DIO_MAX_BLOCKS)
 		map->m_len = DIO_MAX_BLOCKS;
 
@@ -3686,21 +3775,27 @@ static int ext4_iomap_alloc(struct inode *inode, struct ext4_map_blocks *map,
 	 * then let's assume the no. of pextents required can be m_len i.e.
 	 * every alternate block can be unwritten and hole.
 	 */
+	/* 原子写操作的日志信用值估算。首先探测映射情况，判断是否存在混合映射 */
 	if (flags & IOMAP_ATOMIC) {
-		unsigned int orig_mlen = map->m_len;
+		unsigned int orig_mlen = map->m_len; /* 保存原始请求映射长度 */
 
+		/* 探测块映射情况，不实际分配 (传入0作为标志) */
 		ret = ext4_map_blocks(NULL, inode, map, 0);
 		if (ret < 0)
 			return ret;
+		
+		/* 如果探测返回的映射长度小于原始请求长度，说明存在混合映射（如未写与空洞交替） */
 		if (map->m_len < orig_mlen) {
-			map->m_len = orig_mlen;
+			map->m_len = orig_mlen; /* 恢复原始映射长度 */
 			dio_credits = ext4_meta_trans_blocks(inode, orig_mlen,
 							     map->m_len);
 		} else {
+			/* 非混合映射，按常规块计算信用值 */
 			dio_credits = ext4_chunk_trans_blocks(inode,
 							      map->m_len);
 		}
 	} else {
+		/* 非原子写操作，直接计算所需的日志信用值 */
 		dio_credits = ext4_chunk_trans_blocks(inode, map->m_len);
 	}
 
@@ -3711,6 +3806,7 @@ retry:
 	 * already allocated and unwritten. In that case, the extent conversion
 	 * fits into the credits as well.
 	 */
+	/* 启动日志事务，预留之前计算好的信用值 */
 	handle = ext4_journal_start(inode, EXT4_HT_MAP_BLOCKS, dio_credits);
 	if (IS_ERR(handle))
 		return PTR_ERR(handle);
@@ -3719,8 +3815,12 @@ retry:
 	 * DAX and direct I/O are the only two operations that are currently
 	 * supported with IOMAP_WRITE.
 	 */
+	/* 警告：目前IOMAP_WRITE仅支持DAX和直接I/O操作 */
 	WARN_ON(!(flags & (IOMAP_DAX | IOMAP_DIRECT)));
+	
+	/* 根据不同的I/O类型和文件状态，设置块分配标志 m_flags */
 	if (flags & IOMAP_DAX)
+		/* DAX模式：分配并清零块 */
 		m_flags = EXT4_GET_BLOCKS_CREATE_ZERO;
 	/*
 	 * We use i_size instead of i_disksize here because delalloc writeback
@@ -3728,11 +3828,15 @@ retry:
 	 * i_disksize out to i_size. This could be beyond where direct I/O is
 	 * happening and thus expose allocated blocks to direct I/O reads.
 	 */
+	/* 延迟分配回写可能随时更新i_disksize，使用i_size更安全，防止暴露未初始化块 */
 	else if (EXT4_LBLK_TO_B(inode, map->m_lblk) >= i_size_read(inode))
+		/* 超出文件当前大小的直接I/O：创建新块 */
 		m_flags = EXT4_GET_BLOCKS_CREATE;
 	else if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))
+		/* 在文件大小内且使用extents格式的直接I/O：分配未写入的extent */
 		m_flags = EXT4_GET_BLOCKS_CREATE_UNWRIT_EXT;
 
+	/* 根据是否为原子写操作，选择对应的块映射分配函数 */
 	if (flags & IOMAP_ATOMIC)
 		ret = ext4_map_blocks_atomic_write(handle, inode, map, m_flags,
 						   &force_commit);
@@ -3744,10 +3848,15 @@ retry:
 	 * expose stale data in the case of a crash. Use the magic error code
 	 * to fallback to buffered I/O.
 	 */
+	/* 对于基于间接块映射的inode，不能填充空洞，否则崩溃时会暴露过期数据。
+	   返回-ENOTBLK特殊错误码，让上层回退到缓冲I/O */
 	if (!m_flags && !ret)
 		ret = -ENOTBLK;
 
+	/* 停止/关闭日志事务句柄 */
 	ext4_journal_stop(handle);
+	
+	/* 如果空间不足且文件系统允许重试，则重新尝试分配 */
 	if (ret == -ENOSPC && ext4_should_retry_alloc(inode->i_sb, &retries))
 		goto retry;
 
@@ -3759,53 +3868,90 @@ retry:
 	 * actual write I/O. If the commit fails, the whole I/O must be aborted
 	 * to prevent any possible torn writes.
 	 */
+	/* 如果分配跨越混合映射范围且标志要求强制提交，则提交当前事务。
+	   这确保元数据（如未写转已写）与数据块一致，防止撕裂写 */
 	if (ret > 0 && force_commit) {
-		int ret2;
+		int ret2; /* 保存事务提交的返回值 */
 
+		/* 强制提交超级块的事务 */
 		ret2 = ext4_force_commit(inode->i_sb);
 		if (ret2)
-			return ret2;
+			return ret2; /* 提交失败则直接返回错误，中止I/O */
 	}
 
-	return ret;
+	return ret; /* 返回映射的块数或错误码 */
 }
 
 
+
+/**
+ * ext4_iomap_begin - ext4文件系统的iomap起始映射回调函数
+ * @inode: 需要映射的inode节点
+ * @offset: 文件内的偏移量（字节）
+ * @length: 需要映射的长度（字节）
+ * @flags: I/O操作标志位（如 IOMAP_WRITE, IOMAP_DAX 等）
+ * @iomap: 输出参数，用于存储返回的映射信息
+ * @srcmap: 源映射信息（用于COW等场景，本函数未直接使用）
+ *
+ * 该函数用于将文件逻辑偏移量映射到底层的物理磁盘块。根据操作类型（读/写），
+ * 它会查询已有的块映射或在需要时分配新的块。对于写入操作，如果块已分配，
+ * 则可以直接返回以提升性能；如果块未分配，则调用分配函数。此外，它还
+ * 处理了内联加密的块连续性限制以及原子写入的完整性校验。
+ *
+ * Return: 成功返回0，失败返回相应的负错误码。
+ */
 static int ext4_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 		unsigned flags, struct iomap *iomap, struct iomap *srcmap)
 {
+	/* 函数执行结果返回值 */
 	int ret;
+	/* 用于存储和传递逻辑块到物理块的映射信息 */
 	struct ext4_map_blocks map;
+	/* inode的块大小位数，用于字节与块的移位转换 */
 	u8 blkbits = inode->i_blkbits;
+	/* 保存最初请求的映射块长度，用于后续重置或校验 */
 	unsigned int orig_mlen;
 
+	/* 检查请求的偏移量是否超过了文件系统支持的最大逻辑块号 */
 	if ((offset >> blkbits) > EXT4_MAX_LOGICAL_BLOCK)
 		return -EINVAL;
 
+	/* 如果inode包含内联数据，则不支持iomap映射，发出警告并返回错误 */
 	if (WARN_ON_ONCE(ext4_has_inline_data(inode)))
 		return -ERANGE;
 
 	/*
 	 * Calculate the first and last logical blocks respectively.
+	 * （计算起始和结束的逻辑块号）
 	 */
+	/* 根据字节偏移量计算起始逻辑块号 */
 	map.m_lblk = offset >> blkbits;
+	/* 计算需要映射的块长度，并确保不超过最大逻辑块限制 */
 	map.m_len = min_t(loff_t, (offset + length - 1) >> blkbits,
 			  EXT4_MAX_LOGICAL_BLOCK) - map.m_lblk + 1;
+	/* 记录最初请求的映射长度，后续分配或校验可能需要参考此值 */
 	orig_mlen = map.m_len;
 
+	/* 如果当前操作是写请求 */
 	if (flags & IOMAP_WRITE) {
 		/*
 		 * We check here if the blocks are already allocated, then we
 		 * don't need to start a journal txn and we can directly return
 		 * the mapping information. This could boost performance
 		 * especially in multi-threaded overwrite requests.
+		 * （在此检查块是否已分配，若已分配则无需开启日志事务，
+		 * 可直接返回映射信息。这在多线程覆盖写场景下能显著提升性能。）
 		 */
+		/* 如果写入范围未超出文件当前大小，说明是覆盖写 */
 		if (offset + length <= i_size_read(inode)) {
+			/* 查询块映射，不分配新块（标志位为0） */
 			ret = ext4_map_blocks(NULL, inode, &map, 0);
 			/*
 			 * For DAX we convert extents to initialized ones before
 			 * copying the data, otherwise we do it after I/O so
 			 * there's no need to call into ext4_iomap_alloc().
+			 * （对于DAX模式，我们在拷贝数据前将extent转换为已初始化状态；
+			 * 否则我们在I/O完成后转换，因此无需调用ext4_iomap_alloc()。）
 			 */
 			if ((map.m_flags & EXT4_MAP_MAPPED) ||
 			    (!(flags & IOMAP_DAX) &&
@@ -3813,18 +3959,25 @@ static int ext4_iomap_begin(struct inode *inode, loff_t offset, loff_t length,
 				/*
 				 * For atomic writes the entire requested
 				 * length should be mapped.
+				 * （对于原子写，整个请求的长度都必须被映射。）
 				 */
+				/* 如果已映射的块数满足原始请求长度，或非原子写且有部分映射 */
 				if (ret == orig_mlen ||
 				    (!(flags & IOMAP_ATOMIC) && ret > 0))
+					/* 映射成功，直接跳转到输出处理阶段 */
 					goto out;
 			}
+			/* 若映射不满足条件，重置映射长度为原始请求长度，准备重新分配 */
 			map.m_len = orig_mlen;
 		}
+		/* 覆盖写但块未分配，或追加写，调用分配函数分配磁盘块 */
 		ret = ext4_iomap_alloc(inode, &map, flags);
 	} else {
+		/* 对于非写操作（如读），仅查询块映射，不分配新块 */
 		ret = ext4_map_blocks(NULL, inode, &map, 0);
 	}
 
+	/* 如果映射或分配过程中发生错误，直接返回错误码 */
 	if (ret < 0)
 		return ret;
 out:
@@ -3832,52 +3985,95 @@ out:
 	 * When inline encryption is enabled, sometimes I/O to an encrypted file
 	 * has to be broken up to guarantee DUN contiguity.  Handle this by
 	 * limiting the length of the mapping returned.
+	 * （当启用内联加密时，有时必须拆分对加密文件的I/O以保证DUN的连续性。
+	 * 通过限制返回的映射长度来处理此情况。）
 	 */
+	/* 根据文件加密需求调整映射长度，确保加密块连续性 */
 	map.m_len = fscrypt_limit_io_blocks(inode, map.m_lblk, map.m_len);
 
 	/*
 	 * Before returning to iomap, let's ensure the allocated mapping
 	 * covers the entire requested length for atomic writes.
+	 * （在返回给iomap之前，确保为原子写分配的映射覆盖了整个请求长度。）
 	 */
+	/* 如果是原子写操作，必须确保映射长度覆盖整个请求 */
 	if (flags & IOMAP_ATOMIC) {
+		/* 如果映射长度小于请求的块长度，说明分配不完整 */
 		if (map.m_len < (length >> blkbits)) {
+			/* 触发警告，原子写绝不允许部分映射 */
 			WARN_ON_ONCE(1);
+			/* 返回无效参数错误 */
 			return -EINVAL;
 		}
 	}
+	/* 将ext4内部的映射结构转换为iomap框架要求的通用格式并输出 */
 	ext4_set_iomap(inode, iomap, &map, offset, length, flags);
 
+	/* 成功返回 */
 	return 0;
 }
+
 
 const struct iomap_ops ext4_iomap_ops = {
 	.iomap_begin		= ext4_iomap_begin,
 };
 
+/**
+ * ext4_iomap_begin_report - ext4文件系统用于报告（如fiemap）的iomap起始回调函数
+ * @inode:        目标inode节点
+ * @offset:       要查询的文件偏移量（起始位置）
+ * @length:       要查询的长度
+ * @flags:        iomap操作标志位
+ * @iomap:        输出参数，用于填充查询到的映射信息
+ * @srcmap:       源映射信息（在报告操作中通常不使用）
+ *
+ * 该函数用于获取指定文件范围内逻辑块到物理块的映射情况，
+ * 主要服务于FIEMAP ioctl等不需要分配块、仅做查询报告的操作。
+ *
+ * Return: 成功返回0，如果偏移量无效返回-EINVAL，如果超出范围返回-ENOENT，
+ *         其他错误返回相应的负错误码。
+ */
 static int ext4_iomap_begin_report(struct inode *inode, loff_t offset,
 				   loff_t length, unsigned int flags,
 				   struct iomap *iomap, struct iomap *srcmap)
 {
+	/* 函数返回值 */
 	int ret;
+	/* 用于存储逻辑块到物理块映射的中间结构体 */
 	struct ext4_map_blocks map;
+	/* 获取inode的块大小位数，用于进行字节到块的移位运算 */
 	u8 blkbits = inode->i_blkbits;
 
+	/*
+	 * 检查偏移量是否超出ext4支持的最大逻辑块号。
+	 * 如果超出，则直接返回无效参数错误。
+	 */
 	if ((offset >> blkbits) > EXT4_MAX_LOGICAL_BLOCK)
 		return -EINVAL;
 
+	/*
+	 * 如果文件包含内联数据，则尝试获取内联数据的iomap映射。
+	 */
 	if (ext4_has_inline_data(inode)) {
+		/* 获取内联数据的映射 */
 		ret = ext4_inline_data_iomap(inode, iomap);
+		/* 如果不是-EAGAIN，说明内联数据处理结束（成功或失败），直接返回 */
 		if (ret != -EAGAIN) {
+			/* 如果映射成功，但请求的偏移量超出了内联数据的长度，返回-ENOENT */
 			if (ret == 0 && offset >= iomap->length)
 				ret = -ENOENT;
 			return ret;
 		}
+		/* 返回-EAGAIN说明数据已从内联数据迁移至磁盘块，需继续走常规块映射流程 */
 	}
 
 	/*
 	 * Calculate the first and last logical block respectively.
+	 * （计算第一个和最后一个逻辑块号）
 	 */
+	/* 通过偏移量右移blkbits位，计算出起始逻辑块号 */
 	map.m_lblk = offset >> blkbits;
+	/* 计算要查询的逻辑块长度：先算出结束逻辑块号，再减去起始块号加1 */
 	map.m_len = min_t(loff_t, (offset + length - 1) >> blkbits,
 			  EXT4_MAX_LOGICAL_BLOCK) - map.m_lblk + 1;
 
@@ -3886,24 +4082,37 @@ static int ext4_iomap_begin_report(struct inode *inode, loff_t offset,
 	 * So handle it here itself instead of querying ext4_map_blocks().
 	 * Since ext4_map_blocks() will warn about it and will return
 	 * -EIO error.
+	 * （Fiemap调用者可能会查询超过s_bitmap_maxbytes的偏移量。
+	 * 因此在这里直接处理，而不是去查询ext4_map_blocks()。
+	 * 因为ext4_map_blocks()会对此发出警告并返回-EIO错误。）
 	 */
+	/* 如果文件未使用Extents特性（即使用传统的间接块映射） */
 	if (!(ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS))) {
+		/* 获取ext4超级块信息 */
 		struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
 
+		/* 如果查询偏移量超过了间接块映射支持的最大字节数限制 */
 		if (offset >= sbi->s_bitmap_maxbytes) {
+			/* 将映射标志位置0，表示该范围没有物理块映射 */
 			map.m_flags = 0;
+			/* 跳转到设置iomap的标签处，直接返回空洞映射 */
 			goto set_iomap;
 		}
 	}
 
+	/* 调用ext4_map_blocks查询逻辑块对应的物理块映射，第4个参数为0表示仅查询不分配 */
 	ret = ext4_map_blocks(NULL, inode, &map, 0);
+	/* 如果查询失败，返回错误码 */
 	if (ret < 0)
 		return ret;
 set_iomap:
+	/* 根据查询到的映射结果，填充iomap结构体 */
 	ext4_set_iomap(inode, iomap, &map, offset, length, flags);
 
+	/* 返回成功 */
 	return 0;
 }
+
 
 const struct iomap_ops ext4_iomap_report_ops = {
 	.iomap_begin = ext4_iomap_begin_report,
@@ -4851,49 +5060,96 @@ static int ext4_fill_raw_inode(struct inode *inode, struct ext4_inode *raw_inode
  * have in-inode xattr, we have all inode data in memory that is needed
  * to recreate the on-disk version of this inode.
  */
+/**
+ * __ext4_get_inode_loc - 获取指定inode在磁盘上的物理位置信息
+ * @sb: 指向超级块的指针，包含文件系统全局信息
+ * @ino: 需要定位的inode号
+ * @inode: 指向内存中inode结构的指针（可能为NULL），用于优化读取
+ * @iloc: 输出参数，用于存储计算得到的inode位置信息（块组、块号、偏移量等）
+ * @ret_block: 输出参数，若发生I/O错误，返回出错的块号（可为NULL）
+ *
+ * 该函数根据inode号计算其所在的块组、在该组inode表中的块号以及块内偏移量，
+ * 并将对应的缓冲区头部读入内存。如果目标块中的其他inode均为空闲且当前inode
+ * 在内存中有效，则可能会跳过实际的磁盘I/O操作，直接用内存数据填充缓冲区。
+ *
+ * 返回值: 成功返回0，失败返回相应的负错误码（如-EIO, -ENOMEM, -EFSCORRUPTED）
+ */
 static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 				struct inode *inode, struct ext4_iloc *iloc,
 				ext4_fsblk_t *ret_block)
 {
-	struct ext4_group_desc	*gdp;
-	struct buffer_head	*bh;
-	ext4_fsblk_t		block;
-	struct blk_plug		plug;
-	int			inodes_per_block, inode_offset;
+	/* 定义局部变量 */
+	struct ext4_group_desc	*gdp;		/* 块组描述符指针 */
+	struct buffer_head	*bh;		/* 缓冲区头部指针 */
+	ext4_fsblk_t		block;		/* inode所在的磁盘块号 */
+	struct blk_plug		plug;		/* 用于合并I/O请求的插塞结构 */
+	int			inodes_per_block, inode_offset; /* 每块inode数和inode在组内偏移 */
 
+	/* 初始化iloc的缓冲区头部为NULL */
 	iloc->bh = NULL;
+
+	/* 
+	 * 合法性检查：确保inode号在有效范围内。
+	 * 不能小于根inode号，也不能超过文件系统的总inode数。
+	 */
 	if (ino < EXT4_ROOT_INO ||
 	    ino > le32_to_cpu(EXT4_SB(sb)->s_es->s_inodes_count))
 		return -EFSCORRUPTED;
 
+	// 计算group：根据inode号推算出其所属的块组号
 	iloc->block_group = (ino - 1) / EXT4_INODES_PER_GROUP(sb);
+
+	/* 获取该块组的块组描述符 */
 	gdp = ext4_get_group_desc(sb, iloc->block_group, NULL);
 	if (!gdp)
 		return -EIO;
 
 	/*
 	 * Figure out the offset within the block group inode table
+	 * （计算在块组inode表内的偏移量）
 	 */
 	inodes_per_block = EXT4_SB(sb)->s_inodes_per_block;
+
+	// 计算inode在group内的索引偏移
 	inode_offset = ((ino - 1) %
 			EXT4_INODES_PER_GROUP(sb));
+
+	// 计算inode在block内的byte offset（字节偏移量）
 	iloc->offset = (inode_offset % inodes_per_block) * EXT4_INODE_SIZE(sb);
 
+	// 找到inode table的起始block地址
 	block = ext4_inode_table(sb, gdp);
+
+	/* 
+	 * 安全性检查：确保inode表的起始块号是合法的，
+	 * 必须大于第一个数据块，且小于文件系统的总块数。
+	 */
 	if ((block <= le32_to_cpu(EXT4_SB(sb)->s_es->s_first_data_block)) ||
 	    (block >= ext4_blocks_count(EXT4_SB(sb)->s_es))) {
 		ext4_error(sb, "Invalid inode table block %llu in "
 			   "block_group %u", block, iloc->block_group);
 		return -EFSCORRUPTED;
 	}
+
+	// 计算inode在第几个block：在inode表起始块基础上加上块内偏移
 	block += (inode_offset / inodes_per_block);
 
+	sb_dbg(sb, "inode: %lu, block_group: %u, block: %llu, offset: %lu\n",
+		ino, iloc->block_group, block, iloc->offset);
+
+	// 找到这个block的buffer_head：通过块号获取对应的缓冲区头部
 	bh = sb_getblk(sb, block);
 	if (unlikely(!bh))
 		return -ENOMEM;
+
+	// 检查buffer是否最新，如果有io error，则需要设置buffer为最新
 	if (ext4_buffer_uptodate(bh))
 		goto has_buffer;
 
+	/* 
+	 * 缓冲区不是最新的，先加锁。
+	 * 加锁后再次检查，防止在等待锁期间其他线程已将其更新。
+	 */
 	lock_buffer(bh);
 	if (ext4_buffer_uptodate(bh)) {
 		/* Someone brought it uptodate while we waited */
@@ -4905,14 +5161,18 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 	 * If we have all information of the inode in memory and this
 	 * is the only valid inode in the block, we need not read the
 	 * block.
+	 * （如果内存中已有该inode的全部信息，且该块中这是唯一有效的inode，
+	 * 则无需从磁盘读取该块，可直接填充。）
 	 */
 	if (inode && !ext4_test_inode_state(inode, EXT4_STATE_XATTR)) {
 		struct buffer_head *bitmap_bh;
 		int i, start;
 
+		/* 计算当前块在inode位图中的起始位 */
 		start = inode_offset & ~(inodes_per_block - 1);
 
 		/* Is the inode bitmap in cache? */
+		/* 获取inode位图对应的缓冲区 */
 		bitmap_bh = sb_getblk(sb, ext4_inode_bitmap(sb, gdp));
 		if (unlikely(!bitmap_bh))
 			goto make_io;
@@ -4921,11 +5181,15 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 		 * If the inode bitmap isn't in cache then the
 		 * optimisation may end up performing two reads instead
 		 * of one, so skip it.
+		 * （如果inode位图不在缓存中，优化可能导致两次读取而非一次，
+		 * 因此跳过此优化逻辑。）
 		 */
 		if (!buffer_uptodate(bitmap_bh)) {
 			brelse(bitmap_bh);
 			goto make_io;
 		}
+
+		/* 遍历当前块对应的位图区域，检查是否有其他已使用的inode */
 		for (i = start; i < start + inodes_per_block; i++) {
 			if (i == inode_offset)
 				continue;
@@ -4933,14 +5197,21 @@ static int __ext4_get_inode_loc(struct super_block *sb, unsigned long ino,
 				break;
 		}
 		brelse(bitmap_bh);
+
+		/* 如果遍历完发现除了自己，其他inode都是空闲的 */
 		if (i == start + inodes_per_block) {
 			struct ext4_inode *raw_inode =
 				(struct ext4_inode *) (bh->b_data + iloc->offset);
 
 			/* all other inodes are free, so skip I/O */
+			/* 其他inode均空闲，跳过I/O操作，直接将缓冲区清零 */
 			memset(bh->b_data, 0, bh->b_size);
+
+			/* 如果内存中的inode不是新创建的，则用内存数据填充磁盘inode结构 */
 			if (!ext4_test_inode_state(inode, EXT4_STATE_NEW))
 				ext4_fill_raw_inode(inode, raw_inode);
+
+			/* 标记缓冲区为最新并解锁，跳转至完成逻辑 */
 			set_buffer_uptodate(bh);
 			unlock_buffer(bh);
 			goto has_buffer;
@@ -4951,25 +5222,37 @@ make_io:
 	/*
 	 * If we need to do any I/O, try to pre-readahead extra
 	 * blocks from the inode table.
+	 * （如果需要执行I/O操作，尝试对inode表中的额外块进行预读。）
 	 */
-	blk_start_plug(&plug);
+	blk_start_plug(&plug); /* 开启I/O插塞，合并后续的I/O请求 */
+
+	/* 如果配置了inode预读块数，则执行预读逻辑 */
 	if (EXT4_SB(sb)->s_inode_readahead_blks) {
 		ext4_fsblk_t b, end, table;
 		unsigned num;
 		__u32 ra_blks = EXT4_SB(sb)->s_inode_readahead_blks;
 
 		table = ext4_inode_table(sb, gdp);
+
 		/* s_inode_readahead_blks is always a power of 2 */
+		/* 计算预读窗口的起始块（对齐到预读块数的边界） */
 		b = block & ~((ext4_fsblk_t) ra_blks - 1);
 		if (table > b)
-			b = table;
-		end = b + ra_blks;
+			b = table; /* 确保预读不越过inode表的起始位置 */
+
+		end = b + ra_blks; /* 计算预读窗口的结束块 */
+
+		/* 计算当前块组中实际使用的inode表块数 */
 		num = EXT4_INODES_PER_GROUP(sb);
 		if (ext4_has_group_desc_csum(sb))
 			num -= ext4_itable_unused_count(sb, gdp);
 		table += num / inodes_per_block;
+
+		/* 确保预读窗口不超过inode表的末尾 */
 		if (end > table)
 			end = table;
+
+		/* 循环提交预读请求 */
 		while (b <= end)
 			ext4_sb_breadahead_unmovable(sb, b++);
 	}
@@ -4978,22 +5261,33 @@ make_io:
 	 * There are other valid inodes in the buffer, this inode
 	 * has in-inode xattrs, or we don't have this inode in memory.
 	 * Read the block from disk.
+	 * （缓冲区中存在其他有效inode，或该inode有内联扩展属性，亦或内存中无此inode。
+	 * 必须从磁盘读取该块。）
 	 */
 	trace_ext4_load_inode(sb, ino);
+
+	// 从磁盘读取block到buffer：异步提交读请求
 	ext4_read_bh_nowait(bh, REQ_META | REQ_PRIO, NULL,
 			    ext4_simulate_fail(sb, EXT4_SIM_INODE_EIO));
-	blk_finish_plug(&plug);
+
+	blk_finish_plug(&plug); /* 结束I/O插塞，开始派发请求 */
+
+	// 等待io完成被唤醒：阻塞等待缓冲区读取完成
 	wait_on_buffer(bh);
+
+	/* 如果读取完成后缓冲区仍不是最新的，说明I/O发生错误 */
 	if (!buffer_uptodate(bh)) {
 		if (ret_block)
-			*ret_block = block;
-		brelse(bh);
+			*ret_block = block; /* 记录出错的块号 */
+		brelse(bh); /* 释放缓冲区 */
 		return -EIO;
 	}
 has_buffer:
+	/* 缓冲区已就绪，将其赋值给iloc的bh成员 */
 	iloc->bh = bh;
 	return 0;
 }
+
 
 static int __ext4_get_inode_loc_noinmem(struct inode *inode,
 					struct ext4_iloc *iloc)
@@ -5016,6 +5310,8 @@ int ext4_get_inode_loc(struct inode *inode, struct ext4_iloc *iloc)
 	ext4_fsblk_t err_blk = 0;
 	int ret;
 
+	inode_dbg(inode, "\n");
+	// 根据super block，inode number查找
 	ret = __ext4_get_inode_loc(inode->i_sb, inode->i_ino, inode, iloc,
 					&err_blk);
 
@@ -6175,21 +6471,43 @@ err_out:
 	return error;
 }
 
+/**
+ * ext4_dio_alignment - 获取ext4文件系统下直接I/O(DIO)的对齐要求
+ * @inode: 指向目标inode结构的指针
+ *
+ * 此函数用于判断指定inode是否支持直接I/O（DIO），并返回相应的对齐要求。
+ * 如果不支持DIO，则返回0；如果支持，则返回所需的字节数对齐边界。
+ * 返回1表示使用iomap的默认对齐方式。
+ *
+ * Return: 直接I/O的对齐字节数，0表示不支持直接I/O
+ */
 u32 ext4_dio_alignment(struct inode *inode)
 {
+	/* 如果inode启用了fsverity（文件系统验证），则不支持DIO，返回0 */
 	if (fsverity_active(inode))
 		return 0;
+
+	/* 如果inode需要日志记录数据，则不支持DIO，返回0 */
 	if (ext4_should_journal_data(inode))
 		return 0;
+
+	/* 如果inode包含内联数据，则不支持DIO，返回0 */
 	if (ext4_has_inline_data(inode))
 		return 0;
+
+	/* 如果inode被加密 */
 	if (IS_ENCRYPTED(inode)) {
+		/* 检查fscrypt是否支持该inode的DIO，不支持则返回0 */
 		if (!fscrypt_dio_supported(inode))
 			return 0;
+		/* 如果支持加密DIO，则需要按文件系统的块大小进行对齐 */
 		return i_blocksize(inode);
 	}
+
+	/* 其他常规情况，支持DIO，返回1表示使用iomap的默认对齐规则 */
 	return 1; /* use the iomap defaults */
 }
+
 
 int ext4_getattr(struct mnt_idmap *idmap, const struct path *path,
 		 struct kstat *stat, u32 request_mask, unsigned int query_flags)

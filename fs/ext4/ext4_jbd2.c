@@ -5,6 +5,7 @@
 
 #include "ext4_jbd2.h"
 
+#include "linux/dbg.h"
 #include <trace/events/ext4.h>
 
 int ext4_inode_journal_mode(struct inode *inode)
@@ -96,6 +97,7 @@ handle_t *__ext4_journal_start_sb(struct inode *inode,
 {
 	journal_t *journal;
 	int err;
+	sb_dbg(sb, "inode %p, blocks %d\n", inode, blocks);
 	if (inode)
 		trace_ext4_journal_start_inode(inode, blocks, rsv_blocks,
 					revoke_creds, type,
@@ -235,6 +237,7 @@ int __ext4_journal_get_write_access(const char *where, unsigned int line,
 {
 	int err;
 
+	sb_dbg(sb, "bh %p\n", bh);
 	might_sleep();
 
 	if (ext4_handle_valid(handle)) {

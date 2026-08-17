@@ -2133,6 +2133,7 @@ void init_cgroup_root(struct cgroup_fs_context *ctx)
 	INIT_LIST_HEAD_RCU(&root->root_list);
 	atomic_set(&root->nr_cgrps, 1);
 	cgrp->root = root;
+	// 初始化cgroup 后台任务处理，执行定时任务
 	init_cgroup_housekeeping(cgrp);
 
 	/* DYNMODS must be modified through cgroup_favor_dynmods() */
@@ -6404,10 +6405,12 @@ static void __init cgroup_init_subsys(struct cgroup_subsys *ss, bool early)
  */
 int __init cgroup_init_early(void)
 {
+	// cgroups 文件系统挂载相关
 	static struct cgroup_fs_context __initdata ctx;
 	struct cgroup_subsys *ss;
 	int i;
 
+	// 初始化cgroup根节点
 	ctx.root = &cgrp_dfl_root;
 	init_cgroup_root(&ctx);
 	cgrp_dfl_root.cgrp.self.flags |= CSS_NO_REF;

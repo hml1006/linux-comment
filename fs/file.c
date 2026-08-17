@@ -256,6 +256,7 @@ static int expand_fdtable(struct files_struct *files, unsigned int nr)
 	struct fdtable *new_fdt, *cur_fdt;
 
 	spin_unlock(&files->file_lock);
+	// 分配新的描述符表
 	new_fdt = alloc_fdtable(nr + 1);
 
 	/* make sure all fd_install() have seen resize_in_progress
@@ -269,8 +270,11 @@ static int expand_fdtable(struct files_struct *files, unsigned int nr)
 		return PTR_ERR(new_fdt);
 	cur_fdt = files_fdtable(files);
 	BUG_ON(nr < cur_fdt->max_fds);
+	// 旧表拷贝到新表
 	copy_fdtable(new_fdt, cur_fdt);
 	rcu_assign_pointer(files->fdt, new_fdt);
+
+	// 释放旧表
 	if (cur_fdt != &files->fdtab)
 		call_rcu(&cur_fdt->rcu, free_fdtable_rcu);
 	/* coupled with smp_rmb() in fd_install() */
@@ -299,8 +303,10 @@ repeat:
 	if (nr < fdt->max_fds)
 		return 0;
 
+	// 正在扩容
 	if (unlikely(files->resize_in_progress)) {
 		spin_unlock(&files->file_lock);
+		// 加入等待队列
 		wait_event(files->resize_wait, !files->resize_in_progress);
 		spin_lock(&files->file_lock);
 		goto repeat;
@@ -312,9 +318,11 @@ repeat:
 
 	/* All good, so we try */
 	files->resize_in_progress = true;
+	// 真正扩容文件描述符表
 	error = expand_fdtable(files, nr);
 	files->resize_in_progress = false;
 
+	// 唤醒等待扩容的进程
 	wake_up_all(&files->resize_wait);
 	return error;
 }
@@ -575,6 +583,7 @@ static int alloc_fd(unsigned start, unsigned end, unsigned flags)
 
 	spin_lock(&files->file_lock);
 repeat:
+	// 文件描述符表
 	fdt = files_fdtable(files);
 	fd = start;
 	if (fd < files->next_fd)
@@ -591,6 +600,7 @@ repeat:
 	if (unlikely(fd >= end))
 		goto out;
 
+	// 文件描述符表扩容
 	if (unlikely(fd >= fdt->max_fds)) {
 		error = expand_files(files, fd);
 		if (error < 0)
@@ -711,24 +721,39 @@ EXPORT_SYMBOL(fd_install);
  *
  * Returns: The file associated with @fd (NULL if @fd is not open)
  */
+/**
+ * file_close_fd_locked - 关闭文件描述符并返回对应的文件结构体
+ * @files: 文件结构体指针，包含进程打开的文件描述符表
+ * @fd: 要关闭的文件描述符编号
+ * 
+ * 该函数在持有文件锁的情况下安全地关闭指定的文件描述符，并返回对应的文件结构体指针。
+ * 使用RCU机制确保在多核环境下的安全性。
+ * 
+ * 返回值:
+ *     成功时返回关闭的文件结构体指针，如果文件描述符无效则返回NULL
+ */
+
 struct file *file_close_fd_locked(struct files_struct *files, unsigned fd)
 {
-	struct fdtable *fdt = files_fdtable(files);
+	struct fdtable *fdt = files_fdtable(files);  // 获取文件描述符表
 	struct file *file;
 
-	lockdep_assert_held(&files->file_lock);
+	lockdep_assert_held(&files->file_lock);  // 确保持有文件锁
 
+	// 检查文件描述符是否超出范围
 	if (fd >= fdt->max_fds)
 		return NULL;
 
+	// 使用array_index_nospec防止越界访问
 	fd = array_index_nospec(fd, fdt->max_fds);
-	file = rcu_dereference_raw(fdt->fd[fd]);
+	file = rcu_dereference_raw(fdt->fd[fd]);  // 原始RCU引用获取文件结构体
 	if (file) {
-		rcu_assign_pointer(fdt->fd[fd], NULL);
-		__put_unused_fd(files, fd);
+		rcu_assign_pointer(fdt->fd[fd], NULL);  // 将文件描述符指针置为NULL
+		__put_unused_fd(files, fd);  // 将文件描述符标记为未使用
 	}
-	return file;
+	return file;  // 返回文件结构体指针
 }
+
 
 int close_fd(unsigned fd)
 {
@@ -815,39 +840,53 @@ static inline void __range_close(struct files_struct *files, unsigned int fd,
  * from @fd up to and including @max_fd are closed.
  * Currently, errors to close a given file descriptor are ignored.
  */
+/**
+ * sys_close_range - 关闭指定范围内的文件描述符
+ * @fd: 要关闭的起始文件描述符
+ * @max_fd: 要关闭的结束文件描述符
+ * @flags: 关闭标志，可以是CLOSE_RANGE_UNSHARE和CLOSE_RANGE_CLOEXEC的组合
+ * 
+ * 这个系统调用允许关闭指定范围内的文件描述符，可以有两种模式：
+ * 1. 直接关闭指定范围内的文件描述符
+ * 2. 在复制文件描述符表后关闭指定范围内的文件描述符
+ */
 SYSCALL_DEFINE3(close_range, unsigned int, fd, unsigned int, max_fd,
 		unsigned int, flags)
 {
-	struct task_struct *me = current;
-	struct files_struct *cur_fds = me->files, *fds = NULL;
+	struct task_struct *me = current;      // 获取当前进程的任务结构
+	struct files_struct *cur_fds = me->files, *fds = NULL;  // 获取当前进程的文件描述符表
 
+	// 检查flags参数是否有效，只允许CLOSE_RANGE_UNSHARE和CLOSE_RANGE_CLOEXEC标志
 	if (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC))
 		return -EINVAL;
 
+	// 检查文件描述符范围是否有效
 	if (fd > max_fd)
 		return -EINVAL;
 
+	// 如果设置了CLOSE_RANGE_UNSHARE标志且当前文件描述符表被多个进程共享
 	if ((flags & CLOSE_RANGE_UNSHARE) && atomic_read(&cur_fds->count) > 1) {
 		struct fd_range range = {fd, max_fd}, *punch_hole = &range;
 
 		/*
-		 * If the caller requested all fds to be made cloexec we always
-		 * copy all of the file descriptors since they still want to
-		 * use them.
+		 * 如果调用者请求将所有文件描述符标记为cloexec，
+		 * 我们总是复制所有文件描述符，因为它们仍然想使用它们。
 		 */
 		if (flags & CLOSE_RANGE_CLOEXEC)
 			punch_hole = NULL;
 
+		// 复制文件描述符表
 		fds = dup_fd(cur_fds, punch_hole);
 		if (IS_ERR(fds))
 			return PTR_ERR(fds);
 		/*
-		 * We used to share our file descriptor table, and have now
-		 * created a private one, make sure we're using it below.
+		 * 我们之前共享文件描述符表，现在创建了一个私有表，
+		 * 确保我们在下面使用它。
 		 */
 		swap(cur_fds, fds);
 	}
 
+	// 根据flags选择执行cloexec或直接关闭操作
 	if (flags & CLOSE_RANGE_CLOEXEC)
 		__range_cloexec(cur_fds, fd, max_fd);
 	else
@@ -855,8 +894,8 @@ SYSCALL_DEFINE3(close_range, unsigned int, fd, unsigned int, max_fd,
 
 	if (fds) {
 		/*
-		 * We're done closing the files we were supposed to. Time to install
-		 * the new file descriptor table and drop the old one.
+		 * 我们完成了需要关闭的文件。现在是时候安装新的
+		 * 文件描述符表并丢弃旧的了。
 		 */
 		task_lock(me);
 		me->files = cur_fds;
@@ -867,6 +906,7 @@ SYSCALL_DEFINE3(close_range, unsigned int, fd, unsigned int, max_fd,
 	return 0;
 }
 
+
 /**
  * file_close_fd - return file associated with fd
  * @fd: file descriptor to retrieve file for
@@ -875,10 +915,16 @@ SYSCALL_DEFINE3(close_range, unsigned int, fd, unsigned int, max_fd,
  *
  * Returns: The file associated with @fd (NULL if @fd is not open)
  */
+/**
+ * 关闭文件描述符并返回对应的file结构体指针
+ * @param fd 要关闭的文件描述符
+ * @return 成功返回对应的file结构体指针，失败返回NULL
+ */
 struct file *file_close_fd(unsigned int fd)
 {
-	struct files_struct *files = current->files;
+	struct files_struct *files = current->files;  // 获取当前进程的文件描述符表
 	struct file *file;
+	// 加锁保护对文件描述符表的访问
 
 	spin_lock(&files->file_lock);
 	file = file_close_fd_locked(files, fd);
@@ -1420,39 +1466,65 @@ int receive_fd_replace(int new_fd, struct file *file, unsigned int o_flags)
 	return new_fd;
 }
 
+/**
+ * ksys_dup3 - 复制文件描述符，并可以设置关闭时执行标志
+ * @oldfd: 原始文件描述符
+ * @newfd: 目标文件描述符
+ * @flags: 复制标志位，目前只支持O_CLOEXEC
+ * 
+ * 该函数用于复制一个文件描述符，并可以设置目标文件描述符的
+ * 关闭时执行标志(O_CLOEXEC)。如果原始文件描述符和目标文件描述符
+ * 相同，或者目标文件描述符超过了进程的文件描述符限制，则返回错误。
+ * 
+ * 返回值：
+ * 成功时返回0，失败时返回负的错误码
+ */
 static int ksys_dup3(unsigned int oldfd, unsigned int newfd, int flags)
 {
-	int err = -EBADF;
-	struct file *file;
-	struct files_struct *files = current->files;
+	int err = -EBADF;  // 默认错误码为文件描述符无效
+	struct file *file;  // 文件结构体指针
+	struct files_struct *files = current->files;  // 获取当前进程的文件描述符表
 
+	// 检查标志位是否有效，目前只支持O_CLOEXEC
 	if ((flags & ~O_CLOEXEC) != 0)
 		return -EINVAL;
 
+	// 如果原始文件描述符和目标文件描述符相同，返回无效参数错误
 	if (unlikely(oldfd == newfd))
 		return -EINVAL;
 
+	// 检查目标文件描述符是否超过了进程的文件描述符限制
 	if (newfd >= rlimit(RLIMIT_NOFILE))
 		return -EBADF;
 
+	// 获取文件描述符表的锁，防止并发访问
 	spin_lock(&files->file_lock);
+	
+	// 扩展文件描述符表以容纳新的文件描述符
 	err = expand_files(files, newfd);
+	
+	// 查找原始文件描述符对应的文件结构体
 	file = files_lookup_fd_locked(files, oldfd);
 	if (unlikely(!file))
-		goto Ebadf;
+		goto Ebadf;  // 如果文件结构体不存在，跳转到错误处理
+	
+	// 如果扩展文件描述符表失败
 	if (unlikely(err < 0)) {
-		if (err == -EMFILE)
-			goto Ebadf;
-		goto out_unlock;
+		if (err == -EMFILE)  // 如果是文件描述符数量已达上限
+			goto Ebadf;  // 跳转到文件描述符无效错误处理
+		goto out_unlock;  // 跳转到解锁处理
 	}
+	
+	// 执行实际的文件描述符复制操作
 	return do_dup2(files, file, newfd, flags);
 
-Ebadf:
+Ebadf:  // 文件描述符无效错误处理标签
 	err = -EBADF;
-out_unlock:
+out_unlock:  // 解锁处理标签
 	spin_unlock(&files->file_lock);
-	return err;
+	return err;  // 返回错误码
 }
+
 
 SYSCALL_DEFINE3(dup3, unsigned int, oldfd, unsigned int, newfd, int, flags)
 {
@@ -1478,20 +1550,32 @@ SYSCALL_DEFINE2(dup2, unsigned int, oldfd, unsigned int, newfd)
 	return ksys_dup3(oldfd, newfd, 0);
 }
 
+/**
+ * sys_dup - 复制文件描述符
+ * @fildes: 要复制的文件描述符
+ * 
+ * 该系统调用的作用是复制一个文件描述符，返回一个新的文件描述符，
+ * 新的文件描述符与原文件描述符指向相同的文件表项。
+ * 
+ * 返回值：
+ * 成功时返回新的文件描述符
+ * 失败时返回负的错误码
+ */
 SYSCALL_DEFINE1(dup, unsigned int, fildes)
 {
-	int ret = -EBADF;
-	struct file *file = fget_raw(fildes);
+	int ret = -EBADF;  // 初始化返回值为错误码EBADF，表示无效的文件描述符
+	struct file *file = fget_raw(fildes);  // 获取原始文件描述符对应的file结构体
 
-	if (file) {
-		ret = get_unused_fd_flags(0);
-		if (ret >= 0)
-			fd_install(ret, file);
-		else
-			fput(file);
+	if (file) {  // 如果成功获取到file结构体
+		ret = get_unused_fd_flags(0);  // 获取一个未使用的文件描述符，标志位为0
+		if (ret >= 0)  // 如果成功获取到未使用的文件描述符
+			fd_install(ret, file);  // 将file结构体安装到新的文件描述符上
+		else  // 如果获取未使用的文件描述符失败
+			fput(file);  // 释放file结构体的引用
 	}
-	return ret;
+	return ret;  // 返回结果，成功时为新的文件描述符，失败时为错误码
 }
+
 
 int f_dupfd(unsigned int from, struct file *file, unsigned flags)
 {

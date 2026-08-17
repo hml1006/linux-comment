@@ -32,6 +32,7 @@ void jump_label_unlock(void)
 	mutex_unlock(&jump_label_mutex);
 }
 
+// 比较label，二分查找，第一级先比较key，如果key相同再比较分支
 static int jump_label_cmp(const void *a, const void *b)
 {
 	const struct jump_entry *jea = a;
@@ -60,6 +61,7 @@ static int jump_label_cmp(const void *a, const void *b)
 	return 0;
 }
 
+//交换两个元素
 static void jump_label_swap(void *a, void *b, int size)
 {
 	long delta = (unsigned long)a - (unsigned long)b;
@@ -76,6 +78,7 @@ static void jump_label_swap(void *a, void *b, int size)
 	jeb->key	= tmp.key + delta;
 }
 
+// 排序entries，目的是可以通过二分查找找到jump label
 static void
 jump_label_sort_entries(struct jump_entry *start, struct jump_entry *stop)
 {

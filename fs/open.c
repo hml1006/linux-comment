@@ -5,6 +5,7 @@
  *  Copyright (C) 1991, 1992  Linus Torvalds
  */
 
+#include <linux/dbg.h>
 #include <linux/string.h>
 #include <linux/mm.h>
 #include <linux/file.h>
@@ -889,6 +890,7 @@ static int do_dentry_open(struct file *f,
 	struct inode *inode = f->f_path.dentry->d_inode;
 	int error;
 
+	dentry_dbg(f->__f_path.dentry, "inode %lu\n", f->__f_path.dentry->d_inode->i_ino);
 	path_get(&f->f_path);
 	f->f_inode = inode;
 	f->f_mapping = inode->i_mapping;
@@ -915,6 +917,7 @@ static int do_dentry_open(struct file *f,
 	if (S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode))
 		f->f_mode |= FMODE_ATOMIC_POS;
 
+	// 获取文件操作函数
 	f->f_op = fops_get(inode->i_fop);
 	if (WARN_ON(!f->f_op)) {
 		error = -ENODEV;
@@ -1049,6 +1052,7 @@ int vfs_open(const struct path *path, struct file *file)
 	int ret;
 
 	file->__f_path = *path;
+	dentry_dbg(file->__f_path.dentry, "inode %lu\n", file->__f_path.dentry->d_inode->i_ino);
 	ret = do_dentry_open(file, NULL);
 	if (!ret) {
 		/*
@@ -1457,25 +1461,41 @@ SYSCALL_DEFINE2(creat, const char __user *, pathname, umode_t, mode)
  * "id" is the POSIX thread ID. We use the
  * files pointer for this..
  */
+/**
+ * filp_flush - 刷新文件并执行相关清理操作
+ * @filp: 文件指针结构体
+ * @id: 文件所有者标识符
+ * 
+ * 该函数用于刷新文件缓冲区，并在文件关闭前执行必要的清理操作。
+ * 它会检查文件操作结构体是否存在flush方法，并调用它。
+ * 同时，如果不是路径文件，还会执行文件通知和文件锁的清理。
+ * 
+ * 返回值:
+ *     成功时返回0，失败时返回错误码
+ */
 static int filp_flush(struct file *filp, fl_owner_t id)
 {
 	int retval = 0;
 
+	// 检查文件计数是否为0，如果为0则表示文件已损坏，直接返回0
 	if (CHECK_DATA_CORRUPTION(file_count(filp) == 0, filp,
 			"VFS: Close: file count is 0 (f_op=%ps)",
 			filp->f_op)) {
 		return 0;
 	}
 
+	// 如果文件操作结构体中定义了flush方法，则调用它
 	if (filp->f_op->flush)
 		retval = filp->f_op->flush(filp, id);
 
+	// 如果不是路径文件，则执行文件通知和文件锁的清理
 	if (likely(!(filp->f_mode & FMODE_PATH))) {
 		dnotify_flush(filp, id);
 		locks_remove_posix(filp, id);
 	}
 	return retval;
 }
+
 
 int filp_close(struct file *filp, fl_owner_t id)
 {
@@ -1493,27 +1513,44 @@ EXPORT_SYMBOL(filp_close);
  * releasing the fd. This ensures that one clone task can't release
  * an fd while another clone is opening it.
  */
+/**
+ * SYSCALL_DEFINE1(close, unsigned int, fd) - 系统调用函数，用于关闭文件描述符
+ * @fd: 要关闭的文件描述符
+ * 
+ * 该函数是Linux内核中实现close()系统调用的底层函数，负责关闭指定的文件描述符，
+ * 并执行相关的清理工作。
+ * 
+ * 返回值：
+ * - 成功返回0
+ * - 失败返回错误码（如EBADF表示无效的文件描述符）
+ */
 SYSCALL_DEFINE1(close, unsigned int, fd)
 {
-	int retval;
-	struct file *file;
+	int retval;           // 用于存储函数返回值
+	struct file *file;    // 指向文件结构的指针
 
+	// 关闭文件描述符并获取对应的文件结构，如果失败则返回错误码
 	file = file_close_fd(fd);
 	if (!file)
 		return -EBADF;
 
+	// 刷新文件缓冲区，将所有待写入数据写入存储设备
 	retval = filp_flush(file, current->files);
 
 	/*
-	 * We're returning to user space. Don't bother
-	 * with any delayed fput() cases.
+	 * 我们即将返回用户空间，因此不需要处理任何延迟的fput()情况。
+	 * fput_close_sync()会立即释放文件资源，而不是延迟释放。
 	 */
 	fput_close_sync(file);
 
+	// 如果刷新操作成功，直接返回0
 	if (likely(retval == 0))
 		return 0;
 
-	/* can't restart close syscall because file table entry was cleared */
+	/* 
+	 * 不能重启close系统调用，因为文件表项已被清除。
+	 * 检查是否是可重启的错误码，如果是则转换为EINTR。
+	 */
 	if (retval == -ERESTARTSYS ||
 	    retval == -ERESTARTNOINTR ||
 	    retval == -ERESTARTNOHAND ||
@@ -1522,6 +1559,7 @@ SYSCALL_DEFINE1(close, unsigned int, fd)
 
 	return retval;
 }
+
 
 /*
  * This routine simulates a hangup on the tty, to arrange that users

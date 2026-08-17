@@ -12,6 +12,7 @@
  *        David S. Miller (davem@caip.rutgers.edu), 1995
  */
 
+#include <linux/dbg.h>
 #include <linux/time.h>
 #include <linux/capability.h>
 #include <linux/fs.h>
@@ -283,8 +284,13 @@ struct ext4_group_desc * ext4_get_group_desc(struct super_block *sb,
 		return NULL;
 	}
 
+	// 计算group_desc在第几个block中
 	group_desc = block_group >> EXT4_DESC_PER_BLOCK_BITS(sb);
+
+	// 计算group_desc在block中的偏移量
 	offset = block_group & (EXT4_DESC_PER_BLOCK(sb) - 1);
+
+	// 查找group_desc所在的内存的buffer_head, mount时会读取group desc到内存中
 	bh_p = sbi_array_rcu_deref(sbi, s_group_desc, group_desc);
 	/*
 	 * sbi_array_rcu_deref returns with rcu unlocked, this is ok since
@@ -299,11 +305,14 @@ struct ext4_group_desc * ext4_get_group_desc(struct super_block *sb,
 		return NULL;
 	}
 
+
+	// 根据偏移量找到group_desc
 	desc = (struct ext4_group_desc *)(
 		(__u8 *)bh_p->b_data +
 		offset * EXT4_DESC_SIZE(sb));
 	if (bh)
 		*bh = bh_p;
+	sb_dbg(sb, "found group desc: %p, group number: %d\n", desc, block_group);
 	return desc;
 }
 

@@ -15,6 +15,7 @@
  * the dcache entry is deleted or garbage collected.
  */
 
+#include <linux/dbg.h>
 #include <linux/ratelimit.h>
 #include <linux/string.h>
 #include <linux/mm.h>
@@ -2461,25 +2462,48 @@ seqretry:
  * NOTE! The caller *has* to check the resulting dentry against the sequence
  * number we've returned before using any of the resulting dentry state!
  */
+/**
+ * __d_lookup_rcu - 在RCU读端临界区下查找目录项
+ * @parent: 父目录项指针
+ * @name:   待查找的目录项名称（包含哈希值和长度）
+ * @seqp:   用于存储匹配目录项的序列号，供调用方后续检查
+ *
+ * 返回值: 成功找到返回目标 dentry 指针，否则返回 NULL
+ */
 struct dentry *__d_lookup_rcu(const struct dentry *parent,
 				const struct qstr *name,
 				unsigned *seqp)
 {
+	/* 获取名称的哈希值和长度组合值 */
 	u64 hashlen = name->hash_len;
+	/* 获取名称的字符串指针 */
 	const unsigned char *str = name->name;
+	/* 根据哈希值计算并获取对应的哈希桶头 */
 	struct hlist_bl_head *b = d_hash(hashlen);
 	struct hlist_bl_node *node;
 	struct dentry *dentry;
+
+	// hash key的生成方式是把parent和name一起进行hash
 
 	/*
 	 * Note: There is significant duplication with __d_lookup_rcu which is
 	 * required to prevent single threaded performance regressions
 	 * especially on architectures where smp_rmb (in seqcounts) are costly.
 	 * Keep the two functions in sync.
+	 *
+	 * 注意：此函数与 __d_lookup_rcu 存在大量代码重复，这是为了防止单线程
+	 * 性能下降，特别是在 smp_rmb（在 seqcount 中使用）开销较大的架构上。
+	 * 请保持这两个函数同步更新。
 	 */
 
+	/* 如果父目录项定义了自定义的比较操作，则转交由专门的函数处理 */
 	if (unlikely(parent->d_flags & DCACHE_OP_COMPARE))
 		return __d_lookup_rcu_op_compare(parent, name, seqp);
+
+	/* 定义局部数组用于调试打印，限制最大长度为31以防溢出 */
+	char search_name[32] = {0};
+	strncpy(search_name, str, hashlen_len(hashlen) >=31 ? 31 : hashlen_len(hashlen));
+	dentry_dbg(parent, "search for: %s\n", search_name);
 
 	/*
 	 * The hash list is protected using RCU.
@@ -2493,6 +2517,12 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 	 * renames using rename_lock seqlock.
 	 *
 	 * See Documentation/filesystems/path-lookup.txt for more details.
+	 *
+	 * 哈希链表受 RCU 保护。
+	 * 在比较候选目录项时需谨慎使用 d_seq，以避免与 d_move() 产生竞态。
+	 * 并发的重命名操作可能会干扰此处的链表遍历，导致遗漏目标目录项，
+	 * 从而产生假阴性结果。d_lookup() 使用 rename_lock 顺序锁来
+	 * 防范并发重命名。更多细节见 Documentation/filesystems/path-lookup.txt。
 	 */
 	hlist_bl_for_each_entry_rcu(dentry, node, b, d_hash) {
 		unsigned seq;
@@ -2513,14 +2543,32 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 		 *
 		 * Note that raw_seqcount_begin still *does* smp_rmb(), so
 		 * we are still guaranteed NUL-termination of ->d_name.name.
+		 *
+		 * 目录项的序列计数（d_seq）保护我们免受并发重命名的影响，
+		 * 从而保护了 parent 和 name 字段。
+		 * 调用者必须执行 seqcount 检查，才能对返回的目录项进行有效操作。
+		 *
+		 * 注意！这里执行的是 "raw"（原始）的 seqcount_begin。这意味着
+		 * 如果序列号正处于变更中间，我们不会等待其稳定。如果进行慢速
+		 * 目录项比较，我们将不断重试直到其稳定；而如果最终查找成功，
+		 * 我们实际上也想要退出 RCU 查找。
+		 * 注意 raw_seqcount_begin 仍然 *会* 执行 smp_rmb()，因此
+		 * 我们仍能保证 ->d_name.name 以 NUL 结尾。
 		 */
 		seq = raw_seqcount_begin(&dentry->d_seq);
+
+		// hash key匹配上后，在比较parent，name length，name内容
+
+		/* 如果父目录项不匹配，跳过当前项继续遍历 */
 		if (dentry->d_parent != parent)
 			continue;
+		/* 如果哈希值和名称长度不匹配，跳过当前项继续遍历 */
 		if (dentry->d_name.hash_len != hashlen)
 			continue;
+		/* 如果名称内容不匹配（使用 unlikely 优化分支预测），跳过当前项 */
 		if (unlikely(dentry_cmp(dentry, str, hashlen_len(hashlen)) != 0))
 			continue;
+
 		/*
 		 * Check for the dentry being unhashed.
 		 *
@@ -2529,14 +2577,25 @@ struct dentry *__d_lookup_rcu(const struct dentry *parent,
 		 * the sequence counter after unhashing is finished.
 		 *
 		 * We can at least predict on it.
+		 *
+		 * 检查目录项是否已被取消哈希（从哈希表中移除）。
+		 * 尽管很诱人，但我们 *不能* 跳过此项，因为在我们发现该目录项到
+		 * 取消哈希完成并加载序列计数器之间存在竞态窗口。
+		 * 我们至少可以对其进行预测（使用 unlikely 优化）。
 		 */
 		if (unlikely(d_unhashed(dentry)))
 			continue;
+
+		/* 记录匹配目录项的序列号，供调用方验证 */
 		*seqp = seq;
+		dentry_dbg(parent, "found: %s\n", search_name);
+		/* 找到匹配项，返回目录项指针 */
 		return dentry;
 	}
+	/* 遍历完哈希桶未找到匹配项，返回 NULL */
 	return NULL;
 }
+
 
 /**
  * d_lookup - search for a dentry
@@ -2587,6 +2646,7 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 	struct dentry *found = NULL;
 	struct dentry *dentry;
 
+	dentry_dbg(parent, "search for: %s\n", name->name);
 	/*
 	 * Note: There is significant duplication with __d_lookup_rcu which is
 	 * required to prevent single threaded performance regressions
@@ -2624,6 +2684,7 @@ struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
 			goto next;
 
 		dentry->d_lockref.count++;
+		dentry_dbg(parent, "found: %s\n", name->name);
 		found = dentry;
 		spin_unlock(&dentry->d_lock);
 		break;
@@ -2744,41 +2805,71 @@ static inline void end_dir_add(struct inode *dir, unsigned int n)
 
 static void d_wait_lookup(struct dentry *dentry)
 {
-	if (likely(d_in_lookup(dentry))) {
-		dentry->d_flags |= DCACHE_LOOKUP_WAITERS;
-		wait_var_event_spinlock(&dentry->d_flags,
-					!d_in_lookup(dentry),
-					&dentry->d_lock);
+	if (d_in_lookup(dentry)) {
+		DECLARE_WAITQUEUE(wait, current);
+		add_wait_queue(dentry->d_wait, &wait);
+		do {
+			set_current_state(TASK_UNINTERRUPTIBLE);
+			spin_unlock(&dentry->d_lock);
+			schedule();
+			spin_lock(&dentry->d_lock);
+		} while (d_in_lookup(dentry));
 	}
 }
 
+/**
+ * d_alloc_parallel - 并行分配一个目录项
+ * @parent: 父目录项
+ * @name: 目录项名称
+ * @wq: 等待队列头，用于并行查找时的等待
+ *
+ * 该函数尝试在父目录下查找指定名称的目录项。如果找不到，
+ * 则分配一个新的目录项并将其加入并行查找哈希表中。
+ * 如果发现其他线程正在并行查找同名目录项，则等待其完成。
+ *
+ * 返回值: 找到的或新分配的目录项指针；如果内存分配失败，返回错误指针。
+ */
 struct dentry *d_alloc_parallel(struct dentry *parent,
 				const struct qstr *name)
 {
+	// 获取目录项名称的哈希值
 	unsigned int hash = name->hash;
+	// 根据父目录项和哈希值获取并行查找的哈希桶
 	struct hlist_bl_head *b = in_lookup_hash(parent, hash);
 	struct hlist_bl_node *node;
+	// 申请一个新的dentry
 	struct dentry *new = __d_alloc(parent->d_sb, name);
 	struct dentry *dentry;
 	unsigned seq, r_seq, d_seq;
 
+	// 如果新目录项分配失败，返回内存不足的错误指针
 	if (unlikely(!new))
 		return ERR_PTR(-ENOMEM);
 
+	// 设置新目录项的标志，表示正在进行并行查找
 	new->d_flags |= DCACHE_PAR_LOOKUP;
+	// 锁定父目录项的自旋锁，准备修改父目录的子项链表
 	spin_lock(&parent->d_lock);
+	// 增加父目录项的引用计数并设置为新目录项的父目录
 	new->d_parent = dget_dlock(parent);
+	// 将新目录项添加到父目录的子目录项链表头部
 	hlist_add_head(&new->d_sib, &parent->d_children);
+	// 如果父目录处于断开连接状态，则新目录项也标记为断开连接
 	if (parent->d_flags & DCACHE_DISCONNECTED)
 		new->d_flags |= DCACHE_DISCONNECTED;
+	// 解锁父目录项的自旋锁
 	spin_unlock(&parent->d_lock);
 
 retry:
 	seq = smp_load_acquire(&parent->d_inode->i_dir_seq);
+	// 获取重命名锁的读序列号
 	r_seq = read_seqbegin(&rename_lock);
+	// 在RCU保护下查找目录项
 	rcu_read_lock();
 	dentry = __d_lookup_rcu(parent, name, &d_seq);
+	// 如果在RCU查找中找到了目录项
 	if (unlikely(dentry)) {
+		// 尝试增加目录项的引用计数，如果失败则重试
 		if (!lockref_get_not_dead(&dentry->d_lockref)) {
 			rcu_read_unlock();
 			goto retry;
@@ -2789,6 +2880,7 @@ retry:
 			goto retry;
 		}
 		dput(new);
+		// 返回找到的目录项
 		return dentry;
 	}
 	rcu_read_unlock();
@@ -2798,25 +2890,31 @@ retry:
 	if (unlikely(seq & 1))
 		goto retry;
 
+	// 锁定并行查找哈希桶的自旋锁
 	hlist_bl_lock(b);
+	// 再次检查父目录的序列号是否发生变化，若变化则解锁重试
 	if (unlikely(READ_ONCE(parent->d_inode->i_dir_seq) != seq)) {
 		hlist_bl_unlock(b);
 		goto retry;
 	}
 	/*
-	 * No changes for the parent since the beginning of d_lookup().
-	 * Since all removals from the chain happen with hlist_bl_lock(),
-	 * any potential in-lookup matches are going to stay here until
-	 * we unlock the chain.  All fields are stable in everything
-	 * we encounter.
+	 * 自d_lookup()开始以来，父目录没有发生变化。
+	 * 因为从链表中移除操作都需要持有hlist_bl_lock()，
+	 * 任何潜在的正在查找中的匹配项都会留在这里，直到
+	 * 我们解锁该链表。我们遇到的所有字段都是稳定的。
 	 */
+	// 遍历并行查找哈希桶中的目录项
 	hlist_bl_for_each_entry(dentry, node, b, d_in_lookup_hash) {
+		// 哈希值不匹配，继续检查下一个
 		if (dentry->d_name.hash != hash)
 			continue;
+		// 父目录不匹配，继续检查下一个
 		if (dentry->d_parent != parent)
 			continue;
+		// 名称不匹配，继续检查下一个
 		if (!d_same_name(dentry, parent, name))
 			continue;
+		// 找到了正在被其他线程查找的目录项，先解锁哈希桶
 		rcu_read_lock();
 		hlist_bl_unlock(b);
 		spin_lock(&dentry->d_lock);
@@ -2827,38 +2925,51 @@ retry:
 			goto retry;
 		}
 		/*
-		 * somebody is likely to be still doing lookup for it;
-		 * pin it and wait for them to finish
+		 * 可能有人仍在对其进行查找；
+		 * 等待他们完成
 		 */
 		dget_dlock(dentry);
 		d_wait_lookup(dentry);
 		/*
-		 * it's not in-lookup anymore; in principle we should repeat
-		 * everything from dcache lookup, but it's likely to be what
-		 * d_lookup() would've found anyway.  If it is, just return it;
-		 * otherwise we really have to repeat the whole thing.
+		 * 它不再处于查找中(in-lookup)状态；原则上我们应该重复
+		 * dcache查找的所有操作，但结果很可能与d_lookup()将要
+		 * 找到的一样。如果是这样，直接返回它；
+		 * 否则我们真的必须重复整个过程。
 		 */
+		// 以下检查确保等待结束后，该目录项依然符合匹配条件
+		// 哈希值不匹配，跳转到mismatch处理
 		if (unlikely(dentry->d_name.hash != hash))
 			goto mismatch;
+		// 父目录不匹配，跳转到mismatch处理
 		if (unlikely(dentry->d_parent != parent))
 			goto mismatch;
+		// 目录项已从哈希表中移除，跳转到mismatch处理
 		if (unlikely(d_unhashed(dentry)))
 			goto mismatch;
+		// 名称不匹配，跳转到mismatch处理
 		if (unlikely(!d_same_name(dentry, parent, name)))
 			goto mismatch;
-		/* OK, it *is* a hashed match; return it */
+		/* OK，它*确实*是一个哈希匹配项；返回它 */
+		// 解锁目录项自旋锁
 		spin_unlock(&dentry->d_lock);
+		// 释放新分配的目录项
 		dput(new);
+		// 返回找到的匹配目录项
 		return dentry;
 	}
 	hlist_bl_add_head(&new->d_in_lookup_hash, b);
 	hlist_bl_unlock(b);
+	// 返回新分配的目录项
 	return new;
 mismatch:
+	// 不匹配处理：解锁目录项自旋锁
 	spin_unlock(&dentry->d_lock);
+	// 释放该目录项的引用计数
 	dput(dentry);
+	// 重新进行查找流程
 	goto retry;
 }
+
 EXPORT_SYMBOL(d_alloc_parallel);
 
 /*

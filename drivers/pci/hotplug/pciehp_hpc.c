@@ -55,6 +55,7 @@ static irqreturn_t pciehp_isr(int irq, void *dev_id);
 static irqreturn_t pciehp_ist(int irq, void *dev_id);
 static int pciehp_poll(void *data);
 
+// 注册热插拔中断服务
 static inline int pciehp_request_irq(struct controller *ctrl)
 {
 	int retval, irq = ctrl->pcie->irq;
@@ -66,6 +67,7 @@ static inline int pciehp_request_irq(struct controller *ctrl)
 		return PTR_ERR_OR_ZERO(ctrl->poll_thread);
 	}
 
+	// pciehp_isr 中断服务函数， pciehp_ist 中断服务线程函数
 	/* Installs the interrupt handler */
 	retval = request_threaded_irq(irq, pciehp_isr, pciehp_ist,
 				      IRQF_SHARED, "pciehp", ctrl);
@@ -786,7 +788,7 @@ static irqreturn_t pciehp_ist(int irq, void *dev_id)
 	if (events & DISABLE_SLOT)
 		pciehp_handle_disable_request(ctrl);
 	else if (events & (PCI_EXP_SLTSTA_PDC | PCI_EXP_SLTSTA_DLLSC))
-		pciehp_handle_presence_or_link_change(ctrl, events);
+		pciehp_handle_presence_or_link_change(ctrl, events); // 处理链路状态变化
 	up_read(&ctrl->reset_lock);
 
 	ret = IRQ_HANDLED;

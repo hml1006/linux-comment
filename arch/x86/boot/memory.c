@@ -19,6 +19,7 @@ static void detect_memory_e820(void)
 {
 	int count = 0;
 	struct biosregs ireg, oreg;
+	// 检测结果放入这个table
 	struct boot_e820_entry *desc = boot_params.e820_table;
 	static struct boot_e820_entry buf; /* static so it is zeroed */
 
@@ -66,6 +67,7 @@ static void detect_memory_e820(void)
 		count++;
 	} while (ireg.ebx && count < ARRAY_SIZE(boot_params.e820_table));
 
+	// table entry 数量
 	boot_params.e820_entries = count;
 }
 
@@ -86,9 +88,12 @@ static void detect_memory_e801(void)
 		oreg.bx = oreg.dx;
 	}
 
+	// 15-16MB 为内存空洞，
+	// 大于 15MB 为bug
 	if (oreg.ax > 15*1024) {
 		return;	/* Bogus! */
 	} else if (oreg.ax == 15*1024) {
+		// 大于 16MB
 		boot_params.alt_mem_k = (oreg.bx << 6) + oreg.ax;
 	} else {
 		/*
@@ -98,6 +103,7 @@ static void detect_memory_e801(void)
 		 * 0E820h they should probably generate a fake e820
 		 * map.
 		 */
+		// 小于15MB
 		boot_params.alt_mem_k = oreg.ax;
 	}
 }
@@ -113,6 +119,9 @@ static void detect_memory_88(void)
 	boot_params.screen_info.ext_mem_k = oreg.ax;
 }
 
+/**
+ * 三种BIOS中断探测内存布局
+ */
 void detect_memory(void)
 {
 	detect_memory_e820();

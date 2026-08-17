@@ -3569,9 +3569,11 @@ static int nvme_dev_map(struct nvme_dev *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
 
+	// 请求内存region
 	if (pci_request_mem_regions(pdev, "nvme"))
 		return -ENODEV;
 
+	// map bar地址，doorbell寄存器
 	if (nvme_remap_bar(dev, NVME_REG_DBS + 4096))
 		goto release;
 
@@ -3674,6 +3676,7 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 		const struct pci_device_id *id)
 {
 	unsigned long quirks = id->driver_data;
+	// 获取device所在 NUMA node，分配内存时指定node可以让device相关内存距离cpu更近
 	int node = dev_to_node(&pdev->dev);
 	struct nvme_dev *dev;
 	struct quirk_entry *qentry;
@@ -3683,6 +3686,7 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 			GFP_KERNEL, node);
 	if (!dev)
 		return ERR_PTR(-ENOMEM);
+	// reset controller 工作队列初始化
 	INIT_WORK(&dev->ctrl.reset_work, nvme_reset_work);
 	mutex_init(&dev->shutdown_lock);
 
@@ -3713,11 +3717,14 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 		quirks |= qentry->enabled_quirks;
 		quirks &= ~qentry->disabled_quirks;
 	}
+
+	// 初始化controller，注册一些回调函数
 	ret = nvme_init_ctrl(&dev->ctrl, &pdev->dev, &nvme_pci_ctrl_ops,
 			     quirks);
 	if (ret)
 		goto out_put_device;
 
+	// 根据设备支持的地址长度设置dma mask，
 	if (dev->ctrl.quirks & NVME_QUIRK_DMA_ADDRESS_BITS_48)
 		dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(48));
 	else
@@ -3729,9 +3736,11 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 	 * Limit the max command size to prevent iod->sg allocations going
 	 * over a single page.
 	 */
+	 // 单次dma数据最大长度，一个SG大小
 	dev->ctrl.max_hw_sectors = min_t(u32,
 			NVME_MAX_BYTES >> SECTOR_SHIFT,
 			dma_opt_mapping_size(&pdev->dev) >> 9);
+	// SGL entries数量
 	dev->ctrl.max_segments = NVME_MAX_SEGS;
 	dev->ctrl.max_integrity_segments = 1;
 	return dev;
@@ -3744,11 +3753,13 @@ out_free_dev:
 	return ERR_PTR(ret);
 }
 
+// 调用驱动初始化设备调用probe
 static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	struct nvme_dev *dev;
 	int result = -ENOMEM;
 
+	// 分配nvme 设备
 	dev = nvme_pci_alloc_dev(pdev, id);
 	if (IS_ERR(dev))
 		return PTR_ERR(dev);
@@ -3757,6 +3768,7 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (result)
 		goto out_put_ctrl;
 
+	// map bar地址
 	result = nvme_dev_map(dev);
 	if (result)
 		goto out_uninit_ctrl;
@@ -3767,10 +3779,12 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	dev_info(dev->ctrl.device, "pci function %s\n", dev_name(&pdev->dev));
 
+	// 使能设备
 	result = nvme_pci_enable(dev);
 	if (result)
 		goto out_release_iod_mempool;
 
+	// 创建admin 硬件队列tagset，tagset bitmap每个bit对应一个queue
 	result = nvme_alloc_admin_tag_set(&dev->ctrl, &dev->admin_tagset,
 				&nvme_mq_admin_ops, sizeof(struct nvme_iod));
 	if (result)
@@ -4290,6 +4304,7 @@ static const struct pci_device_id nvme_id_table[] = {
 };
 MODULE_DEVICE_TABLE(pci, nvme_id_table);
 
+// 注册驱动时会匹配 ID table, 如果匹配上，会调用驱动probe函数
 static struct pci_driver nvme_driver = {
 	.name		= "nvme",
 	.id_table	= nvme_id_table,
@@ -4306,6 +4321,7 @@ static struct pci_driver nvme_driver = {
 	.err_handler	= &nvme_err_handler,
 };
 
+// 模块加载时初始化调用
 static int __init nvme_init(void)
 {
 	BUILD_BUG_ON(sizeof(struct nvme_create_cq) != 64);

@@ -926,7 +926,7 @@ void __noreturn panic_bad_stack(struct pt_regs *regs, unsigned long esr, unsigne
 	 * to get a better stack trace.
 	 */
 	nmi_panic(NULL, "kernel stack overflow");
-	cpu_park_loop();
+	cpu_park_loop();	// 停住cpu， wfe, wfi
 }
 
 void __noreturn arm64_serror_panic(struct pt_regs *regs, unsigned long esr)

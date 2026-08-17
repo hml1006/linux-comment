@@ -969,11 +969,11 @@ UNHANDLED(el0t, 32, error)
 
 asmlinkage void noinstr __noreturn handle_bad_stack(struct pt_regs *regs)
 {
-	unsigned long esr = read_sysreg(esr_el1);
-	unsigned long far = read_sysreg(far_el1);
+	unsigned long esr = read_sysreg(esr_el1);	// 错误原因
+	unsigned long far = read_sysreg(far_el1);	// 错误地址
 
 	irqentry_nmi_enter(regs);
-	panic_bad_stack(regs, esr, far);
+	panic_bad_stack(regs, esr, far);	// 打印panic信息
 }
 
 #ifdef CONFIG_ARM_SDE_INTERFACE

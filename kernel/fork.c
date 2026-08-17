@@ -907,7 +907,7 @@ void set_task_stack_end_magic(struct task_struct *tsk)
 {
 	unsigned long *stackend;
 
-	stackend = end_of_stack(tsk);
+	stackend = end_of_stack(tsk);	// 取栈顶端地址
 	*stackend = STACK_END_MAGIC;	/* for overflow detection */
 }
 

@@ -54,6 +54,7 @@
  * (C) Copyright 1994 - 1997 Marco van Wieringen
  */
 
+#include "linux/dbg.h"
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
@@ -2238,6 +2239,7 @@ int dquot_file_open(struct inode *inode, struct file *file)
 {
 	int error;
 
+	inode_dbg(inode, "name %s\n", file->f_path.dentry->d_name.name);
 	error = generic_file_open(inode, file);
 	if (!error && (file->f_mode & FMODE_WRITE))
 		error = dquot_initialize(inode);

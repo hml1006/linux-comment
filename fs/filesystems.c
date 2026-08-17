@@ -7,6 +7,8 @@
  *  table of configured filesystems
  */
 
+#include "linux/kern_levels.h"
+#include "linux/printk.h"
 #include <linux/syscalls.h>
 #include <linux/fs.h>
 #include <linux/proc_fs.h>

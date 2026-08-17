@@ -19,6 +19,7 @@
  * journaling (ext2 can use a reserved inode for storing the log).
  */
 
+#include "linux/dbg.h"
 #include <linux/module.h>
 #include <linux/time.h>
 #include <linux/fs.h>
@@ -2794,6 +2795,7 @@ struct journal_head *jbd2_journal_add_journal_head(struct buffer_head *bh)
 	struct journal_head *jh;
 	struct journal_head *new_jh = NULL;
 
+	blk_dbg(bh->b_bdev, "bh %p\n", bh);
 repeat:
 	if (!buffer_jbd(bh))
 		new_jh = journal_alloc_journal_head();
@@ -2823,6 +2825,7 @@ repeat:
 	jbd_unlock_bh_journal_head(bh);
 	if (new_jh)
 		journal_free_journal_head(new_jh);
+	blk_dbg(bh->b_bdev, "journal_head %p\n", bh->b_private);
 	return bh->b_private;
 }
 

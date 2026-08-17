@@ -1247,10 +1247,11 @@ bool __init early_init_dt_scan(void *dt_virt, phys_addr_t dt_phys)
 {
 	bool status;
 
+	// 设备树完整性校验
 	status = early_init_dt_verify(dt_virt, dt_phys);
 	if (!status)
 		return false;
-
+	// 扫描设备树节点
 	early_init_dt_scan_nodes();
 	return true;
 }

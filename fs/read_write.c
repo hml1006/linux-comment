@@ -450,52 +450,109 @@ SYSCALL_DEFINE5(llseek, unsigned int, fd, unsigned long, offset_high,
 }
 #endif
 
+/**
+ * rw_verify_area - 验证文件读写区域的权限与偏移量合法性
+ * @read_write: 读写操作类型标识（READ 或 WRITE）
+ * @file: 指向目标文件对象的指针
+ * @ppos: 指向文件偏移量的指针，若为 NULL 则跳过偏移量验证
+ * @count: 请求读写的字节数
+ *
+ * 此函数用于在执行文件读写操作前，验证请求的区域是否合法。
+ * 验证内容包括：
+ * 1. 检查请求的字节数是否为负数，若为负则返回 -EINVAL；
+ * 2. 检查文件偏移量与请求字节数相加后是否会导致溢出或越界，
+ *    对于不支持无符号偏移量的文件，若偏移量为负或相加后溢出，返回 -EINVAL；
+ *    对于支持无符号偏移量的文件，若溢出则返回 -EOVERFLOW；
+ * 3. 调用安全模块检查文件访问权限（读或写）；
+ * 4. 调用 fsnotify 检查文件区域的访问权限。
+ *
+ * Return: 成功时返回 0，失败时返回相应的负错误码（如 -EINVAL、-EOVERFLOW 或安全模块返回的错误码）。
+ */
 int rw_verify_area(int read_write, struct file *file, const loff_t *ppos, size_t count)
 {
+	/* 根据读写类型确定权限掩码：读操作对应 MAY_READ，写操作对应 MAY_WRITE */
 	int mask = read_write == READ ? MAY_READ : MAY_WRITE;
 	int ret;
 
+	/* 如果请求的字节数被强制转换为有符号数后小于0，说明传入的 count 值过大或非法 */
 	if (unlikely((ssize_t) count < 0))
 		return -EINVAL;
 
 	if (ppos) {
+		/* 获取当前文件偏移量 */
 		loff_t pos = *ppos;
 
 		if (unlikely(pos < 0)) {
+			/* 如果偏移量为负，检查文件是否支持无符号偏移量 */
 			if (!unsigned_offsets(file))
 				return -EINVAL;
-			if (count >= -pos) /* both values are in 0..LLONG_MAX */
+			/* 
+			 * 如果偏移量为负且请求的 count 大于等于 -pos，
+			 * 则两者相加会导致溢出到正值或零，这是不合法的越界操作。
+			 * （此时 pos 和 count 均在 0 到 LLONG_MAX 范围内）
+			 */
+			if (count >= -pos) 
 				return -EOVERFLOW;
 		} else if (unlikely((loff_t) (pos + count) < 0)) {
+			/* 
+			 * 如果偏移量为正，但偏移量加上请求数后溢出为负数，
+			 * 同样需要检查文件是否支持无符号偏移量，不支持则返回错误
+			 */
 			if (!unsigned_offsets(file))
 				return -EINVAL;
 		}
 	}
 
+	/* 调用 LSM (Linux Security Module) 进行文件权限安全检查 */
 	ret = security_file_permission(file, mask);
 	if (ret)
 		return ret;
 
+	/* 进行文件系统通知（如 inotify）相关的权限与区域验证 */
 	return fsnotify_file_area_perm(file, mask, ppos, count);
 }
+
 EXPORT_SYMBOL(rw_verify_area);
 
+/**
+ * new_sync_read - 同步读取文件数据的内核函数
+ * @filp: 指向目标文件对象的指针
+ * @buf:  用户空间缓冲区的指针，用于存放读取的数据
+ * @len:  需要读取的数据长度（字节数）
+ * @ppos: 指向文件偏移量的指针，若为NULL则从0开始
+ *
+ * 此函数通过初始化内核I/O控制块和I/O向量迭代器，将同步读操作
+ * 转换为异步迭代器读操作（read_iter），并在完成后更新文件偏移量。
+ */
 static ssize_t new_sync_read(struct file *filp, char __user *buf, size_t len, loff_t *ppos)
 {
-	struct kiocb kiocb;
-	struct iov_iter iter;
-	ssize_t ret;
+	struct kiocb kiocb;   // 内核I/O控制块，用于跟踪I/O请求的状态
+	struct iov_iter iter; // I/O向量迭代器，用于描述数据缓冲区
+	ssize_t ret;          // 用于保存函数返回值及读取的字节数
 
+	// 初始化同步I/O控制块，并将其与文件对象filp关联
 	init_sync_kiocb(&kiocb, filp);
+	
+	// 设置I/O操作的起始偏移量：若ppos非空则取其值，否则从0开始
 	kiocb.ki_pos = (ppos ? *ppos : 0);
+	
+	// 初始化I/O向量迭代器，指定方向为写入目标(ITER_DEST)，绑定用户空间缓冲区及长度
 	iov_iter_ubuf(&iter, ITER_DEST, buf, len);
 
+	// 调用文件操作集合中的read_iter方法执行实际的读取操作
+	// ext4_file_read_iter
 	ret = filp->f_op->read_iter(&kiocb, &iter);
+	
+	// 断言检查：同步读操作不应返回-EIOCBQUEUED（表示已排队异步处理），若发生则内核崩溃
 	BUG_ON(ret == -EIOCBQUEUED);
+	
+	// 如果传入了文件偏移量指针，则将读取后的最新偏移量写回
 	if (ppos)
 		*ppos = kiocb.ki_pos;
+		
 	return ret;
 }
+
 
 static int warn_unsupported(struct file *file, const char *op)
 {
@@ -551,53 +608,114 @@ ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
 }
 EXPORT_SYMBOL(kernel_read);
 
+/**
+ * vfs_read - 虚拟文件系统(VFS)读取操作的标准接口
+ * @file:  指向目标文件对象的指针
+ * @buf:   用户空间缓冲区的指针，用于存放读取的数据
+ * @count: 需要读取的字节数
+ * @pos:   指向文件偏移量的指针，读取操作会从此位置开始
+ *
+ * 此函数是Linux内核中VFS层的核心读取函数。它会首先进行权限和参数的
+ * 合法性检查，然后调用具体文件系统实现的读取方法将数据从文件读取到
+ * 用户空间缓冲区中，最后更新相关的统计信息。
+ *
+ * 返回值: 成功时返回实际读取的字节数，失败时返回相应的负错误码。
+ */
 ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
 
+	/* 检查文件是否以读模式打开，若没有读权限则返回错误码 */
 	if (!(file->f_mode & FMODE_READ))
 		return -EBADF;
+	/* 检查文件是否支持读操作，若不支持则返回无效参数错误码 */
 	if (!(file->f_mode & FMODE_CAN_READ))
 		return -EINVAL;
+	/* 验证用户空间缓冲区的内存区域是否可写且安全可访问 */
 	if (unlikely(!access_ok(buf, count)))
 		return -EFAULT;
 
+	/* 验证读取区域是否合法（例如检查文件锁、越界等），并返回可读取的安全长度 */
 	ret = rw_verify_area(READ, file, pos, count);
 	if (ret)
 		return ret;
+	/* 限制单次读取的最大字节数，防止整数溢出等潜在风险 */
 	if (count > MAX_RW_COUNT)
 		count =  MAX_RW_COUNT;
 
+	/* 根据具体文件系统的实现，选择同步读取方式 */
 	if (file->f_op->read)
+		/* 如果文件操作集实现了传统的 read 方法，则直接调用 */
 		ret = file->f_op->read(file, buf, count, pos);
 	else if (file->f_op->read_iter)
+		/* 如果实现了 read_iter 方法，则调用 new_sync_read 进行适配同步读取 */
 		ret = new_sync_read(file, buf, count, pos);
 	else
+		/* 若两者均未实现，则返回无效参数错误码 */
 		ret = -EINVAL;
+
+	/* 如果成功读取了数据（返回值大于0），则进行后续的通知和统计更新 */
 	if (ret > 0) {
+		/* 通知文件系统事件监视器（如 inotify），文件被访问读取 */
 		fsnotify_access(file);
+		/* 累加当前进程读取的字符数统计信息 */
 		add_rchar(current, ret);
 	}
+	/* 累加当前进程的系统调用读操作计数 */
 	inc_syscr(current);
+	
+	/* 返回实际读取的字节数或错误码 */
 	return ret;
 }
 
+
+/**
+ * new_sync_write - 同步写入数据到文件
+ * @filp: 指向目标文件对象的指针
+ * @buf:  指向用户空间缓冲区的指针，包含要写入的数据
+ * @len:  要写入的数据长度（字节数）
+ * @ppos: 指向文件偏移量的指针，如果为NULL则从0开始写入
+ *
+ * 该函数将用户空间的数据同步写入到指定的文件中。它通过初始化一个同步的
+ * 内核I/O控制块和I/O向量迭代器，调用文件操作的 write_iter 方法来完成
+ * 实际的写入操作。写入完成后，如果写入字节数大于0且ppos指针有效，则会
+ * 更新文件的偏移量。
+ *
+ * Return: 成功时返回写入的字节数，失败时返回相应的负错误码。
+ */
 static ssize_t new_sync_write(struct file *filp, const char __user *buf, size_t len, loff_t *ppos)
 {
+	/* 初始化同步内核I/O控制块 */
 	struct kiocb kiocb;
+	/* I/O向量迭代器，用于描述用户空间的缓冲区 */
 	struct iov_iter iter;
+	/* 用于保存写入操作的返回值 */
 	ssize_t ret;
 
+	/* 初始化kiocb，将其与文件对象filp关联，并标记为同步操作 */
 	init_sync_kiocb(&kiocb, filp);
+	/* 设置写入的起始位置：如果ppos非空则取其值，否则默认从0开始 */
 	kiocb.ki_pos = (ppos ? *ppos : 0);
+	/* 使用用户空间缓冲区初始化iov_iter迭代器，方向为数据源（写入） */
 	iov_iter_ubuf(&iter, ITER_SOURCE, (void __user *)buf, len);
 
+	/* 调用具体文件系统的write_iter方法执行实际的写入操作 */
+	// ext4_file_write_iter
 	ret = filp->f_op->write_iter(&kiocb, &iter);
+	/* 
+	 * 断言检查：同步写入操作不应返回-EIOCBQUEUED（表示已排队异步处理）。
+	 * 如果触发此BUG，说明同步上下文中出现了非预期的异步排队行为。
+	 */
 	BUG_ON(ret == -EIOCBQUEUED);
+	
+	/* 如果写入成功（返回正数）且ppos指针有效，则更新文件的偏移量 */
 	if (ret > 0 && ppos)
 		*ppos = kiocb.ki_pos;
+		
+	/* 返回实际写入的字节数或错误码 */
 	return ret;
 }
+
 
 /* caller is responsible for file_start_write/file_end_write */
 ssize_t __kernel_write_iter(struct file *file, struct iov_iter *from, loff_t *pos)
@@ -664,6 +782,24 @@ ssize_t kernel_write(struct file *file, const void *buf, size_t count,
 }
 EXPORT_SYMBOL(kernel_write);
 
+/**
+ * vfs_write - 向文件写入数据
+ * @file: 指向目标文件对象的指针
+ * @buf: 用户空间缓冲区的指针，包含要写入的数据
+ * @count: 要写入的字节数
+ * @pos: 指向文件偏移量的指针，数据将从此位置开始写入
+ *
+ * 该函数是虚拟文件系统（VFS）层的核心写入例程。它首先对文件权限、
+ * 用户空间缓冲区的安全性以及写入范围进行一系列检查，然后调用
+ * 具体文件系统的 write 或 write_iter 方法来执行实际的写入操作。
+ * 写入成功后，会更新系统的写入统计信息并触发文件修改通知。
+ *
+ * Return: 成功时返回写入的字节数（大于0）；失败时返回相应的负错误码：
+ * -EBADF: 文件未以写入模式打开
+ * -EINVAL: 文件不支持写入操作
+ * -EFAULT: 用户空间缓冲区不可访问
+ * 其他负值: 由 rw_verify_area 或具体文件系统操作返回的错误码
+ */
 ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_t *pos)
 {
 	ssize_t ret;
@@ -680,18 +816,25 @@ ssize_t vfs_write(struct file *file, const char __user *buf, size_t count, loff_
 		return ret;
 	if (count > MAX_RW_COUNT)
 		count =  MAX_RW_COUNT;
+
+	// 避免文件系统写的时候被freeze，write信号量++
 	file_start_write(file);
 	if (file->f_op->write)
+		// 内存文件系统如proc之类会走这里
 		ret = file->f_op->write(file, buf, count, pos);
 	else if (file->f_op->write_iter)
+		// 块设备文件系统如ext4之类会走这里
 		ret = new_sync_write(file, buf, count, pos);
 	else
 		ret = -EINVAL;
 	if (ret > 0) {
 		fsnotify_modify(file);
+		// 进程io统计
 		add_wchar(current, ret);
 	}
+	// 进程write系统调用数统计
 	inc_syscw(current);
+	// write信号量--
 	file_end_write(file);
 	return ret;
 }
@@ -702,19 +845,36 @@ static inline loff_t *file_ppos(struct file *file)
 	return file->f_mode & FMODE_STREAM ? NULL : &file->f_pos;
 }
 
+/**
+ * ksys_read - 从指定的文件描述符中读取数据
+ * @fd: 文件描述符，用于指定要读取的文件
+ * @buf: 用户空间缓冲区的指针，用于存放读取到的数据
+ * @count: 要读取的字节数
+ *
+ * 此函数是内核层面的 read 系统调用的内部实现。它通过文件描述符查找
+ * 对应的内核文件结构，获取或更新文件偏移量，并调用 vfs_read 执行
+ * 实际的文件读取操作。如果读取成功且文件存在偏移量指针，则会更新
+ * 文件的当前读写位置。
+ *
+ * Return: 成功时返回读取的字节数（非负数）；失败时返回负的错误码
+ * （例如 -EBADF 表示无效的文件描述符）。
+ */
 ssize_t ksys_read(unsigned int fd, char __user *buf, size_t count)
 {
 	CLASS(fd_pos, f)(fd);
 	ssize_t ret = -EBADF;
 
 	if (!fd_empty(f)) {
+		// 获取文件位置
 		loff_t pos, *ppos = file_ppos(fd_file(f));
 		if (ppos) {
 			pos = *ppos;
 			ppos = &pos;
 		}
+		// 调用 vfs_read 进行实际读取
 		ret = vfs_read(fd_file(f), buf, count, ppos);
 		if (ret >= 0 && ppos)
+			// 更新文件位置
 			fd_file(f)->f_pos = pos;
 	}
 	return ret;
@@ -725,6 +885,20 @@ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
 	return ksys_read(fd, buf, count);
 }
 
+/**
+ * ksys_write - 向指定的文件描述符写入数据
+ * @fd: 文件描述符，用于指定目标文件
+ * @buf: 用户空间缓冲区的指针，包含要写入的数据
+ * @count: 要写入的字节数
+ *
+ * 此函数是内核级别的 write 系统调用的内部实现。它通过文件描述符
+ * 查找对应的文件对象，处理文件偏移量，并调用 vfs_write 执行实际
+ * 的写入操作。如果写入成功且文件偏移量指针存在，则会更新文件的
+ * 当前位置。
+ *
+ * Return: 成功时返回写入的字节数（>= 0），失败时返回相应的负错误码
+ * （如 -EBADF 表示无效的文件描述符）。
+ */
 ssize_t ksys_write(unsigned int fd, const char __user *buf, size_t count)
 {
 	CLASS(fd_pos, f)(fd);
@@ -810,27 +984,49 @@ COMPAT_SYSCALL_DEFINE5(pwrite64, unsigned int, fd, const char __user *, buf,
 }
 #endif
 
+/**
+ * do_iter_readv_writev - 执行迭代式读或写操作
+ * @filp: 文件指针，指向要读取或写入的文件
+ * @iter: 迭代器，包含要读取或写入的数据缓冲区信息
+ * @ppos: 指向文件偏移量的指针，如果为NULL则使用当前位置
+ * @type: 操作类型，READ表示读取，WRITE表示写入
+ * @flags: 读写标志，用于控制读写行为
+ * 
+ * 该函数初始化一个内核IO控制块(kiocb)，设置读写标志和文件位置，
+ * 然后根据操作类型调用文件操作结构体中的相应迭代读写函数。
+ * 
+ * 返回值:
+ *     成功时返回读取或写入的字节数
+ *     失败时返回负的错误码
+ */
 static ssize_t do_iter_readv_writev(struct file *filp, struct iov_iter *iter,
 		loff_t *ppos, int type, rwf_t flags)
 {
-	struct kiocb kiocb;
-	ssize_t ret;
+	struct kiocb kiocb;    // 内核IO控制块，用于管理IO操作
+	ssize_t ret;           // 用于存储操作结果
 
+	// 初始化同步IO控制块
 	init_sync_kiocb(&kiocb, filp);
+	// 设置读写标志，如果设置失败则直接返回错误码
 	ret = kiocb_set_rw_flags(&kiocb, flags, type);
 	if (ret)
 		return ret;
+	// 设置文件位置，如果ppos为NULL则使用0
 	kiocb.ki_pos = (ppos ? *ppos : 0);
 
+	// 根据操作类型调用相应的读写函数
 	if (type == READ)
 		ret = filp->f_op->read_iter(&kiocb, iter);
 	else
 		ret = filp->f_op->write_iter(&kiocb, iter);
+	// 确保操作不是异步排队状态，如果是则触发BUG
 	BUG_ON(ret == -EIOCBQUEUED);
+	// 更新文件位置指针
 	if (ppos)
 		*ppos = kiocb.ki_pos;
 	return ret;
 }
+
 
 /* Do it by hand, with file-ops */
 static ssize_t do_loop_readv_writev(struct file *filp, struct iov_iter *iter,
@@ -988,129 +1184,212 @@ ssize_t vfs_iter_write(struct file *file, struct iov_iter *iter, loff_t *ppos,
 }
 EXPORT_SYMBOL(vfs_iter_write);
 
+/**
+ * vfs_readv - 从文件描述符中读取数据到多个缓冲区（向量）
+ * @file: 文件指针
+ * @vec: 用户空间中的iovec数组指针
+ * @vlen: iovec数组的长度
+ * @pos: 读取操作的起始位置（如果支持）
+ * @flags: 读写标志
+ * 
+ * 这是虚拟文件系统的读取向量函数，用于从文件中读取数据到多个用户空间缓冲区。
+ * 它会检查文件是否可读，然后处理IO向量，并最终调用适当的读取方法。
+ * 
+ * 返回值：
+ * 成功时返回读取的字节数，错误时返回负的错误码
+ */
 static ssize_t vfs_readv(struct file *file, const struct iovec __user *vec,
 			 unsigned long vlen, loff_t *pos, rwf_t flags)
 {
-	struct iovec iovstack[UIO_FASTIOV];
-	struct iovec *iov = iovstack;
-	struct iov_iter iter;
-	size_t tot_len;
-	ssize_t ret = 0;
+	struct iovec iovstack[UIO_FASTIOV];  // 用于小规模IO的栈上分配的IO向量数组
+	struct iovec *iov = iovstack;        // 指向IO向量的指针，默认指向栈上数组
+	struct iov_iter iter;                // IO迭代器，用于遍历IO向量
+	size_t tot_len;                      // 总读取长度
+	ssize_t ret = 0;                    // 返回值初始化为0
 
+	// 检查文件是否以读模式打开
 	if (!(file->f_mode & FMODE_READ))
 		return -EBADF;
+	
+	// 检查文件是否可读
 	if (!(file->f_mode & FMODE_CAN_READ))
 		return -EINVAL;
 
+	// 从用户空间导入IO向量，UIO_FASTIOV是快速路径的阈值
 	ret = import_iovec(ITER_DEST, vec, vlen, ARRAY_SIZE(iovstack), &iov,
 			   &iter);
 	if (ret < 0)
 		return ret;
 
+	// 获取需要读取的总字节数
 	tot_len = iov_iter_count(&iter);
 	if (!tot_len)
 		goto out;
 
+	// 验证读取区域是否有效
 	ret = rw_verify_area(READ, file, pos, tot_len);
 	if (ret < 0)
 		goto out;
 
+	// 根据文件操作是否有read_iter方法选择不同的读取方式
 	if (file->f_op->read_iter)
 		ret = do_iter_readv_writev(file, &iter, pos, READ, flags);
 	else
 		ret = do_loop_readv_writev(file, &iter, pos, READ, flags);
 out:
+	// 如果读取成功，发送文件访问通知
 	if (ret >= 0)
 		fsnotify_access(file);
+	
+	// 释放IO向量内存（如果是动态分配的）
 	kfree(iov);
 	return ret;
 }
 
+
+/**
+ * vfs_writev - 向文件描述符写入数据向量
+ * @file: 文件指针
+ * @vec: 用户空间iovec数组指针
+ * @vlen: iovec数组长度
+ * @pos: 写入位置指针
+ * @flags: 写入标志
+ * 
+ * 这是Linux内核中实现writev系统调用的核心函数，它负责将多个内存缓冲区中的数据写入文件。
+ * 该函数实现了高效的向量写入操作，可以一次性写入多个不连续的内存区域。
+ * 
+ * 返回值:
+ *     成功时返回写入的字节数，可能为0
+ *     失败时返回负的错误码
+ */
 static ssize_t vfs_writev(struct file *file, const struct iovec __user *vec,
 			  unsigned long vlen, loff_t *pos, rwf_t flags)
 {
-	struct iovec iovstack[UIO_FASTIOV];
-	struct iovec *iov = iovstack;
-	struct iov_iter iter;
-	size_t tot_len;
-	ssize_t ret = 0;
+	struct iovec iovstack[UIO_FASTIOV]; // 用于小规模写入的栈上iovec数组
+	struct iovec *iov = iovstack;       // 指向iovec数组的指针
+	struct iov_iter iter;               // 迭代器，用于遍历iovec
+	size_t tot_len;                    // 总写入长度
+	ssize_t ret = 0;                   // 返回值
 
+	// 检查文件是否可写
 	if (!(file->f_mode & FMODE_WRITE))
 		return -EBADF;
+	// 检查文件是否允许写入
 	if (!(file->f_mode & FMODE_CAN_WRITE))
 		return -EINVAL;
 
+	// 导入用户空间的iovec数组到内核空间
 	ret = import_iovec(ITER_SOURCE, vec, vlen, ARRAY_SIZE(iovstack), &iov,
 			   &iter);
 	if (ret < 0)
 		return ret;
 
+	// 获取要写入的总字节数
 	tot_len = iov_iter_count(&iter);
 	if (!tot_len)
 		goto out;
 
+	// 验证写入区域是否有效
 	ret = rw_verify_area(WRITE, file, pos, tot_len);
 	if (ret < 0)
 		goto out;
 
+	// 开始写入操作
 	file_start_write(file);
+	// 根据文件操作函数是否存在，选择不同的写入方式
 	if (file->f_op->write_iter)
 		ret = do_iter_readv_writev(file, &iter, pos, WRITE, flags);
 	else
 		ret = do_loop_readv_writev(file, &iter, pos, WRITE, flags);
+	// 如果写入成功，发送文件修改通知
 	if (ret > 0)
 		fsnotify_modify(file);
 	file_end_write(file);
 out:
-	kfree(iov);
+	kfree(iov);  // 释放分配的iovec内存
 	return ret;
 }
 
+
+/**
+ * do_readv - 执行读取向量操作
+ * @fd: 文件描述符
+ * @vec: 用户空间的iovec结构体数组指针，用于指定读取缓冲区
+ * @vlen: iovec结构体数组长度
+ * @flags: 读写标志位
+ * 
+ * 该函数是readv系统调用的底层实现，用于从文件描述符fd读取数据到多个缓冲区中。
+ * 返回值为实际读取的字节数，出错时返回负的错误码。
+ */
 static ssize_t do_readv(unsigned long fd, const struct iovec __user *vec,
 			unsigned long vlen, rwf_t flags)
 {
+	/* 使用宏创建文件描述符和位置的变量 */
 	CLASS(fd_pos, f)(fd);
-	ssize_t ret = -EBADF;
+	ssize_t ret = -EBADF;  /* 初始化返回值为文件描述符无效的错误码 */
 
+	/* 检查文件描述符是否有效 */
 	if (!fd_empty(f)) {
-		loff_t pos, *ppos = file_ppos(fd_file(f));
+		loff_t pos, *ppos = file_ppos(fd_file(f));  /* 获取文件的当前位置指针 */
 		if (ppos) {
-			pos = *ppos;
-			ppos = &pos;
+			pos = *ppos;  /* 保存当前位置 */
+			ppos = &pos;   /* 使用临时位置指针 */
 		}
+		/* 调用虚拟文件系统层的读取向量函数 */
 		ret = vfs_readv(fd_file(f), vec, vlen, ppos, flags);
+		/* 如果读取成功且使用了临时位置指针，更新文件位置 */
 		if (ret >= 0 && ppos)
 			fd_file(f)->f_pos = pos;
 	}
 
+	/* 如果读取成功，增加当前进程读取的字符计数 */
 	if (ret > 0)
 		add_rchar(current, ret);
+	/* 增加系统调用读取计数 */
 	inc_syscr(current);
-	return ret;
+	return ret;  /* 返回读取的字节数或错误码 */
 }
 
+
+/**
+ * do_writev - 执行写入向量操作
+ * @fd: 文件描述符
+ * @vec: 用户空间的iovec结构体指针，包含写入缓冲区的信息
+ * @vlen: iovec结构体的数量
+ * @flags: 写入标志，如RWF_SYNC等
+ * 
+ * 该函数执行从用户空间到文件的向量写入操作，支持多个缓冲区一次性写入。
+ * 返回实际写入的字节数，出错时返回负的错误码。
+ */
 static ssize_t do_writev(unsigned long fd, const struct iovec __user *vec,
 			 unsigned long vlen, rwf_t flags)
 {
+	/* 使用fd_pos宏创建文件描述符和位置的句柄 */
 	CLASS(fd_pos, f)(fd);
-	ssize_t ret = -EBADF;
+	ssize_t ret = -EBADF;  /* 初始化返回值为错误码EBADF */
 
+	/* 检查文件描述符是否有效 */
 	if (!fd_empty(f)) {
-		loff_t pos, *ppos = file_ppos(fd_file(f));
+		loff_t pos, *ppos = file_ppos(fd_file(f));  // 获取文件的当前位置指针
 		if (ppos) {
-			pos = *ppos;
-			ppos = &pos;
+			pos = *ppos;  // 获取当前位置值
+			ppos = &pos;   // 设置ppos指向局部变量pos
 		}
+		/* 调用虚拟文件系统执行向量写入操作 */
 		ret = vfs_writev(fd_file(f), vec, vlen, ppos, flags);
+		/* 如果写入成功且ppos有效，更新文件位置 */
 		if (ret >= 0 && ppos)
 			fd_file(f)->f_pos = pos;
 	}
 
+	/* 如果写入成功，增加当前进程写入的字符数统计 */
 	if (ret > 0)
 		add_wchar(current, ret);
+	/* 增加当前系统写入调用计数 */
 	inc_syscw(current);
 	return ret;
 }
+
 
 static inline loff_t pos_from_hilo(unsigned long high, unsigned long low)
 {

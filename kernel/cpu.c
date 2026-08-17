@@ -3074,6 +3074,17 @@ EXPORT_SYMBOL_GPL(cpu_bit_bitmap);
 const DECLARE_BITMAP(cpu_all_bits, NR_CPUS) = CPU_BITS_ALL;
 EXPORT_SYMBOL(cpu_all_bits);
 
+/**
+ * 在Linux内核中，有三个概念与CPU相关，它们分别是present、online和possible。
+	present：指的是系统中所有物理CPU的集合，包括已经启动和没有启动的CPU。present集合是由启动内核时BIOS或bootloader自动检测和创建的。
+	online：指的是系统中已经启动并正常工作的CPU的集合。当系统启动时，内核会自动将所有的present CPU都标记为online状态。但是，在运行过程中，
+		可以通过echo 0 > /sys/devices/system/cpu/cpuX/online命令将某个CPU离线，也可以通过
+		echo 1 > /sys/devices/system/cpu/cpuX/online命令将其重新上线。
+	possible：指的是系统中所有可能存在的CPU的集合，包括已经启动和没有启动的CPU。possible集合是由内核根据硬件信息自动检测和创建的，与present集合有所区别。
+	active：是指当前正在执行任务的CPU的集合。active集合是由调度器动态维护的，在不同的时间点可能会有不同的CPU被标记为active状态。
+		调度器会根据系统负载和任务需求，动态调整active集合，以保证系统的性能和效率。
+ *
+ */
 #ifdef CONFIG_INIT_ALL_POSSIBLE
 struct cpumask __cpu_possible_mask __ro_after_init
 	= {CPU_BITS_ALL};

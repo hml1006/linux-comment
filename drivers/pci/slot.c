@@ -358,6 +358,9 @@ void pci_destroy_slot(struct pci_slot *slot)
 }
 EXPORT_SYMBOL_GPL(pci_destroy_slot);
 
+/**
+ * sysfs建立slots
+ */
 static int pci_slot_init(void)
 {
 	struct kset *pci_bus_kset;

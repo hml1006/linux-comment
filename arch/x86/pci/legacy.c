@@ -55,6 +55,9 @@ void pcibios_scan_specific_bus(int busn)
 }
 EXPORT_SYMBOL_GPL(pcibios_scan_specific_bus);
 
+/**
+ * pci资源合法性检查
+ */
 static int __init pci_subsys_init(void)
 {
 	/*

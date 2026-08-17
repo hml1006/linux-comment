@@ -2180,6 +2180,7 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
 		return retval;
 	}
 
+	// 注册中断action
 	retval = __setup_irq(irq, desc, action);
 
 	if (retval) {

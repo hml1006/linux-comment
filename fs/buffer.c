@@ -19,6 +19,7 @@
  * async buffer flushing, 1999 Andrea Arcangeli <andrea@suse.de>
  */
 
+#include <linux/dbg.h>
 #include <linux/kernel.h>
 #include <linux/sched/signal.h>
 #include <linux/syscalls.h>
@@ -213,20 +214,50 @@ void bh_end_write(struct bio *bio)
 }
 EXPORT_SYMBOL(bh_end_write);
 
+/**
+ * __find_get_block_slow - 在块设备中缓慢查找指定的缓冲区头
+ * @bdev: 目标块设备指针
+ * @block: 要查找的块号（扇区号）
+ * @atomic: 布尔值，指示是否在原子上下文中调用（不可休眠）
+ *
+ * 此函数通过遍历块设备地址空间中对应页面的缓冲区列表，
+ * 查找与指定块号匹配的 buffer_head 结构。如果找到，则增加其引用计数并返回。
+ * 该函数主要用于处理高速缓存未命中或调试场景下的块查找。
+ *
+ * 返回值: 成功时返回指向目标 buffer_head 的指针（已增加引用计数），
+ *          失败时返回 NULL。
+ */
 static struct buffer_head *
 __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 {
+	// 声明地址空间结构体指针，指向块设备的地址空间
 	struct address_space *bd_mapping = bdev->bd_mapping;
+	// 获取块设备块大小对应的比特数
 	const int blkbits = bd_mapping->host->i_blkbits;
+	// 声明buffer_head指针，初始化为NULL
 	struct buffer_head *ret = NULL;
+	// 声明页索引变量
 	pgoff_t index;
+	// 声明buffer_head指针，用于遍历
 	struct buffer_head *bh;
+	// 指向页面缓冲区的头buffer
 	struct buffer_head *head;
+	// 声明folio结构体指针，Linux中引入的新结构，替代page
 	struct folio *folio;
+	// 标记是否所有块都已映射
 	int all_mapped = 1;
+	// 定义静态的速率限制状态，用于控制警告输出频率
 	static DEFINE_RATELIMIT_STATE(last_warned, HZ, 1);
 
+	// 打印调试信息
+	blk_dbg(bdev, "block: %llu\n", block);
+
+	// 计算page号
 	index = ((loff_t)block << blkbits) / PAGE_SIZE;
+
+	// folio和page结构体大小一致，通过union做兼容，可以强制转换
+	// folio可以表示一段连续的page，page只能表示一个page
+	// 从address_space中获取page
 	folio = __filemap_get_folio(bd_mapping, index, FGP_ACCESSED, 0);
 	if (IS_ERR(folio))
 		goto out;
@@ -235,6 +266,8 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 	 * Folio lock protects the buffers. Callers that cannot block
 	 * will fallback to serializing vs try_to_free_buffers() via
 	 * the i_private_lock.
+	 * Folio锁用于保护缓冲区。不能阻塞的调用者将通过
+	 * i_private_lock 退回到与 try_to_free_buffers() 串行化的方式。
 	 */
 	if (atomic)
 		spin_lock(&bd_mapping->i_private_lock);
@@ -247,6 +280,8 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 	/*
 	 * Upon a noref migration, the folio lock serializes here;
 	 * otherwise bail.
+	 * 在无引用(noref)迁移期间，folio锁在此处进行串行化；
+	 * 否则直接退出。
 	 */
 	if (test_bit_acquire(BH_Migrate, &head->b_state)) {
 		WARN_ON(!atomic);
@@ -255,13 +290,19 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 
 	bh = head;
 	do {
+		// 如果当前缓冲区未被映射，则将 all_mapped 标志置为0
 		if (!buffer_mapped(bh))
 			all_mapped = 0;
+		// 如果当前缓冲区的块号与目标块号匹配
 		else if (bh->b_blocknr == block) {
+			// 保存找到的缓冲区头指针
 			ret = bh;
+			// 增加缓冲区头的引用计数
 			get_bh(bh);
+			// 跳转到解锁退出流程
 			goto out_unlock;
 		}
+		// 移动到当前页面中的下一个缓冲区
 		bh = bh->b_this_page;
 	} while (bh != head);
 
@@ -269,8 +310,12 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 	 * not mapped.  This is due to various races between
 	 * file io on the block device and getblk.  It gets dealt with
 	 * elsewhere, don't buffer_error if we had some unmapped buffers
+	 * 我们可能因为该页面上的某些缓冲区未被映射而到达这里。
+	 * 这是由于块设备上的文件IO与getblk之间存在各种竞争条件。
+	 * 这种情况会在其他地方处理，如果存在未映射的缓冲区，不要触发buffer_error。
 	 */
 	ratelimit_set_flags(&last_warned, RATELIMIT_MSG_ON_RELEASE);
+	// 如果所有缓冲区都已映射，但依然没找到目标块，则通过速率限制打印警告信息
 	if (all_mapped && __ratelimit(&last_warned)) {
 		printk("__find_get_block_slow() failed. block=%llu, "
 		       "b_blocknr=%llu, b_state=0x%08lx, b_size=%zu, "
@@ -281,14 +326,18 @@ __find_get_block_slow(struct block_device *bdev, sector_t block, bool atomic)
 		       1 << blkbits);
 	}
 out_unlock:
+	// 根据上下文类型释放对应的锁
 	if (atomic)
 		spin_unlock(&bd_mapping->i_private_lock);
 	else
 		folio_unlock(folio);
+	// 释放folio的引用计数
 	folio_put(folio);
 out:
+	// 返回找到的缓冲区头指针（未找到则为NULL）
 	return ret;
 }
+
 
 static void end_buffer_async_read(struct buffer_head *bh, int uptodate)
 {
@@ -1038,6 +1087,7 @@ __getblk_slow(struct block_device *bdev, sector_t block,
 		return NULL;
 	}
 
+	blk_dbg(bdev, "block: %llu, size: %d\n", block, size);
 	for (;;) {
 		struct buffer_head *bh;
 
@@ -1335,39 +1385,76 @@ static void bh_lru_install(struct buffer_head *bh)
 /*
  * Look up the bh in this cpu's LRU.  If it's there, move it to the head.
  */
+/**
+ * lookup_bh_lru - 在每CPU的缓冲头LRU缓存中查找指定的缓冲头
+ * @bdev: 目标块设备指针
+ * @block: 目标扇区号
+ * @size: 缓冲区大小
+ *
+ * 此函数用于在当前CPU的缓冲头最近最少使用(LRU)链表中查找匹配的
+ * 缓冲头(buffer_head)。如果找到，会将其移动到LRU链表的头部以
+ * 体现其最近被访问，并增加其引用计数。
+ *
+ * 返回: 如果找到则返回对应的buffer_head指针，否则返回NULL。
+ */
 static struct buffer_head *
 lookup_bh_lru(struct block_device *bdev, sector_t block, unsigned size)
 {
+	/* 初始化返回值指针为NULL */
 	struct buffer_head *ret = NULL;
+	/* 用于循环遍历LRU链表的索引 */
 	unsigned int i;
 
+	/* 检查中断是否已开启（调试/锁依赖检查） */
 	check_irqs_on();
+	/* 获取当前CPU的LRU链表自旋锁 */
 	bh_lru_lock();
+	
+	/* 如果当前CPU处于隔离状态，则放弃查找 */
 	if (cpu_is_isolated(smp_processor_id())) {
+		/* 释放LRU链表自旋锁 */
 		bh_lru_unlock();
+		/* 隔离CPU上不进行缓存查找，直接返回NULL */
 		return NULL;
 	}
+	
+	/* 遍历LRU链表的所有槽位 */
 	for (i = 0; i < BH_LRU_SIZE; i++) {
+		/* 从当前CPU的LRU链表中读取第i个缓冲头指针 */
 		struct buffer_head *bh = __this_cpu_read(bh_lrus.bhs[i]);
 
+		/* 检查缓冲头是否非空，且块号、块设备和大小均与目标匹配 */
 		if (bh && bh->b_blocknr == block && bh->b_bdev == bdev &&
 		    bh->b_size == size) {
+			/* 如果匹配项不在LRU链表的头部（索引0），则需要将其移动到头部 */
 			if (i) {
+				/* 将匹配项之前的所有项向后移动一位，实现LRU策略 */
 				while (i) {
 					__this_cpu_write(bh_lrus.bhs[i],
 						__this_cpu_read(bh_lrus.bhs[i - 1]));
 					i--;
 				}
+				/* 将匹配的缓冲头写入LRU链表的头部（索引0） */
 				__this_cpu_write(bh_lrus.bhs[0], bh);
 			}
+			/* 增加缓冲头的引用计数，防止被过早释放 */
 			get_bh(bh);
+			/* 记录找到的缓冲头，准备返回 */
 			ret = bh;
+			/* 找到目标后跳出循环 */
 			break;
 		}
 	}
+	
+	/* 释放LRU链表自旋锁 */
 	bh_lru_unlock();
+	/* 打印调试信息，记录查找结果 */
+	blk_dbg(bdev, "buffer_head lru: %p\n", ret);
+	
+	/* 返回查找到的缓冲头指针，若未找到则为NULL */
 	return ret;
 }
+
 
 /*
  * Perform a pagecache lookup for the matching buffer.  If it's there, refresh
@@ -1379,8 +1466,11 @@ static struct buffer_head *
 find_get_block_common(struct block_device *bdev, sector_t block,
 			unsigned size, bool atomic)
 {
+	// 从LRU中查找，找到则会更新LRU
 	struct buffer_head *bh = lookup_bh_lru(bdev, block, size);
+	blk_dbg(bdev, "block: %llu, size: %d, lru bh %p\n", block, size, bh);
 
+	// LRU中没找到，开始查找pagecache
 	if (bh == NULL) {
 		/* __find_get_block_slow will mark the page accessed */
 		bh = __find_get_block_slow(bdev, block, atomic);
@@ -1388,13 +1478,14 @@ find_get_block_common(struct block_device *bdev, sector_t block,
 			bh_lru_install(bh);
 	} else
 		touch_buffer(bh);
-
+	blk_dbg(bdev, "return buffer_head %p\n", bh);
 	return bh;
 }
 
 struct buffer_head *
 __find_get_block(struct block_device *bdev, sector_t block, unsigned size)
 {
+	blk_dbg(bdev, "block %llu, size %u\n", block, size);
 	return find_get_block_common(bdev, block, size, true);
 }
 EXPORT_SYMBOL(__find_get_block);
@@ -1404,6 +1495,7 @@ struct buffer_head *
 __find_get_block_nonatomic(struct block_device *bdev, sector_t block,
 			   unsigned size)
 {
+	blk_dbg(bdev, "block %llu, size %u\n", block, size);
 	return find_get_block_common(bdev, block, size, false);
 }
 EXPORT_SYMBOL(__find_get_block_nonatomic);
@@ -1427,6 +1519,8 @@ struct buffer_head *bdev_getblk(struct block_device *bdev, sector_t block,
 {
 	struct buffer_head *bh;
 
+	blk_dbg(bdev, "block %llu, size %u, gfp %x\n", block, size, gfp);
+	// 允许挂起
 	if (gfpflags_allow_blocking(gfp))
 		bh = __find_get_block_nonatomic(bdev, block, size);
 	else

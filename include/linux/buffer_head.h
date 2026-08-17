@@ -8,6 +8,7 @@
 #ifndef _LINUX_BUFFER_HEAD_H
 #define _LINUX_BUFFER_HEAD_H
 
+#include <linux/dbg.h>
 #include <linux/types.h>
 #include <linux/blk_types.h>
 #include <linux/fs.h>
@@ -376,15 +377,20 @@ static inline struct buffer_head *__getblk(struct block_device *bdev,
 {
 	gfp_t gfp;
 
+	// 获取address_sapce的flag
 	gfp = mapping_gfp_constraint(bdev->bd_mapping, ~__GFP_FS);
 	gfp |= __GFP_MOVABLE | __GFP_NOFAIL;
 
+	blk_dbg(bdev, "block: %llu, size: %u, gfp: %x\n", block, size, gfp);
+	// 根据块设备获取buffer_head
 	return bdev_getblk(bdev, block, size, gfp);
 }
 
 static inline struct buffer_head *sb_getblk(struct super_block *sb,
 		sector_t block)
 {
+	sb_dbg(sb, "sb: %p, block: %llu\n", sb, (unsigned long long)block);
+	// 会从块设备的address_space中找到对应的buffer_head
 	return __getblk(sb->s_bdev, block, sb->s_blocksize);
 }
 
@@ -403,6 +409,7 @@ sb_find_get_block(struct super_block *sb, sector_t block)
 static inline struct buffer_head *
 sb_find_get_block_nonatomic(struct super_block *sb, sector_t block)
 {
+	sb_dbg(sb, "block %llu\n", block);
 	return __find_get_block_nonatomic(sb->s_bdev, block, sb->s_blocksize);
 }
 
@@ -417,6 +424,7 @@ map_bh(struct buffer_head *bh, struct super_block *sb, sector_t block)
 
 static inline void wait_on_buffer(struct buffer_head *bh)
 {
+	blk_dbg(bh->b_bdev, "wait for io complete, block start %llu, size %lu\n", bh->b_blocknr, bh->b_size);
 	might_sleep();
 	if (buffer_locked(bh))
 		__wait_on_buffer(bh);

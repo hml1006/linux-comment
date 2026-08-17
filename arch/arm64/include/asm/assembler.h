@@ -215,7 +215,7 @@ lr	.req	x30		// link register
 #else
 	.macro	get_this_cpu_offset, dst
 alternative_if_not ARM64_HAS_VIRT_HOST_EXTN
-	mrs	\dst, tpidr_el1
+	mrs	\dst, tpidr_el1			// 取出percpu offset,OS 启动时将 per cpu 偏移地址写入到 TPDIR_EL1 和 TPDIR_EL2 寄存器中
 alternative_else
 	mrs	\dst, tpidr_el2
 alternative_endif
@@ -249,7 +249,7 @@ alternative_endif
 	 */
 	.macro ldr_this_cpu dst, sym, tmp
 	adr_l	\dst, \sym
-	get_this_cpu_offset \tmp
+	get_this_cpu_offset \tmp	// tpidr_el1(放task struct) 寄存器备份到tmp
 	ldr	\dst, [\dst, \tmp]
 	.endm
 

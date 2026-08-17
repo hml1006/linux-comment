@@ -175,17 +175,33 @@ static __always_inline __must_check bool file_ref_put(file_ref_t *ref)
  *
  * Use with close() et al, stick to file_ref_put() by default.
  */
+/**
+ * @brief 减少文件引用计数并在引用计数归零时关闭文件
+ * 
+ * 这是一个内联函数，用于减少文件引用计数，并在引用计数归零时执行关闭操作。
+ * 函数使用原子操作确保线程安全，并通过比较交换操作来安全地处理引用计数。
+ * 
+ * @param ref 指向文件引用结构体的指针
+ * @return bool 如果引用计数归零并成功关闭文件，返回true；否则返回false
+ */
 static __always_inline __must_check bool file_ref_put_close(file_ref_t *ref)
 {
-	long old;
+	long old;  // 用于存储引用计数的旧值
 
+	// 读取当前的引用计数值
 	old = atomic_long_read(&ref->refcnt);
+	
+	// 如果引用计数等于FILE_REF_ONEREF（表示只有一个引用）
 	if (likely(old == FILE_REF_ONEREF)) {
+		// 尝试将引用计数从FILE_REF_ONEREF更新为FILE_REF_DEAD
 		if (likely(atomic_long_try_cmpxchg(&ref->refcnt, &old, FILE_REF_DEAD)))
-			return true;
+			return true;  // 如果更新成功，表示引用计数归零，返回true
 	}
+	
+	// 如果上述条件不满足，调用普通的引用计数减少函数
 	return file_ref_put(ref);
 }
+
 
 /**
  * file_ref_read - Read the number of file references

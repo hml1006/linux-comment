@@ -17,6 +17,7 @@
  *        David S. Miller (davem@caip.rutgers.edu), 1995
  */
 
+#include "linux/dbg.h"
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/fs.h>
@@ -160,9 +161,22 @@ MODULE_ALIAS("ext3");
 #define IS_EXT3_SB(sb) ((sb)->s_type == &ext3_fs_type)
 
 
+/**
+ * __ext4_read_bh - 读取指定的缓冲区头
+ * @bh: 指向待读取缓冲区头的指针
+ * @op_flags: 块设备I/O操作的标志位
+ * @end_io: 缓冲区I/O完成时的回调函数，若为NULL则使用默认的同步读取完成回调
+ * @simu_fail: 是否模拟读取失败的标志，主要用于开发测试
+ *
+ * 该函数用于向块层提交读取缓冲区的请求。如果启用了失败模拟，则直接将缓冲区
+ * 标记为非最新状态并解锁返回；否则，清除缓冲区的验证位，设置I/O完成回调，
+ * 增加缓冲区引用计数，并提交读请求。
+ */
 static inline void __ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 				  bio_end_io_t end_io, bool simu_fail)
 {
+	blk_dbg(bh->b_bdev, "end_io %p, simu_fail %d\n", end_io, simu_fail);
+	// 模拟fail，用于开发测试
 	if (simu_fail) {
 		clear_buffer_uptodate(bh);
 		unlock_buffer(bh);
@@ -181,15 +195,29 @@ static inline void __ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 	bh_submit(bh, REQ_OP_READ | op_flags, end_io);
 }
 
+/**
+ * ext4_read_bh_nowait - 异步读取指定的缓冲区头，不等待I/O完成
+ * @bh: 指向待读取缓冲区头的指针
+ * @op_flags: 块I/O操作标志，用于控制读取操作的行为
+ * @end_io: I/O完成时的回调函数指针
+ * @simu_fail: 是否模拟读取失败的标志
+ *
+ * 此函数用于发起缓冲区的异步读取请求。如果缓冲区中的数据已经是最新状态，
+ * 则直接解锁缓冲区并返回；否则，调用底层函数发起实际的读取操作。
+ * 注意：调用此函数前，缓冲区必须处于锁定状态。
+ */
 void ext4_read_bh_nowait(struct buffer_head *bh, blk_opf_t op_flags,
 			 bio_end_io_t end_io, bool simu_fail)
 {
 	BUG_ON(!buffer_locked(bh));
 
+	blk_dbg(bh->b_bdev, "end_io %p\n", end_io);
+	// 如果当前buffer是最新，说明其他task已经访问过，直接用这个buffer
 	if (ext4_buffer_uptodate(bh)) {
 		unlock_buffer(bh);
 		return;
 	}
+	// 否则，重新读取
 	__ext4_read_bh(bh, op_flags, end_io, simu_fail);
 }
 
@@ -203,8 +231,10 @@ int ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 		return 0;
 	}
 
+	// 提交buffer到block层，读取数据
 	__ext4_read_bh(bh, op_flags, end_io, simu_fail);
 
+	// 等待io返回
 	wait_on_buffer(bh);
 	if (buffer_uptodate(bh))
 		return 0;
@@ -214,10 +244,12 @@ int ext4_read_bh(struct buffer_head *bh, blk_opf_t op_flags,
 int ext4_read_bh_lock(struct buffer_head *bh, blk_opf_t op_flags, bool wait)
 {
 	lock_buffer(bh);
+	// 不用等待io返回
 	if (!wait) {
 		ext4_read_bh_nowait(bh, op_flags, NULL, false);
 		return 0;
 	}
+	// 需要等待io返回
 	return ext4_read_bh(bh, op_flags, NULL, false);
 }
 
@@ -275,17 +307,36 @@ struct buffer_head *ext4_sb_bread_nofail(struct super_block *sb,
 	return __ext4_sb_bread_gfp(sb, block, 0, gfp);
 }
 
+/**
+ * ext4_sb_breadahead_nowait_unmovable - 对指定块执行预读操作，且不移动内存页
+ * @sb:    指向超级块对象的指针，包含文件系统的核心信息
+ * @block: 需要预读的磁盘块号（扇区号）
+ *
+ * 该函数尝试异步预读指定的磁盘块。使用 GFP_NOWAIT 标志分配缓冲区头，
+ * 意味着在内存紧张时不会阻塞等待。如果成功获取缓冲区头且能够无阻塞地
+ * 获取其锁，则发起异步预读请求。该操作专为不可移动的页设计，常用于
+ * 避免内存整理时的阻塞。
+ */
 void ext4_sb_breadahead_unmovable(struct super_block *sb, sector_t block)
 {
+	/* 尝试无等待地获取指定块的缓冲区头，不阻塞分配内存 */
 	struct buffer_head *bh = bdev_getblk(sb->s_bdev, block,
 			sb->s_blocksize, GFP_NOWAIT);
 
+	// 打印调试信息：块号和对应的缓冲区头指针
+	sb_dbg(sb, "block %llu, buffer_head %p\n", block, bh);
+	
+	/* 检查缓冲区头是否有效（大概率有效，使用了 likely 优化分支预测） */
 	if (likely(bh)) {
+		/* 尝试无阻塞地锁定缓冲区，成功返回非0值 */
 		if (trylock_buffer(bh))
+			// 成功获取锁后，发起异步预读请求，不等待读取完成
 			ext4_read_bh_nowait(bh, REQ_RAHEAD, NULL, false);
+		// 释放缓冲区头的引用计数，防止内存泄漏
 		brelse(bh);
 	}
 }
+
 
 static int ext4_verify_csum_type(struct super_block *sb,
 				 struct ext4_super_block *es)

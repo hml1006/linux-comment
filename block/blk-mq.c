@@ -573,6 +573,7 @@ retry:
 	 * case just retry the hctx assignment and tag allocation as CPU hotplug
 	 * should have migrated us to an online CPU by now.
 	 */
+	// 获取 queue中的一个tag，tag是nvme queue中的command索引
 	tag = blk_mq_get_tag(data);
 	if (tag == BLK_MQ_NO_TAG) {
 		if (data->flags & BLK_MQ_REQ_NOWAIT)
@@ -3029,6 +3030,7 @@ static struct request *blk_mq_get_new_requests(struct request_queue *q,
 	};
 	struct request *rq;
 
+	// 限流
 	rq_qos_throttle(q, bio);
 
 	if (plug) {
@@ -3037,6 +3039,7 @@ static struct request *blk_mq_get_new_requests(struct request_queue *q,
 		data.cached_rqs = &plug->cached_rqs;
 	}
 
+	// 从队列中获取一个request，一个request对应一条nvme command
 	rq = __blk_mq_alloc_requests(&data);
 	if (unlikely(!rq))
 		rq_qos_cleanup(q, bio);
@@ -3090,19 +3093,34 @@ static bool bio_unaligned(const struct bio *bio, struct request_queue *q)
  * It will not queue the request if there is an error with the bio, or at the
  * request creation.
  */
+/**
+ * blk_mq_submit_bio - 向块设备的多队列框架提交一个BIO请求
+ * @bio: 待提交的块I/O请求结构体
+ *
+ * 此函数是块I/O层向底层设备驱动提交请求的核心入口。它会处理请求的
+ * 缓存、合并、拆分、限流、加密以及最终将请求分发到硬件队列的过程。
+ */
 void blk_mq_submit_bio(struct bio *bio)
 {
+	/* 获取块设备对应的请求队列 */
 	struct request_queue *q = bdev_get_queue(bio->bi_bdev);
+	/* 获取当前进程的plug缓存链表，用于批量处理请求 */
 	struct blk_plug *plug = current->plug;
+	/* 判断当前BIO操作是否为同步操作 */
 	const int is_sync = op_is_sync(bio->bi_opf);
 	unsigned int integrity_action;
+	/* 硬件队列上下文指针 */
 	struct blk_mq_hw_ctx *hctx;
+	/* BIO的段数量 */
 	unsigned int nr_segs;
+	/* 请求结构体指针 */
 	struct request *rq;
+	/* 块设备操作返回状态 */
 	blk_status_t ret;
 
 	/*
 	 * If the plug has a cached request for this queue, try to use it.
+	 * 如果plug缓存中有该队列的缓存请求，则尝试使用它。
 	 */
 	rq = blk_mq_get_cached_request(plug, q, bio->bi_opf);
 
@@ -3111,9 +3129,14 @@ void blk_mq_submit_bio(struct bio *bio)
 	 * through the preparation in this function, already holds a reference
 	 * on the queue usage counter, and is the only write BIO in-flight for
 	 * the target zone. Go straight to preparing a request for it.
+	 * 如果BIO是从区域写插拔中释放的，说明它已经完成了本函数的准备工作，
+	 * 已经持有了队列使用计数器的引用，并且是目标区域中唯一正在运行的写BIO。
+	 * 直接跳转到准备请求阶段。
 	 */
 	if (bio_zone_write_plugging(bio)) {
+		/* 直接获取BIO的段数量 */
 		nr_segs = bio->__bi_nr_segments;
+		/* 如果之前取到了缓存请求，由于已持有队列引用，需释放多余的引用 */
 		if (rq)
 			blk_queue_exit(q);
 		goto new_request;
@@ -3122,8 +3145,11 @@ void blk_mq_submit_bio(struct bio *bio)
 	/*
 	 * The cached request already holds a q_usage_counter reference and we
 	 * don't have to acquire a new one if we use it.
+	 * 缓存请求已经持有了q_usage_counter的引用，如果我们使用它，
+	 * 就不必再获取新的引用。
 	 */
 	if (!rq) {
+		/* 没有缓存请求时，尝试进入队列（增加队列引用计数），失败则直接返回 */
 		if (unlikely(bio_queue_enter(bio)))
 			return;
 	}
@@ -3132,17 +3158,22 @@ void blk_mq_submit_bio(struct bio *bio)
 	 * Device reconfiguration may change logical block size or reduce the
 	 * number of poll queues, so the checks for alignment and poll support
 	 * have to be done with queue usage counter held.
+	 * 设备重新配置可能会更改逻辑块大小或减少轮询队列的数量，
+	 * 因此必须在持有队列使用计数器的情况下进行对齐和轮询支持的检查。
 	 */
 	if (unlikely(bio_unaligned(bio, q))) {
+		/* 如果BIO未对齐，报告I/O错误 */
 		bio_io_error(bio);
 		goto queue_exit;
 	}
 
+	// 检查盘是否支持poll，nvme支持
 	if ((bio->bi_opf & REQ_POLLED) && !blk_mq_can_poll(q)) {
 		bio_endio_status(bio, BLK_STS_NOTSUPP);
 		goto queue_exit;
 	}
 
+	// 如果bio的扇区数大于io允许的大小，则拆分bio，拆分后的bio和原始bio构成链表
 	bio = __bio_split_to_limits(bio, &q->limits, &nr_segs);
 	if (!bio)
 		goto queue_exit;
@@ -3151,11 +3182,15 @@ void blk_mq_submit_bio(struct bio *bio)
 	if (integrity_action)
 		bio_integrity_prep(bio, integrity_action);
 
+	// 发射时间设置
 	blk_mq_bio_issue_init(q, bio);
+	// 尝试merge bio
 	if (blk_mq_attempt_bio_merge(q, bio, nr_segs))
 		goto queue_exit;
 
+	/* 检查BIO是否需要区域写插拔 */
 	if (bio_needs_zone_write_plugging(bio)) {
+		/* 如果需要，则进行插拔处理，成功加入插拔则退出常规提交流程 */
 		if (blk_zone_plug_bio(bio, nr_segs))
 			goto queue_exit;
 	}
@@ -3167,20 +3202,26 @@ new_request:
 		rq->cmd_flags = bio->bi_opf;
 		INIT_LIST_HEAD(&rq->queuelist);
 	} else {
+		// 创建新的request
 		rq = blk_mq_get_new_requests(q, plug, bio);
 		if (unlikely(!rq)) {
+			/* 如果获取新请求失败，且设置了不等待标志，则返回阻塞错误 */
 			if (bio->bi_opf & REQ_NOWAIT)
 				bio_wouldblock_error(bio);
 			goto queue_exit;
 		}
 	}
 
+	/* 跟踪块请求获取事件 */
 	trace_block_getrq(bio);
 
+	/* 请求QoS跟踪 */
 	rq_qos_track(q, rq, bio);
 
+	// 绑定bio到request
 	blk_mq_bio_to_request(rq, bio, nr_segs);
 
+	/* 为请求获取加密密钥槽 */
 	ret = blk_crypto_rq_get_keyslot(rq);
 	if (ret != BLK_STS_OK) {
 		bio_endio_status(bio, ret);
@@ -3188,23 +3229,31 @@ new_request:
 		return;
 	}
 
+	/* 如果是区域写插拔，初始化请求对应的插拔结构 */
 	if (bio_zone_write_plugging(bio))
 		blk_zone_write_plug_init_request(rq);
 
+	/* 如果是刷新操作，并将其插入刷新队列，成功则直接返回 */
 	if (op_is_flush(bio->bi_opf) && blk_insert_flush(rq))
 		return;
 
+	/* 如果当前进程存在plug缓存，将请求加入缓存，稍后批量下发 */
 	if (plug) {
 		blk_add_rq_to_plug(plug, rq);
 		return;
 	}
 
+	/* 获取请求对应的硬件队列上下文 */
 	hctx = rq->mq_hctx;
+	/* 判断是否需要通过调度器插入软件队列：使用了调度器，或者硬件队列繁忙且不是多队列同步请求 */
 	if ((rq->rq_flags & RQF_USE_SCHED) ||
 	    (hctx->dispatch_busy && (q->nr_hw_queues == 1 || !is_sync))) {
+		// 把request插入软件队列
 		blk_mq_insert_request(rq, 0);
+		/* 异步运行硬件队列 */
 		blk_mq_run_hw_queue(hctx, true);
 	} else {
+		/* 否则，尝试直接将请求下发到硬件 */
 		blk_mq_run_dispatch_ops(q, blk_mq_try_issue_directly(hctx, rq));
 	}
 	return;
@@ -3215,6 +3264,7 @@ queue_exit:
 	else
 		rq_list_add_head(&plug->cached_rqs, rq);
 }
+
 
 #ifdef CONFIG_BLK_MQ_STACKING
 /**

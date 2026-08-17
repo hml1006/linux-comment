@@ -4,6 +4,7 @@
  * Written by Tao Ma <boyu.mt@taobao.com>
  */
 
+#include <linux/dbg.h>
 #include <linux/iomap.h>
 #include <linux/fiemap.h>
 #include <linux/namei.h>
@@ -1589,14 +1590,30 @@ out:
 	return ret;
 }
 
+/**
+ * ext4_find_inline_entry - 在内联数据中查找目录项
+ * @dir:   要搜索的父目录的inode结构体
+ * @fname: 待查找的文件名信息结构体
+ * @res_dir: 输出参数，用于存放找到的目录项指针
+ * @has_inline_data: 输出参数，用于标识该目录是否仍使用内联数据
+ *
+ * 此函数首先在inode的i_block内联数据区域中查找指定的目录项，
+ * 如果未找到且目录还包含额外的内联扩展属性数据，则会继续在
+ * 扩展属性区域中进行查找。
+ *
+ * 返回值: 成功找到返回包含目录项的缓冲区头指针；
+ *          未找到返回NULL；出错返回相应的错误指针。
+ */
 struct buffer_head *ext4_find_inline_entry(struct inode *dir,
 					struct ext4_filename *fname,
 					struct ext4_dir_entry_2 **res_dir,
 					int *has_inline_data)
 {
+	/* 初始化内联数据查找结构体，默认设置为未找到状态 */
 	struct ext4_xattr_ibody_find is = {
 		.s = { .not_found = -ENODATA, },
 	};
+	/* 初始化扩展属性信息，指定要查找的系统数据属性 */
 	struct ext4_xattr_info i = {
 		.name_index = EXT4_XATTR_INDEX_SYSTEM,
 		.name = EXT4_XATTR_SYSTEM_DATA,
@@ -1605,52 +1622,85 @@ struct buffer_head *ext4_find_inline_entry(struct inode *dir,
 	void *inline_start;
 	int inline_size;
 
+	/* 调试信息：打印正在查找的文件名 */
+	inode_dbg(dir, "search for %s\n",
+		fname->usr_fname->name);
+
+	// 查找inode位置
 	ret = ext4_get_inode_loc(dir, &is.iloc);
+	/* 获取inode位置失败，直接返回错误指针 */
 	if (ret)
 		return ERR_PTR(ret);
 
+	/* 获取读信号量，保护扩展属性数据的并发访问 */
 	down_read(&EXT4_I(dir)->xattr_sem);
 
+	/* 在inode体内查找指定的扩展属性 */
 	ret = ext4_xattr_ibody_find(dir, &i, &is);
 	if (ret)
 		goto out;
 
+	/* 检查目录是否不再使用内联数据 */
 	if (!ext4_has_inline_data(dir)) {
+		/* 标记该目录已无内联数据，通知调用者换用常规方式查找 */
 		*has_inline_data = 0;
 		goto out;
 	}
 
+	/* 
+	 * 计算第一部分内联数据的起始位置和大小。
+	 * 内联数据存储在inode的i_block中，跳过前两个".",".."目录项的占用空间。
+	 */
 	inline_start = (void *)ext4_raw_inode(&is.iloc)->i_block +
 						EXT4_INLINE_DOTDOT_SIZE;
 	inline_size = EXT4_MIN_INLINE_DATA_SIZE - EXT4_INLINE_DOTDOT_SIZE;
+
+	/* 在第一部分内联数据区（i_block剩余空间）中搜索目录项 */
 	ret = ext4_search_dir(is.iloc.bh, inline_start, inline_size,
 			      dir, fname, 0, res_dir);
+	/* 找到目标目录项，跳转到找到处理流程 */
 	if (ret == 1)
 		goto out_find;
+	/* 搜索过程中发生错误，跳转到退出处理 */
 	if (ret < 0)
 		goto out;
 
+	/* 
+	 * 如果内联数据总大小等于最小内联数据大小，
+	 * 说明没有额外的内联数据存储在扩展属性区，查找结束。
+	 */
 	if (ext4_get_inline_size(dir) == EXT4_MIN_INLINE_DATA_SIZE)
 		goto out;
 
+	/* 
+	 * 计算第二部分内联数据的起始位置和大小。
+	 * 额外的内联数据存储在扩展属性区域中。
+	 */
 	inline_start = ext4_get_inline_xattr_pos(dir, &is.iloc);
 	inline_size = ext4_get_inline_size(dir) - EXT4_MIN_INLINE_DATA_SIZE;
 
+	/* 在第二部分内联数据区（扩展属性区）中搜索目录项 */
 	ret = ext4_search_dir(is.iloc.bh, inline_start, inline_size,
 			      dir, fname, 0, res_dir);
+	/* 找到目标目录项，跳转到找到处理流程 */
 	if (ret == 1)
 		goto out_find;
 
 out:
+	/* 释放缓冲区头 */
 	brelse(is.iloc.bh);
+	/* 根据返回值设置输出状态：出错则返回错误指针，未找到则返回NULL */
 	if (ret < 0)
 		is.iloc.bh = ERR_PTR(ret);
 	else
 		is.iloc.bh = NULL;
 out_find:
+	/* 释放读信号量 */
 	up_read(&EXT4_I(dir)->xattr_sem);
+	/* 返回缓冲区头指针或错误/NULL指针 */
 	return is.iloc.bh;
 }
+
 
 int ext4_delete_inline_entry(handle_t *handle,
 			     struct inode *dir,

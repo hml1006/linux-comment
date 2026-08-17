@@ -974,13 +974,19 @@ void start_kernel(void)
 	char *command_line;
 	char *after_dashes;
 
+	// 设置栈溢出magic number, 在栈顶端设置一个magic, 如果被改, 说明溢出
 	set_task_stack_end_magic(&init_task);
+	// 获取smp处理器id，设置logical cpu map
 	smp_setup_processor_id();
+	// 初始化obj_hash、obj_static_pool这2个全局变量，这2个全局变量会在调试的时候用到
 	debug_objects_early_init();
+	// 从 .note section找到build id
 	init_vmlinux_build_id();
 
+	// 初始化cgroups
 	cgroup_init_early();
 
+	// 禁中断
 	local_irq_disable();
 	early_boot_irqs_disabled = true;
 
@@ -988,25 +994,37 @@ void start_kernel(void)
 	 * Interrupts are still disabled. Do necessary setups, then
 	 * enable them.
 	 */
+	// 设置boot cpu标记
 	boot_cpu_init();
+	// 初始化high memory页表, 64位为空
 	page_address_init();
 	pr_notice("%s", linux_banner);
+	// 根据bootloader传递的参数收集系统硬件信息
 	setup_arch(&command_line);
 	mm_core_init_early();
+	// jump label表初始化,通过替换指定位置nop指令为jump指令实现跳转
+	// 举例 tracepoint,开启后,会把函数中tracepoint位置的nop指令替换为跳转指令,避免tracepoint位置if判断
 	/* Static keys and static calls are needed by LSMs */
 	jump_label_init();
 	static_call_init();
 	early_security_init();
+	// 获取启动配置
 	setup_boot_config();
+	// 保存命令行参数
 	setup_command_line(command_line);
+	// 设置 nr_cpu_ids 变量
 	setup_nr_cpu_ids();
+	// 给每个CPU分配内存，拷贝.data.percpu段的数据. 为系统中的每个CPU的per_cpu变量申请空间
+	// per cpu 变量访问方式为x86 gs:ptr, 每个cpu的per cpu变量地址放gs寄存器, arm64 TPDIR_EL1寄存器放基址
 	setup_per_cpu_areas();
 	smp_prepare_boot_cpu();	/* arch-specific boot-cpu hooks */
 	early_numa_node_init();
+	// 设置boot cpu 热插拔状态
 	boot_cpu_hotplug_init();
 
 	print_kernel_cmdline(saved_command_line);
 	/* parameters may set static keys */
+	// 解析参数
 	parse_early_param();
 	after_dashes = parse_args("Booting kernel",
 				  static_command_line, __start___param,
@@ -1027,16 +1045,26 @@ void start_kernel(void)
 	 * These use large bootmem allocations and must precede
 	 * initalization of page allocator
 	 */
+	// 为console申请内存
 	setup_log_buf(0);
+	// 申请dentry cache，inode hash表缓存
 	vfs_caches_init_early();
+	// 排序异常表 https://www.cnblogs.com/chengxuyuancc/p/3428944.html
+	// https://www.qetool.com/scripts/view/19548.html
+	// 异常表保存内核访问用户空间地址指令和fixup地址，发生page fault时，根据异常表判断时内核访问内存越界还是系统
+	// 调用传递的地址错误，例如 copy{to,from}user()
 	sort_main_extable();
+	// 系统保留中断向量初始化
 	trap_init();
+	// 内存管理相关结构，cache，内存调试模块，内存分配模块等初始化
 	mm_core_init();
 	maple_tree_init();
 	poking_init();
+	// ftrace内核调试
 	ftrace_init();
 
 	/* trace_printk can be enabled here */
+	// tracepoint中的trace_printk，申请ring buffer
 	early_trace_init();
 
 	/*
@@ -1049,12 +1077,15 @@ void start_kernel(void)
 	if (WARN(!irqs_disabled(),
 		 "Interrupts were enabled *very* early, fixing it\n"))
 		local_irq_disable();
+	// 基数树初始化
+	// https://blog.csdn.net/petershina/article/details/53313624
 	radix_tree_init();
 
 	/*
 	 * Set up housekeeping before setting up workqueues to allow the unbound
 	 * workqueue to take non-housekeeping into account.
 	 */
+	// 未绑定cpu的workqueue，timer，kthread等cpu属性管理
 	housekeeping_init();
 
 	/*
@@ -1077,14 +1108,19 @@ void start_kernel(void)
 	/* init some links before init_ISA_irqs() */
 	early_irq_init();
 	init_IRQ();
+	// 时钟事件设备信息发生变化时通知
 	tick_init();
 	rcu_init_nohz();
 	timers_init();
+	// schedule rcu
 	srcu_init();
+	// 高分辨率定时器初始化
 	hrtimers_init();
 	softirq_init();
 	vdso_setup_data_pages();
+	// 时钟源和计量时间初始化
 	timekeeping_init();
+	// TSC时间戳计数器初始化
 	time_init();
 
 	/* This must be after timekeeping is initialized */
@@ -1092,6 +1128,8 @@ void start_kernel(void)
 
 	/* These make use of the fully initialized rng */
 	kfence_init();
+	// 栈溢出保护, 给当前boot task设置canary，如果踩到可被检查出来
+	// 依赖编译器stack protect特性支持，调用函数时设置canary，return时检查canary
 	boot_init_stack_canary();
 
 	perf_event_init();
@@ -1102,6 +1140,7 @@ void start_kernel(void)
 	early_boot_irqs_disabled = false;
 	local_irq_enable();
 
+	// slab分配器初始化
 	kmem_cache_init_late();
 
 	/*
@@ -1113,7 +1152,7 @@ void start_kernel(void)
 	if (panic_later)
 		panic("Too many boot %s vars at `%s'", panic_later,
 		      panic_param);
-
+	// 死锁检测初始化
 	lockdep_init();
 
 	/*
@@ -1133,7 +1172,9 @@ void start_kernel(void)
 	}
 #endif
 	setup_per_cpu_pageset();
+	// numa内存分配策略，从哪个node分配内存
 	numa_policy_init();
+	// 高级电源管理初始化
 	acpi_early_init();
 	if (late_time_init)
 		late_time_init();
@@ -1143,34 +1184,44 @@ void start_kernel(void)
 	arch_cpu_finalize_init();
 
 	pid_idr_init();
+	// 匿名虚拟内存初始化
 	anon_vma_init();
 	thread_stack_cache_init();
+	// 证书初始化
 	cred_init();
 	fork_init();
 	proc_caches_init();
 	uts_ns_init();
 	time_ns_init();
+	// 证书key初始化
 	key_init();
+	// 安全框架初始化
 	security_init();
 	dbg_late_init();
 	net_ns_init();
+	// vfs相关数据结构cache初始化
 	vfs_caches_init();
 	pagecache_init();
 	signals_init();
+	// 顺序读写文件，procfs, sysfs,debugfs用
 	seq_file_init();
 	proc_root_init();
+	// nfs
 	nsfs_init();
 	pidfs_init();
 	cpuset_init();
 	mem_cgroup_init();
 	cgroup_init();
+	// task状态
 	taskstats_init_early();
 	delayacct_init();
 
 	acpi_subsystem_init();
 	arch_post_acpi_subsys_init();
+	// 竞争检测
 	kcsan_init();
 
+	// 调用initcall函数，pci初始化也是initcall
 	/* Do the rest non-__init'ed, we're now alive */
 	rest_init();
 

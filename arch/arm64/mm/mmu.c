@@ -1400,6 +1400,7 @@ static void __init create_idmap(void)
 	phys_addr_t end   = __pa_symbol(__idmap_text_end);
 	phys_addr_t ptep  = __pa_symbol(idmap_ptes);
 
+	// map_range.c:create_init_idmap()
 	__pi_map_range(&ptep, start, end, start, PAGE_KERNEL_ROX,
 		       IDMAP_ROOT_LEVEL, (pte_t *)idmap_pg_dir, false,
 		       __phys_to_virt(ptep) - ptep);

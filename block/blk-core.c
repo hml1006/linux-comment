@@ -667,21 +667,37 @@ static inline blk_status_t blk_check_zone_append(struct request_queue *q,
 	return BLK_STS_OK;
 }
 
+/**
+ * __submit_bio - 提交一个BIO（块I/O）请求到底层设备
+ * @bio: 指向待提交的BIO结构的指针
+ *
+ * 该函数是块层提交BIO的核心入口之一。它会初始化一个blk_plug用于缓存请求以实现批量提交，
+ * 从而减少频繁向硬件派发请求所带来的时间开销（nsecs级别）。根据目标块设备是否支持
+ * 直接的submit_bio操作，函数会走不同的分发路径。对于不支持直接提交的设备（如NVMe），
+ * 会转入块多队列逻辑；对于支持的设备，则进入队列并调用设备驱动注册的submit_bio回调。
+ */
 static void __submit_bio(struct bio *bio)
 {
 	if (!bdev_test_flag(bio->bi_bdev, BD_HAS_SUBMIT_BIO)) {
+		// nvme走这里（进入块多队列提交逻辑）
 		blk_mq_submit_bio(bio);
 	} else if (likely(bio_queue_enter(bio) == 0)) {
+		/* 成功进入请求队列，准备调用设备驱动的提交方法 */
 		struct gendisk *disk = bio->bi_bdev->bd_disk;
 	
+		/* 检查是否为轮询(POLL)请求，且设备是否不支持轮询特性 */
 		if ((bio->bi_opf & REQ_POLLED) &&
 		    !(disk->queue->limits.features & BLK_FEAT_POLL))
+			/* 设备不支持轮询，直接以不支持状态结束该BIO */
 			bio_endio_status(bio, BLK_STS_NOTSUPP);
 		else
+			/* 正常路径：调用具体块设备驱动注册的 submit_bio 回调函数 */
 			disk->fops->submit_bio(bio);
+		/* 退出请求队列（释放队列引用计数） */
 		blk_queue_exit(disk->queue);
 	}
 }
+
 
 /*
  * The loop in this function may be a bit non-obvious, and so deserves some
@@ -746,52 +762,80 @@ static void __submit_bio_noacct(struct bio *bio)
 	current->bio_list = NULL;
 }
 
+/**
+ * __submit_bio_noacct_mq - 无需账号检查地提交多队列块I/O请求
+ * @bio: 指向待提交的块I/O请求结构的指针
+ *
+ * 该函数用于在不进行额外账号限制检查的情况下，将bio提交至多队列块设备。
+ * 它通过设置当前进程的bio_list来收集处理过程中可能产生的新bio，
+ * 并循环处理这些新生成的bio，直到所有相关的bio都提交完毕。
+ * 这种机制确保了映射设备在提交一个bio时产生的衍生bio能够被正确处理。
+ */
 static void __submit_bio_noacct_mq(struct bio *bio)
 {
 	struct bio_list bio_list[2] = { };
 
 	current->bio_list = bio_list;
 
+	// mapped device提交一个bio可能会产生新的bio
 	do {
+		// 普通nvme设备调用一次
 		__submit_bio(bio);
 	} while ((bio = bio_list_pop(&bio_list[0])));
 
 	current->bio_list = NULL;
 }
 
+/**
+ * submit_bio_noacct_nocheck - 提交bio请求且不进行账号检查
+ * @bio: 待提交的bio结构体指针
+ * @split: 标识该bio是否为拆分后的请求
+ *
+ * 该函数用于将bio提交给底层块设备进行处理。在提交过程中，会进行cgroup
+ * 统计、追踪设置，并根据当前上下文及设备类型选择不同的提交路径。
+ */
 void submit_bio_noacct_nocheck(struct bio *bio, bool split)
 {
 	if (unlikely(blk_error_inject(bio)))
 		return;
 
+	// 开始bio的cgroup计数
 	blk_cgroup_bio_start(bio);
 
+	// 如果bio没有标记追踪完成
 	if (!bio_flagged(bio, BIO_TRACE_COMPLETION)) {
+		// 追踪bio入队事件
 		trace_block_bio_queue(bio);
 		/*
-		 * Now that enqueuing has been traced, we need to trace
-		 * completion as well.
+		 * 既然入队操作已经被追踪，我们同样需要追踪其完成事件。
+		 * 因此在这里设置完成追踪标志位。
 		 */
 		bio_set_flag(bio, BIO_TRACE_COMPLETION);
 	}
 
 	/*
-	 * We only want one ->submit_bio to be active at a time, else stack
-	 * usage with stacked devices could be a problem.  Use current->bio_list
-	 * to collect a list of requests submitted by a ->submit_bio method
-	 * while it is active, and then process them after it returned.
+	 * 我们只希望同一时间只有一个 ->submit_bio 处于活动状态，否则在
+	 * 堆叠设备（stacked devices）的情况下，栈的使用可能会成为问题。
+	 * 使用 current->bio_list 来收集处于活动状态的 ->submit_bio 方法
+	 * 所提交的请求列表，并在其返回后再进行处理。
 	 */
 	if (current->bio_list) {
+		// mapped device走这里：当前上下文已有活跃的bio_list
 		if (split)
+			// 如果是拆分的bio，将其添加到链表头部以保证顺序
 			bio_list_add_head(&current->bio_list[0], bio);
 		else
+			// 否则添加到链表尾部
 			bio_list_add(&current->bio_list[0], bio);
 	} else if (!bdev_test_flag(bio->bi_bdev, BD_HAS_SUBMIT_BIO)) {
+		// nvme盘会走这里，有自定义submit_io：设备未实现自定义的submit_bio回调
 		__submit_bio_noacct_mq(bio);
 	} else {
+		// 普通块设备：使用默认的多队列或传统方式提交
 		__submit_bio_noacct(bio);
 	}
 }
+
 
 static blk_status_t blk_validate_atomic_write_op_size(struct request_queue *q,
 						 struct bio *bio)
@@ -813,6 +857,27 @@ static blk_status_t blk_validate_atomic_write_op_size(struct request_queue *q,
  * resubmitted to lower level drivers by stacking block drivers.  All file
  * systems and other upper level users of the block layer should use
  * submit_bio() instead.
+ */
+/**
+ * submit_bio_noacct - 直接向块设备提交bio, 不记账
+ * @bio: 指向待提交的块I/O操作结构的指针
+ *
+ * 此函数是通用块层的核心提交入口之一，负责对即将提交的bio进行一系列
+ * 合法性检查、特性支持检查以及分区重映射等预处理，最终将合法的bio
+ * 提交到底层驱动或节流控制层。
+ *
+ * 处理流程主要包括：
+ * 1. 检查REQ_NOWAIT请求在队列不支持时的合法性。
+ * 2. 检查内联加密上下文的合法性及硬件支持情况。
+ * 3. 故障注入检查。
+ * 4. 只读设备检查。
+ * 5. 分区重映射及越界检查。
+ * 6. Flush请求的预处理及设备写缓存特性检查。
+ * 7. 针对各种具体I/O操作（写、丢弃、安全擦除、区域追加等）的
+ *    特性及边界限制检查。
+ * 8. 穿过块层节流控制器。
+ * 9. 若通过所有检查，则调用submit_bio_noacct_nocheck()提交bio；
+ *    若不通过，则设置相应的错误状态并结束bio。
  */
 void submit_bio_noacct(struct bio *bio)
 {
@@ -838,10 +903,15 @@ void submit_bio_noacct(struct bio *bio)
 
 	if (should_fail_bio(bio))
 		goto end_io;
+	// read only检查
 	bio_check_ro(bio);
+	// 检查sector有没有重新映射，多个分区会重新映射
 	if (!bio_flagged(bio, BIO_REMAPPED)) {
+		// 检查bio是否超过了块设备的最大扇区范围
 		if (unlikely(bio_check_eod(bio)))
 			goto end_io;
+		// 如果块设备是分区，需要重新映射
+		// LBA需要加上分区偏移量
 		if (bdev_is_partition(bdev) &&
 		    unlikely(blk_partition_remap(bio)))
 			goto end_io;
@@ -855,6 +925,7 @@ void submit_bio_noacct(struct bio *bio)
 		if (WARN_ON_ONCE(bio_op(bio) != REQ_OP_WRITE &&
 				 bio_op(bio) != REQ_OP_ZONE_APPEND))
 			goto end_io;
+		// 检测块设备是否有内部cache feature，没有就不支持flush
 		if (!bdev_write_cache(bdev)) {
 			bio->bi_opf &= ~(REQ_PREFLUSH | REQ_FUA);
 			if (!bio_sectors(bio)) {
@@ -869,6 +940,7 @@ void submit_bio_noacct(struct bio *bio)
 		break;
 	case REQ_OP_WRITE:
 		if (bio->bi_opf & REQ_ATOMIC) {
+			// 检查是否匹配原子写
 			status = blk_validate_atomic_write_op_size(q, bio);
 			if (status != BLK_STS_OK)
 				goto end_io;
@@ -918,6 +990,7 @@ void submit_bio_noacct(struct bio *bio)
 
 	if (blk_throtl_bio(bio))
 		return;
+	// 向块设备提交bio
 	submit_bio_noacct_nocheck(bio, false);
 	return;
 
@@ -951,6 +1024,7 @@ static void bio_set_ioprio(struct bio *bio)
  */
 void submit_bio(struct bio *bio)
 {
+	// 更新统计信息
 	if (bio_op(bio) == REQ_OP_READ) {
 		task_io_account_read(bio->bi_iter.bi_size);
 		count_vm_events(PGPGIN, bio_sectors(bio));
@@ -958,7 +1032,9 @@ void submit_bio(struct bio *bio)
 		count_vm_events(PGPGOUT, bio_sectors(bio));
 	}
 
+	// 设置bio优先级
 	bio_set_ioprio(bio);
+	// 提交bio，不再进行统计
 	submit_bio_noacct(bio);
 }
 EXPORT_SYMBOL(submit_bio);
@@ -1162,31 +1238,55 @@ int kblockd_mod_delayed_work_on(int cpu, struct delayed_work *dwork,
 }
 EXPORT_SYMBOL(kblockd_mod_delayed_work_on);
 
+/**
+ * blk_start_plug_nr_ios - 启动一个块设备请求的插桩，并指定初始 I/O 请求数量。
+ * @plug: 指向待初始化并启动的 blk_plug 结构体的指针
+ * @nr_ios: 预期的 I/O 请求数量，用于限制插桩中排队的请求总数
+ *
+ * 该函数用于初始化并启动一个块设备插桩。插桩机制允许将多个 I/O 请求
+ * 暂时缓存起来，以便后续统一发送到块设备层，从而减少锁竞争并提高 I/O
+ * 吞吐量。调用者可以通过 @nr_ios 参数指定预期的 I/O 数量，该值会被
+ * 限制在 BLK_MAX_REQUEST_COUNT 以内。
+ *
+ * 如果当前任务已经存在一个活跃的插桩（即嵌套插桩场景），该函数将直接
+ * 返回，不做任何处理，以避免覆盖外层的插桩。
+ */
 void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
 {
+	/* 获取当前进程的任务结构体指针 */
 	struct task_struct *tsk = current;
 
 	/*
-	 * If this is a nested plug, don't actually assign it.
+	 * 如果这是一个嵌套的插塞，则不要实际分配它。
+	 * （即当前进程已经处于一个插塞中，直接退出避免覆盖）
 	 */
 	if (tsk->plug)
 		return;
 
+	/* 初始化时间戳为0，延迟到实际需要时再获取 */
 	plug->cur_ktime = 0;
+	/* 初始化多队列请求链表为空 */
 	rq_list_init(&plug->mq_list);
+	/* 初始化缓存的请求链表为空 */
 	rq_list_init(&plug->cached_rqs);
+	/* 设置预期的I/O数量，限制在最大请求计数 BLK_MAX_REQUEST_COUNT 以内 */
 	plug->nr_ios = min_t(unsigned short, nr_ios, BLK_MAX_REQUEST_COUNT);
+	/* 初始化当前已累积的请求数量为0 */
 	plug->rq_count = 0;
+	/* 标记当前插塞是否包含来自多个不同队列的请求，初始为否 */
 	plug->multiple_queues = false;
+	/* 标记当前插塞是否包含带有电梯调度器的请求，初始为否 */
 	plug->has_elevator = false;
+	/* 初始化回调函数链表 */
 	INIT_LIST_HEAD(&plug->cb_list);
 
 	/*
-	 * Store ordering should not be needed here, since a potential
-	 * preempt will imply a full memory barrier
+	 * 这里不需要显式的存储屏障来保证写入顺序，
+	 * 因为潜在的抢占操作会隐式包含一个完整的内存屏障。
 	 */
 	tsk->plug = plug;
 }
+
 
 /**
  * blk_start_plug - initialize blk_plug and track it inside the task_struct
@@ -1210,6 +1310,19 @@ void blk_start_plug_nr_ios(struct blk_plug *plug, unsigned short nr_ios)
  *   page belonging to that request that is currently residing in our private
  *   plug. By flushing the pending I/O when the process goes to sleep, we avoid
  *   this kind of deadlock.
+ */
+/**
+ * blk_start_plug - 启动块层插塞机制
+ * @plug: 指向待初始化的 blk_plug 结构的指针
+ *
+ * 该函数用于启动块设备层的请求插塞机制。插塞机制允许将多个
+ * I/O 请求暂时聚集在当前任务的队列中，而不是立即下发到底层
+ * 驱动，从而使得块层有机会对相邻或重叠的 I/O 请求进行合并
+ * 与排序，有效减少磁盘寻址时间并提高整体 I/O 吞吐量。
+ *
+ * 本函数是对 blk_start_plug_nr_ios() 的封装，默认将初始
+ * I/O 计数设置为 1。当累积的 I/O 数量达到一定阈值时，插塞
+ * 机制会自动解开，将请求下发。
  */
 void blk_start_plug(struct blk_plug *plug)
 {

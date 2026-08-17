@@ -9,6 +9,8 @@
  * Please see Documentation/filesystems/sysfs.rst for more information.
  */
 
+#include "linux/kern_levels.h"
+#include "linux/printk.h"
 #include <linux/fs.h>
 #include <linux/magic.h>
 #include <linux/mount.h>
@@ -93,6 +95,7 @@ int __init sysfs_init(void)
 
 	sysfs_root_kn = kernfs_root_to_node(sysfs_root);
 
+	printk(KERN_INFO "[%s] register sysfs\n", __func__);
 	err = register_filesystem(&sysfs_fs_type);
 	if (err) {
 		kernfs_destroy_root(sysfs_root);

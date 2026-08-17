@@ -5,6 +5,9 @@
 #include <asm/x86_init.h>
 #include <asm/irqdomain.h>
 
+/**
+ * pci配置空间访问方法初始化
+ */
 /* arch_initcall has too random ordering, so call the initializers
    in the right sequence from here. */
 static __init int pci_arch_init(void)

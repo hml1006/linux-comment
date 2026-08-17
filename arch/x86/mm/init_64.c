@@ -1375,6 +1375,9 @@ failed:
 
 void __init arch_mm_preinit(void)
 {
+	/**
+	 * iommu初始化，用于pcie虚拟化
+	 */
 	pci_iommu_alloc();
 }
 

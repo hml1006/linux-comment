@@ -3160,11 +3160,22 @@ static inline void inode_dio_begin(struct inode *inode)
  * This is called once we've finished processing a direct I/O request,
  * and is used to wake up callers waiting for direct I/O to be quiesced.
  */
+/**
+ * inode_dio_end - 结束针对inode的直接I/O操作
+ * @inode: 指向目标inode结构的指针
+ *
+ * 该函数用于在直接I/O（Direct I/O）操作完成时被调用。它将当前inode的
+ * 直接I/O计数器减1，并判断是否减至0。如果计数器归零，说明所有正在
+ * 进行的直接I/O操作已经全部完成，此时唤醒等待该计数器归零的进程。
+ */
 static inline void inode_dio_end(struct inode *inode)
 {
+	// 原子地将直接I/O计数器减1，并测试其是否变为0
 	if (atomic_dec_and_test(&inode->i_dio_count))
+		// 如果计数器归零，唤醒所有在inode->i_dio_count上等待的进程
 		wake_up_var(&inode->i_dio_count);
 }
+
 
 extern void inode_set_flags(struct inode *inode, unsigned int flags,
 			    unsigned int mask);

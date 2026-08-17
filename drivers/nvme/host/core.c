@@ -1398,7 +1398,7 @@ static void nvme_keep_alive_work(struct work_struct *work)
 		dev_dbg(ctrl->device,
 			"reschedule traffic based keep-alive timer\n");
 		ctrl->comp_seen = false;
-		nvme_queue_keep_alive_work(ctrl);
+		nvme_queue_keep_alive_work(ctrl); // nvme keep alive, pcie 不需要
 		return;
 	}
 
@@ -4605,6 +4605,7 @@ static void nvme_scan_work(struct work_struct *work)
 	}
 
 	mutex_lock(&ctrl->scan_lock);
+	// 顺序扫描namespace
 	if (!nvme_id_cns_ok(ctrl, NVME_ID_CNS_NS_ACTIVE_LIST)) {
 		nvme_scan_ns_sequential(ctrl);
 	} else {
@@ -4822,7 +4823,7 @@ static void nvme_fw_act_work(struct work_struct *work)
 
 	nvme_unquiesce_io_queues(ctrl);
 	/* read FW slot information to clear the AER */
-	nvme_get_fw_slot_info(ctrl);
+	nvme_get_fw_slot_info(ctrl); // 有些nvme设备有多个firmware slot
 
 	queue_work(nvme_wq, &ctrl->async_event_work);
 }
@@ -5175,17 +5176,18 @@ int nvme_init_ctrl(struct nvme_ctrl *ctrl, struct device *dev,
 	mutex_init(&ctrl->scan_lock);
 	INIT_LIST_HEAD(&ctrl->namespaces);
 	xa_init(&ctrl->cels);
+	// 此dev是pci_dev父类，通用device
 	ctrl->dev = dev;
 	ctrl->ops = ops;
 	ctrl->quirks = quirks;
 	ctrl->numa_node = NUMA_NO_NODE;
-	INIT_WORK(&ctrl->scan_work, nvme_scan_work);
-	INIT_WORK(&ctrl->async_event_work, nvme_async_event_work);
-	INIT_WORK(&ctrl->fw_act_work, nvme_fw_act_work);
-	INIT_WORK(&ctrl->delete_work, nvme_delete_ctrl_work);
+	INIT_WORK(&ctrl->scan_work, nvme_scan_work); // 扫描namespace
+	INIT_WORK(&ctrl->async_event_work, nvme_async_event_work); // async event
+	INIT_WORK(&ctrl->fw_act_work, nvme_fw_act_work); // firmware active
+	INIT_WORK(&ctrl->delete_work, nvme_delete_ctrl_work); // pcie remove设备会调用到
 	init_waitqueue_head(&ctrl->state_wq);
 
-	INIT_DELAYED_WORK(&ctrl->ka_work, nvme_keep_alive_work);
+	INIT_DELAYED_WORK(&ctrl->ka_work, nvme_keep_alive_work); // keep alive
 	INIT_DELAYED_WORK(&ctrl->failfast_work, nvme_failfast_work);
 	memset(&ctrl->ka_cmd, 0, sizeof(ctrl->ka_cmd));
 	ctrl->ka_cmd.common.opcode = nvme_admin_keep_alive;
@@ -5201,6 +5203,7 @@ int nvme_init_ctrl(struct nvme_ctrl *ctrl, struct device *dev,
 		goto out;
 	}
 
+	// 分配nvme设备编号， nvme0，1，2...
 	ret = ida_alloc(&nvme_instance_ida, GFP_KERNEL);
 	if (ret < 0)
 		goto out;
@@ -5213,15 +5216,18 @@ int nvme_init_ctrl(struct nvme_ctrl *ctrl, struct device *dev,
 	nvme_mpath_init_ctrl(ctrl);
 
 	device_initialize(&ctrl->ctrl_device);
+	// 此device为一个字符设备， /dev/nvme0，用于控制controller
 	ctrl->device = &ctrl->ctrl_device;
 	ctrl->device->devt = MKDEV(MAJOR(nvme_ctrl_base_chr_devt),
 			ctrl->instance);
 	ctrl->device->class = &nvme_class;
+	// 这个控制controller的字符设备父设备设置为上面的pcie设备父类
 	ctrl->device->parent = ctrl->dev;
 	if (ops->dev_attr_groups)
 		ctrl->device->groups = ops->dev_attr_groups;
 	else
 		ctrl->device->groups = nvme_dev_attr_groups;
+	//release controller 回调函数
 	ctrl->device->release = nvme_free_ctrl;
 	dev_set_drvdata(ctrl->device, ctrl);
 
@@ -5249,8 +5255,10 @@ int nvme_add_ctrl(struct nvme_ctrl *ctrl)
 	if (ret)
 		return ret;
 
+	// 设置通用字符设备回调函数
 	cdev_init(&ctrl->cdev, &nvme_dev_fops);
 	ctrl->cdev.owner = ctrl->ops->module;
+	// 添加并绑定通用字符设备和controller对应的字符设备device
 	ret = cdev_device_add(&ctrl->cdev, ctrl->device);
 	if (ret)
 		return ret;
