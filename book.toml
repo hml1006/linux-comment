@@ -1,0 +1,27 @@
+[book]
+title = "Linux 7.2 内核源码分析笔记"
+authors = ["hml1006"]
+language = "zh-CN"
+description = "面向 ARM64 的 Linux 7.2 内核源码分析笔记"
+src = "notes"
+# 根目录 README.md 保持为 GitHub 入口，不参与 mdBook 源目录
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+# 章节标题已自带编号（如 3.1），关闭 mdBook 自动编号避免重复
+no-section-label = true
+# 仅本地阅读，不发布 GitHub Pages：不配置 git-repository-url / edit-url-template
+
+[output.html.search]
+# 仅本地阅读，关闭搜索索引（避免生成约 23MB 的 searchindex.js）
+enable = false
+
+[output.html.fold]
+enable = true
+# 0 = 折叠第一级带子项的章节（即各 N.x 节），使三级页面默认隐藏
+level = 0

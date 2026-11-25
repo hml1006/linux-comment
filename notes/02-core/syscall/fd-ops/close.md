@@ -30,7 +30,7 @@ close 系统调用用于关闭一个文件描述符。与 read/write 不同，cl
 
 ## 3 系统调用入口
 
-### 3.1 SYSCALL_DEFINE1(close) - fs/open.c:1498
+### 3.1 SYSCALL_DEFINE1(close) - fs/open.c:1524
 
 ```c
 SYSCALL_DEFINE1(close, unsigned int, fd)
@@ -404,7 +404,7 @@ nvme_irq(irq, nvmeq)                    // pci.c:1599
                              |
                    +---------v----------+
                    |  SYSCALL_DEFINE1    |  系统调用入口
-                   |  (fs/open.c:1498)   |
+                   |  (fs/open.c:1524)   |
                    +---------+----------+
                              |
                    +---------v----------+
@@ -538,7 +538,7 @@ nvme_irq(irq, nvmeq)                    // pci.c:1599
 ```
 /* ========== 主路径：始终执行 ========== */
 
-SYSCALL_DEFINE1(close, fd)                          // fs/open.c:1498
+SYSCALL_DEFINE1(close, fd)                          // fs/open.c:1524
 └─ file_close_fd(fd)                                // fs/file.c:889 — 从 fdtable 移除 fd
    └─ file_close_fd_locked(files, fd)               // fs/file.c:725 — 持锁操作
         ├─ rcu_dereference_raw(fdt->fd[fd])         // 取出 file 指针

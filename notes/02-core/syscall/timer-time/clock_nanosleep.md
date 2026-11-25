@@ -1,188 +1,298 @@
-### 5.4 clock_nanosleep
+# clock_nanosleep 系统调用分析
 
-与 nanosleep 核心同路径，但支持更多时钟和绝对时间模式：
+## 1. 概述
 
+`clock_nanosleep` 是高精度睡眠接口的 POSIX 版本。与 `nanosleep` 相比，它有两个关键增强：
+
+- **可指定时钟**：`CLOCK_REALTIME`、`CLOCK_MONOTONIC`、`CLOCK_BOOTTIME`、进程/线程 CPU 时钟等；
+- **支持绝对时间**：`flags` 传入 `TIMER_ABSTIME` 时，`rqtp` 表示“唤醒时刻”而不是“睡眠时长”，可避免周期性任务的误差累积。
+
+**关键特性：**
+
+- 被信号中断时**不写回剩余时间**（`rmtp` 在 `TIMER_ABSTIME` 模式下被忽略）
+- 返回值直接是内核错误码的相反数，**不设置 errno**（与 `nanosleep` 不同）
+- 内核实现复用 `hrtimer_nanosleep()`，与 `nanosleep` 共享同一条睡眠路径
+
+**内核源码位置：** `kernel/time/posix-timers.c:1383`
+
+---
+
+## 2. 用户态接口
+
+```c
+#include <time.h>
+
+int clock_nanosleep(clockid_t clockid, int flags,
+                    const struct timespec *request,
+                    struct timespec *remain);
 ```
-clock_nanosleep(which_clock, flags, rqtp, rmtp)
-  └─ kc->nsleep(which_clock, flags, &t, rmtp)
-       └─ hrtimer_nanosleep(t, flags & TIMER_ABSTIME ?
-                HRTIMER_MODE_ABS : HRTIMER_MODE_REL, which_clock)
+
+| 参数 | 说明 |
+|------|------|
+| `clockid` | 计时所用的时钟 |
+| `flags` | `0` 或 `TIMER_ABSTIME` |
+| `request` | 睡眠时长（相对）或目标时刻（绝对） |
+| `remain` | 剩余时间；仅相对睡眠且被信号中断时写入 |
+
+### 2.1 支持的时钟
+
+| 时钟 | 备注 |
+|------|------|
+| `CLOCK_REALTIME` | 受系统时间调整影响；绝对睡眠使用墙上时间 |
+| `CLOCK_MONOTONIC` | 推荐用于测量与周期任务 |
+| `CLOCK_BOOTTIME` | 包含系统挂起时间 |
+| `CLOCK_PROCESS_CPUTIME_ID` | 进程 CPU 时间 |
+| `CLOCK_THREAD_CPUTIME_ID` | 线程 CPU 时间 |
+| `CLOCK_TAI` | 国际原子时 |
+
+具体支持范围取决于 `k_clock` 是否实现了 `nsleep` 回调；未实现的时钟返回 `EOPNOTSUPP`。
+
+### 2.2 返回值
+
+与大多数系统调用不同，`clock_nanosleep` 成功返回 `0`，失败返回**正数错误码**（如 `EINVAL`、`EINTR`），调用者应直接判断返回值而不是读 `errno`。
+
+---
+
+## 3. 内核实现
+
+### 3.1 系统调用入口
+
+```c
+// kernel/time/posix-timers.c:1383
+SYSCALL_DEFINE4(clock_nanosleep, const clockid_t, which_clock, int, flags,
+        const struct __kernel_timespec __user *, rqtp,
+        struct __kernel_timespec __user *, rmtp)
+{
+    const struct k_clock *kc = clockid_to_kclock(which_clock);
+    struct timespec64 t;
+
+    if (!kc)
+        return -EINVAL;
+    if (!kc->nsleep)
+        return -EOPNOTSUPP;
+
+    if (get_timespec64(&t, rqtp))
+        return -EFAULT;
+
+    if (!timespec64_valid(&t))
+        return -EINVAL;
+    if (flags & TIMER_ABSTIME)
+        rmtp = NULL;
+    current->restart_block.fn = do_no_restart_syscall;
+    current->restart_block.nanosleep.type = rmtp ? TT_NATIVE : TT_NONE;
+    current->restart_block.nanosleep.rmtp = rmtp;
+
+    return kc->nsleep(which_clock, flags, &t);
+}
+```
+
+入口先校验时钟与时间值，再根据 `TIMER_ABSTIME` 决定是否保留 `rmtp`，最后交给时钟私有的 `nsleep` 回调。
+
+### 3.2 通用睡眠回调
+
+```c
+// kernel/time/posix-timers.c:1355
+static int common_nsleep(const clockid_t which_clock, int flags,
+                         const struct timespec64 *rqtp)
+{
+    ktime_t texp = timespec64_to_ktime(*rqtp);
+
+    return hrtimer_nanosleep(texp, flags & TIMER_ABSTIME ?
+                             HRTIMER_MODE_ABS : HRTIMER_MODE_REL,
+                             which_clock);
+}
+```
+
+对 `CLOCK_MONOTONIC` 和 `CLOCK_BOOTTIME`，绝对值还要经过时间命名空间转换：
+
+```c
+// kernel/time/posix-timers.c:1367
+static int common_nsleep_timens(const clockid_t which_clock, int flags,
+                                const struct timespec64 *rqtp)
+{
+    ktime_t texp = timespec64_to_ktime(*rqtp);
+
+    if (flags & TIMER_ABSTIME)
+        texp = timens_ktime_to_host(which_clock, texp);
+
+    return hrtimer_nanosleep(texp, flags & TIMER_ABSTIME ?
+                             HRTIMER_MODE_ABS : HRTIMER_MODE_REL,
+                             which_clock);
+}
+```
+
+即：容器内进程传入的绝对时刻是“命名空间时间”，进入 hrtimer 前必须换算成宿主时间。
+
+### 3.3 与 nanosleep 的实现差异
+
+| 维度 | nanosleep | clock_nanosleep |
+|------|-----------|-----------------|
+| 时钟 | 固定 `CLOCK_MONOTONIC` | 由 `clockid` 指定 |
+| 时间语义 | 仅相对 | 相对或绝对（`TIMER_ABSTIME`） |
+| `restart_block` | 相对睡眠时设置 | 绝对睡眠强制清空 `rmtp` |
+| 返回值 | `-1` + errno | 直接返回错误码 |
+| 内核函数 | `hrtimer_nanosleep` | `kc->nsleep` → `common_nsleep` → `hrtimer_nanosleep` |
+
+---
+
+## 4. 调用链
+
+```text
+用户态 clock_nanosleep(clockid, flags, rqtp, rmtp)
+  │
+  ▼
+sys_clock_nanosleep
+  ├─ clockid_to_kclock(clockid)
+  │    ├─ 非法 ID → -EINVAL
+  │    └─ kc->nsleep == NULL → -EOPNOTSUPP
+  ├─ get_timespec64(&t, rqtp)
+  ├─ timespec64_valid(&t)
+  ├─ TIMER_ABSTIME → rmtp = NULL
+  ├─ 设置 restart_block.nanosleep
+  └─ kc->nsleep(clockid, flags, &t)
+       ├─ CLOCK_MONOTONIC/BOOTTIME → common_nsleep_timens
+       │    └─ TIMER_ABSTIME → timens_ktime_to_host()
+       └─ hrtimer_nanosleep(expires, mode, clockid)
+            ├─ hrtimer_setup_sleeper_on_stack()
+            ├─ hrtimer_set_expires_range_ns(expires, timer_slack_ns)
+            └─ do_nanosleep()
+                 ├─ set_current_state(TASK_INTERRUPTIBLE)
+                 ├─ hrtimer_sleeper_start_expires()
+                 ├─ schedule()
+                 ├─ 到期 → hrtimer_wakeup → try_to_wake_up
+                 └─ 被信号中断 → 相对模式写回 rem / 绝对模式直接返回 -EINTR
 ```
 
 ---
 
-## 6 完整 Mermaid 流程图
+## 5. 关键数据结构
 
+```c
+// include/uapi/linux/time_types.h
+struct __kernel_timespec {
+    __kernel_time64_t tv_sec;
+    long long         tv_nsec;
+};
+
+// include/linux/time64.h
+struct timespec64 {
+    time64_t tv_sec;
+    long     tv_nsec;
+};
 ```
 
-  === Layer1 - POSIX 定时器 ===
-    - timer_create clockid sevp
-    - do_timer_create
-    - clockid_to_kclock
-    - alloc_posix_timer
-    - idr 分配 timer ID
-    - hrtimer_init
-    - timer_settime timerid flags
-    - do_timer_settime
-    - hrtimer_start -- 红黑树插入
-    v
-    v
+```c
+// include/linux/restart_block.h（节选）
+struct restart_block {
+    long (*fn)(struct restart_block *);
+    union {
+        struct {
+            clockid_t clockid;
+            enum timespec_type type;
+            union {
+                struct __kernel_timespec __user *rmtp;
+                struct old_timespec32 __user *compat_rmtp;
+            };
+            u64 expires;
+        } nanosleep;
+        /* ... */
+    };
+};
+```
 
-  === Layer2 - 定时器到期 ===
-    - hrtimer_interrupt -- 时钟中断
-    - __hrtimer_run_queues
-    - __run_hrtimer
-    ? timer-function
-    - posix_timer_fn -- POSIX
-    - timerfd_tmrproc -- timerfd
-    - send_signal 通知
-    - wake_up ctx-wqh
-    v
-    v
-    v
+`struct k_clock` 的 `nsleep` 回调负责把时钟语义翻译为 hrtimer 模式：
 
-  === Layer3 - timerfd ===
-    - timerfd_create clockid flags
-    - hrtimer_init
-    - anon_inode_getfd
-    - timerfd_settime ufd
-    - hrtimer_start
-    - timerfd_read -- ticks 读取
-    - wait_event_interruptible
-    v
-    v
-    v
-
-  === Layer4 - 时间读取 ===
-    - clock_gettime clockid tp
-    ? vDSO 加速
-    - CNTVCT_EL0 直接读
-    - 系统调用回退
-    - put_timespec64 到用户
-    - gettimeofday tv tz
-    - ktime_get_real_ts64
-    v
-    v
-    v
-    v
-
-  === Layer5 - 睡眠 ===
-    - clock_nanosleep clockid flags
-    - hrtimer_nanosleep
-    - hrtimer_init_sleeper
-    - hrtimer_start
-    - schedule -- 进程睡眠
-    - hrtimer_wakeup -- 到期唤醒
-    ? 被信号中断
-    - restart_block -- 剩余时间
-    - 返回 0
-    v
-    v
-    v
-    v
-    v
+```c
+// kernel/time/posix-timers.h:22
+int (*nsleep)(const clockid_t which_clock, int flags,
+              const struct timespec64 *);
 ```
 
 ---
 
-## 7 完整函数调用链
+## 6. 错误码
 
-### 7.1 POSIX 定时器
+| 返回值 | 触发条件 |
+|--------|----------|
+| `EINVAL` | `clockid` 非法，或 `tv_nsec` 越界 / `tv_sec` 为负 |
+| `EFAULT` | `rqtp` / `rmtp` 指针不可访问 |
+| `EOPNOTSUPP` | 该时钟没有实现 `nsleep`（如 CPU 时钟） |
+| `EINTR` | 被信号中断 |
 
-| 步骤 | 函数 | 文件:行号 | 层 |
-|--|--|--|--|
-| 1 | `SYSCALL_DEFINE3(timer_create)` | kernel/time/posix-timers.c:566 | Syscall |
-| 2 | `do_timer_create(which_clock, event, created_timer_id)` | kernel/time/posix-timers.c:458 | Timer |
-| 3 | `clockid_to_kclock(which_clock)` | kernel/time/posix-timers.c | Timer |
-| 4 | `alloc_posix_timer()` | kernel/time/posix-timers.c | Timer |
-| 5 | `idr_alloc(&posix_timers_id, timer, ...)` | kernel/time/posix-timers.c | Timer |
-| 6 | `hrtimer_init(&timer->it.real.timer, clock_id, ...)` | kernel/time/hrtimer.c | hrtimer |
-| 7 | `SYSCALL_DEFINE4(timer_settime)` | kernel/time/posix-timers.c:947 | Syscall |
-| 8 | `lock_timer(timer_id)` | kernel/time/posix-timers.c | Timer |
-| 9 | `arm_timer(timr)` | kernel/time/posix-timers.c | Timer |
-| 10 | `hrtimer_start(&timr->it.real.timer, ...)` | kernel/time/hrtimer.c | hrtimer |
-| 11 | `__hrtimer_start_range_ns(timer, tim, delta_ns, mode)` | kernel/time/hrtimer.c | hrtimer |
-| 12 | `enqueue_hrtimer(timer, ...)` | kernel/time/hrtimer.c | hrtimer |
-| 13 | `SYSCALL_DEFINE1(timer_delete)` | kernel/time/posix-timers.c:1052 | Syscall |
-| 14 | `hrtimer_cancel(&timr->it.real.timer)` | kernel/time/hrtimer.c | hrtimer |
-
-### 7.2 定时器到期处理
-
-| 步骤 | 函数 | 文件:行号 | 层 |
-|--|--|--|--|
-| 1 | `hrtimer_interrupt(irq, dev)` | kernel/time/hrtimer.c | hrtimer |
-| 2 | `__hrtimer_run_queues(cpu_base, now, flags)` | kernel/time/hrtimer.c | hrtimer |
-| 3 | `__run_hrtimer(timer, ...)` | kernel/time/hrtimer.c | hrtimer |
-| 4 | `timer->function(timer)` | kernel/time/hrtimer.c | hrtimer |
-| 5 | `posix_timer_fn(timer)` | kernel/time/posix-timers.c | Timer |
-| 6 | `send_signal(timr->sigq->info.si_signo, ...)` | kernel/signal.c | Signal |
-
-### 7.3 timerfd
-
-| 步骤 | 函数 | 文件:行号 | 层 |
-|--|--|--|--|
-| 1 | `SYSCALL_DEFINE2(timerfd_create)` | fs/timerfd.c:394 | Syscall |
-| 2 | `anon_inode_getfd("[timerfd]", &timerfd_fops, ctx, ...)` | fs/timerfd.c | timerfd |
-| 3 | `SYSCALL_DEFINE4(timerfd_settime)` | fs/timerfd.c:548 | Syscall |
-| 4 | `do_timerfd_settime(ufd, flags, &new, &old)` | fs/timerfd.c | timerfd |
-| 5 | `hrtimer_start(ctx->tmr, ...)` | kernel/time/hrtimer.c | hrtimer |
-| 6 | `timerfd_tmrproc(timer)` | fs/timerfd.c | timerfd |
-| 7 | `timerfd_read(file, buf, count, ppos)` | fs/timerfd.c | timerfd |
-
-### 7.4 时间读取与睡眠
-
-| 步骤 | 函数 | 文件:行号 | 层 |
-|--|--|--|--|
-| 1 | `SYSCALL_DEFINE2(clock_gettime)` | kernel/time/posix-timers.c:1127 | Syscall |
-| 2 | `kc->clock_get_timespec(which_clock, &kernel_tp)` | kernel/time/posix-timers.c | Timer |
-| 3 | `__vdso_clock_gettime` (vDSO) | lib/vdso/gettimeofday.c | vDSO |
-| 4 | `CNTVCT_EL0` 直接读取 | arch/arm64/include/asm/arch_timer.h | HW |
-| 5 | `SYSCALL_DEFINE2(gettimeofday)` | kernel/time/time.c:140 | Syscall |
-| 6 | `ktime_get_real_ts64(&ts)` | kernel/time/timekeeping.c | Timekeeping |
-| 7 | `SYSCALL_DEFINE2(nanosleep)` | kernel/time/hrtimer.c:2193 | Syscall |
-| 8 | `hrtimer_nanosleep(rqtp, mode, clockid)` | kernel/time/hrtimer.c | hrtimer |
-| 9 | `do_nanosleep(t, mode)` | kernel/time/hrtimer.c | hrtimer |
-| 10 | `hrtimer_start_expires(&t->timer, mode)` | kernel/time/hrtimer.c | hrtimer |
-| 11 | `schedule()` | kernel/sched/core.c | Sched |
+再次强调：这些错误码是**函数返回值**，不会写入 `errno`。
 
 ---
 
-## 8 关键数据结构
+## 7. 使用示例
 
+### 7.1 相对睡眠（可重试）
+
+```c
+#include <stdio.h>
+#include <time.h>
+
+int main(void)
+{
+    struct timespec req = { .tv_sec = 0, .tv_nsec = 200 * 1000 * 1000 };
+    struct timespec rem;
+    int ret;
+
+    while ((ret = clock_nanosleep(CLOCK_MONOTONIC, 0, &req, &rem)) == EINTR)
+        req = rem;                 /* 用剩余时间继续 */
+
+    if (ret) {
+        fprintf(stderr, "clock_nanosleep: %d\n", ret);
+        return 1;
+    }
+    return 0;
+}
 ```
-struct k_itimer (POSIX 定时器)       struct hrtimer
-+-----------------------------+    +---------------------------+
-| it_lock (spinlock)          |    | node (rb_node, 红黑树节点)  |
-| it_id (timer ID)            |    | _softexpires / expires     |
-| it_clock (时钟类型)          |    | state (HRTIMER_STATE_*)   |
-| it_signal (通知信号进程)      |    | function (回调函数指针)     |
-| it_pid (目标进程)            |    | base (CPU base, 每CPU)    |
-| it.real: { timer (hrtimer) }|    +---------------------------+
-| it: { it_value, it_interval}|
-| it_sigq (sigqueue)          |    struct timerfd_ctx
-| it_active / it_requeue      |    +---------------------------+
-+-----------------------------+    | wqh (waitqueue)            |
-                                   | cancellock / clockid       |
-struct k_clock (时钟多态)        | timers (it timerspec64)    |
-+-----------------------------+    | ticks (累积 tick 计数)     |
-| clock_get_timespec           |    | expired / settime_flags    |
-| timer_create / nsleep        |    | tmr (hrtimer 或 alarm)    |
-| clock_get / clock_set        |    +---------------------------+
-+-----------------------------+
+
+### 7.2 绝对时间周期任务（无累积误差）
+
+```c
+#include <time.h>
+
+void periodic_task(void)
+{
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+
+    for (int i = 0; i < 100; i++) {
+        next.tv_nsec += 10 * 1000 * 1000;      /* 10 ms 周期 */
+        while (next.tv_nsec >= 1000000000L) {
+            next.tv_nsec -= 1000000000L;
+            next.tv_sec++;
+        }
+        /* 绝对睡眠：即使本次任务超时，下一次仍对齐到固定节拍 */
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
+        /* ... 周期任务主体 ... */
+    }
+}
 ```
 
 ---
 
-## 9 总结
+## 8. 相关源码
 
-定时器与时间系统调用核心路径：
+| 文件 | 说明 |
+|------|------|
+| `kernel/time/posix-timers.c:1383` | `SYSCALL_DEFINE4(clock_nanosleep)` |
+| `kernel/time/posix-timers.c:1355` | `common_nsleep()` |
+| `kernel/time/posix-timers.c:1367` | `common_nsleep_timens()` |
+| `kernel/time/hrtimer.c:2437` | `hrtimer_nanosleep()` |
+| `kernel/time/hrtimer.c:2390` | `do_nanosleep()` |
+| `kernel/time/posix-timers.h` | `struct k_clock`、`nsleep` 回调 |
+| `include/linux/restart_block.h` | `restart_block.nanosleep` |
 
-| 操作 | 核心函数 | 定时器类型 | 到期通知方式 |
-|--|--|--|--|
-| timer_create/settime | `hrtimer_start` | hrtimer | 信号 (SIGEV_SIGNAL/THREAD_ID) |
-| timerfd_create/settime | `hrtimer_start` | hrtimer | 文件描述符可读 + epoll |
-| nanosleep | `hrtimer_nanosleep` | hrtimer | 唤醒当前进程 |
-| clock_gettime | `ktime_get_ts64` / vDSO | 无（时间读取） | 同步返回 |
-| clock_nanosleep | `hrtimer_nanosleep` | hrtimer | 唤醒当前进程 |
+### 8.1 与其他时间接口的关系
 
-所有高精度时间操作最终通过 ARM64 `CNTVCT_EL0`（虚拟计数器）或 `CNTPCT_EL0`（物理计数器）寄存器读取硬件时间，hrtimer 通过红黑树组织到期事件，在 `hrtimer_interrupt` 时钟中断中处理到期回调。
+| 操作 | 核心函数 | 到期通知 |
+|------|----------|----------|
+| `timer_create/settime` | `hrtimer_start` | 信号（`SIGEV_SIGNAL` / `SIGEV_THREAD_ID`） |
+| `timerfd_create/settime` | `hrtimer_start` | 文件描述符可读 + epoll |
+| `nanosleep` | `hrtimer_nanosleep` | 唤醒当前进程 |
+| `clock_nanosleep` | `hrtimer_nanosleep` | 唤醒当前进程（支持绝对时刻） |
+| `clock_gettime` | `ktime_get_ts64` / vDSO | 同步返回 |
+
+相关文档：[nanosleep](nanosleep.md)、[clock_gettime](clock_gettime.md)、[timer_create](timer_create.md)、[timerfd_create](timerfd_create.md)。

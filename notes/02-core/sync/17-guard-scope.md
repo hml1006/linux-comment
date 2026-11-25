@@ -11,7 +11,7 @@ Guard 是内核引入的基于作用域的锁管理机制，利用 C 语言的�
 
 ## 17.2 核心 API
 
-定义在 [include/linux/guard.h](file:///home/louis/code/linux/include/linux/guard.h)：
+定义在 [include/linux/cleanup.h](file:///home/louis/code/linux/include/linux/cleanup.h)：
 
 ### 17.2.1 基本 Guard
 
@@ -221,4 +221,4 @@ void conditional_guard(struct my_struct *s, bool need_lock)
 
 | 文件 | 说明 |
 |------|------|
-| [include/linux/guard.h](file:///home/louis/code/linux/include/linux/guard.h) | Guard 宏定义 |
+| [include/linux/cleanup.h](file:///home/louis/code/linux/include/linux/cleanup.h) | Guard 宏定义 |

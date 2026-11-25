@@ -2183,7 +2183,7 @@ e1000_copybreak 优化:
 
 | 文档 | 路径 |
 |------|------|
-| 网络子系统总览 | [network_subsystem_analysis.md](file:///home/louis/code/linux/notes/network/network_subsystem_analysis.md) |
-| VFS 与 Socket 层分析 | [socket_layer_analysis.md](file:///home/louis/code/linux/notes/network/socket_layer_analysis.md) |
-| TCP/IP 协议栈分析 | [tcp_ip_protocol_stack_analysis.md](file:///home/louis/code/linux/notes/network/tcp_ip_protocol_stack_analysis.md) |
-| Intel e1000 网卡驱动分析 | [intel_nic_driver_analysis.md](file:///home/louis/code/linux/notes/network/intel_nic_driver_analysis.md) |
+| 网络子系统总览 | [network_subsystem_analysis.md](file:///home/louis/code/linux/notes/06-networking/core/network_subsystem_analysis.md) |
+| VFS 与 Socket 层分析 | [socket_layer_analysis.md](file:///home/louis/code/linux/notes/06-networking/core/socket_layer_analysis.md) |
+| TCP/IP 协议栈分析 | [tcp_ip_protocol_stack_analysis.md](file:///home/louis/code/linux/notes/06-networking/core/tcp_ip_protocol_stack_analysis.md) |
+| Intel e1000 网卡驱动分析 | [intel_nic_driver_analysis.md](file:///home/louis/code/linux/notes/06-networking/core/intel_nic_driver_analysis.md) |

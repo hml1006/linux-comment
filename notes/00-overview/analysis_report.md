@@ -1,388 +1,333 @@
-# Linux 7.0.0 内核编译文件分析报告
+# Linux 7.2.0 内核编译文件分析报告
 
-> **版本说明**：本报告是 Linux 7.0.0 的编译快照。当前源码树已更新到 **Linux 7.2**（见 `Makefile`），`.config` 中 `=y` 选项为 1,110 个；文件数、编译标志和子系统统计可能随当前树变化，阅读时请以源码为准。
+> **版本说明**：本报告基于当前 **Linux 7.2.0** 源码树与裁剪后的 `.config` 重新生成（编译快照来源 `compile_commands.json`，共 10,061 条编译记录）。`.config` 中 `=y` 选项 1,110 个、`=m` 选项 0 个（全部内置）。文件数与子系统统计随当前树/配置变化，阅读时请以源码为准。
 
 ## 1. 总体概览
 
 | 项目 | 详情 |
 |------|------|
-| 内核版本 | 7.0.0 (Baby Opossum Posse) |
+| 内核版本 | 7.2.0 |
 | 目标架构 | ARM64 (aarch64), 小端序, 64-bit |
-| 编译器 | GCC 15.2.0 (aarch64-linux-gnu- 交叉编译) |
-| 汇编器 | GNU AS 2.46 |
-| 链接器 | GNU LD (BFD) 2.46 |
+| 编译器 | aarch64-linux-gnu-gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0, GNU ld (GNU Binutils for Ubuntu) 2.46 |
+| 汇编器 / 链接器 | GNU AS 2.46 / GNU LD (BFD) 2.46 |
 | 指令集 | armv8.5-a |
-| 编译优化 | `-O2` |
-| 编译文件总数 | **8,964** 个 (8,913 C + 74 ASM + 1 内核导出文件) |
-| 配置项 | 1,091 个 `=y`, 0 个 `=m` (全部内置) |
+| 编译优化 | `-O2`（经 ccache 缓存） |
+| 编译文件总数 | **10,061** 个（9,986 C + 75 ASM） |
+| 配置项 | 1,110 个 `=y`, 0 个 `=m` (全部内置) |
 
 ---
 
 ## 2. 构建流程
 
-从 `build.sh` 可以还原出完整的构建流程：
+从 `build.sh` 还原的实际构建流程：
 
 ```bash
-# 1. 使用 ARM64 默认配置
-cp arch/arm64/configs/defconfig .config
-
-# 2. 开启调试相关配置
+# 1. 基于已有 .config（defconfig 拷贝行已注释）开启调试相关配置
 sed -i 's/^# CONFIG_GDB_SCRIPTS is not set/CONFIG_GDB_SCRIPTS=y/' .config
 sed -i 's/^# CONFIG_DYNAMIC_DEBUG is not set/CONFIG_DYNAMIC_DEBUG=y/' .config
 sed -i 's/^# CONFIG_DYNAMIC_DEBUG_CORE is not set/CONFIG_DYNAMIC_DEBUG_CORE=y/' .config
 sed -i 's/^CONFIG_DEBUG_INFO_REDUCED=y/CONFIG_DEBUG_INFO_REDUCED=n/' .config
-
+# 2. 缺失项兜底追加 GDB_SCRIPTS / DYNAMIC_DEBUG / DYNAMIC_DEBUG_CORE
 # 3. 手动配置
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- menuconfig
-
 # 4. 所有模块转为内置
 sed -i 's/=m/=y/g' .config
-
 # 5. 编译 (-j12 并行)
 make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 -j12
-
 # 6. 生成 compile_commands.json
 ./scripts/clang-tools/gen_compile_commands.py
 ```
 
 ---
 
-## 3. 编译标志分析
-
-### 3.1 C 文件编译标志
+## 3. 编译标志分析（以 `mm/page_alloc.o` 为例）
 
 | 类别 | 标志 | 说明 |
 |------|------|------|
-| 基本 | `-nostdinc`, `-std=gnu11` | 不链接标准库，使用 GNU C11 |
-| 架构 | `-mabi=64`, `-mlittle-endian`, `-mgeneral-regs-only` | ARM64 64位小端 |
-| 指令集 | `-Wa,-march=armv8.5-a`, `-DARM64_ASM_ARCH='"armv8.5-a"'` | armv8.5-a 指令集 |
-| 优化 | `-O2`, `-fno-strict-aliasing`, `-fconserve-stack` | O2优化 |
+| 基本 | `-nostdinc`, `-std=gnu11`, `-fms-extensions` | 不链接标准库，GNU C11 |
+| 架构 | `-mabi=lp64`, `-mlittle-endian`, `-mgeneral-regs-only` | ARM64 LP64 小端 |
+| 指令集 | `-Wa,-march=armv8.5-a`, `-DARM64_ASM_ARCH='"armv8.5-a"'` | armv8.5-a |
+| 优化 | `-O2`, `-fno-strict-aliasing`, `-fconserve-stack`, `-fno-allow-store-data-races` | O2 |
 | 安全 | `-fstack-protector-strong`, `-mbranch-protection=pac-ret` | 栈保护 + PAC 返回地址签名 |
-| 安全初始化 | `-ftrivial-auto-var-init=zero` | 自动变量零初始化 |
-| 调试 | `-g`, `-fno-omit-frame-pointer` | 完整 DWARF 调试信息 |
-| 入口 | `-D__KERNEL__` | 内核模式宏定义 |
-| 字符 | `-fshort-wchar`, `-funsigned-char` | 宽字符类型 |
+| 安全初始化 | `-ftrivial-auto-var-init=zero`, `-fzero-init-padding-bits=all` | 自动变量/填充零初始化 |
+| 调试 | `-g`（DEBUG_INFO）, `-fno-omit-frame-pointer` | DWARF 调试信息 |
+| 入口 | `-D__KERNEL__` | 内核模式宏 |
+| 字符 | `-fshort-wchar`, `-funsigned-char` | 字符约定 |
 | 帧指针 | `-fno-omit-frame-pointer`, `-fno-optimize-sibling-calls` | 保留帧指针 |
 | 对齐 | `-fmin-function-alignment=4` | 最小函数对齐 |
-| 栈保护偏移 | `-mstack-protector-guard=sysreg`, `-mstack-protector-guard-reg=sp_el0`, `-mstack-protector-guard-offset=1240` | 栈金丝雀位置 |
-| 严格检查 | `-fstrict-flex-arrays=3`, `-fno-delete-null-pointer-checks` | 数组边界检查 |
-| 警告 | `-Wall -Wextra -Wundef`, 多个 `-Werror=` | 严格警告（部分为错误） |
+| 严格检查 | `-fstrict-flex-arrays=3`, `-fno-delete-null-pointer-checks` | 数组边界/空指针检查 |
+| 警告 | `-Wall -Wextra -Wundef`, 多个 `-Werror=` | 严格警告 |
 
-### 3.2 汇编文件编译标志
-
-| 类别 | 标志 | 说明 |
-|------|------|------|
-| 基本 | `-nostdinc`, `-D__KERNEL__`, `-D__ASSEMBLY__` | 汇编模式 |
-| 架构 | `-mlittle-endian`, `-mabi=64`, `-fno-PIE` | ARM64 |
-| 调试 | `-g` | 调试信息 |
-
-### 3.3 Include 路径
+Include 路径：
 
 ```
--I./arch/arm64/include
--I./arch/arm64/include/generated
--I./include
--I./arch/arm64/include/uapi
--I./arch/arm64/include/generated/uapi
--I./include/uapi
--I./include/generated/uapi
--include ./include/linux/compiler-version.h
--include ./include/linux/kconfig.h
--include ./include/linux/compiler_types.h
+-I./arch/arm64/include -I./arch/arm64/include/generated -I./include
+-I./arch/arm64/include/uapi -I./arch/arm64/include/generated/uapi
+-I./include/uapi -I./include/generated/uapi
+-include ./include/linux/compiler-version.h -include ./include/linux/kconfig.h -include ./include/linux/compiler_types.h
 ```
 
 ---
 
 ## 4. 编译文件按子系统分布
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│ 子系统                   文件数      占比      说明            │
-├──────────────────────────────────────────────────────────────┤
-│ drivers/ (驱动)            6,351    70.8%     硬件驱动层       │
-│ fs/ (文件系统)               652     7.3%     VFS + 各文件系统  │
-│ net/ (网络协议栈)           525     5.9%     网络子系统        │
-│ sound/ (音频)               358     4.0%     ALSA 音频框架     │
-│ lib/ (内核库)               253     2.8%     通用工具库        │
-│ kernel/ (内核核心)          244     2.7%     进程/调度/BPF 等  │
-│ arch/ (架构)                219     2.4%     ARM64 + ARM/Xen   │
-│ mm/ (内存管理)                     1.0%     内存管理子系统     │
-│ crypto/ (加密)               83     0.9%     加密API与算法     │
-│ block/ (块设备)              47     0.5%     块IO层            │
-│ scripts/ (工具脚本)          46     0.5%     DTC 设备树编译器   │
-│ io_uring/                   40     0.4%     异步IO框架         │
-│ security/ (安全)             22     0.2%     Linux 安全模块     │
-│ ipc/ (进程间通信)            11     0.1%     SysV IPC          │
-│ init/ (初始化)                9     0.1%     内核启动初始化     │
-│ virt/ (虚拟化)                9     0.1%     KVM 虚拟化         │
-│ certs/ (证书)                 2     0.0%     系统证书           │
-│ usr/                         1     0.0%     initramfs          │
-│ root                         1     0.0%     .vmlinux.export.c  │
-├──────────────────────────────────────────────────────────────┤
-│ 总计                      8,964   100%                        │
-└──────────────────────────────────────────────────────────────┘
-```
+| 子系统 | 文件数 | 占比 | 说明 |
+|--------|--------|------|------|
+| drivers/ | 7,160 | 71.2% | 硬件驱动层 |
+| fs/ | 626 | 6.2% | VFS + 各文件系统 |
+| net/ | 597 | 5.9% | 网络协议栈 |
+| sound/ | 522 | 5.2% | ALSA 音频框架 |
+| lib/ | 273 | 2.7% | 通用工具库 |
+| kernel/ | 247 | 2.5% | 进程/调度/BPF 等 |
+| arch/ | 245 | 2.4% | ARM64 架构 |
+| crypto/ | 112 | 1.1% | 加密 API 与算法 |
+| mm/ | 91 | 0.9% | 内存管理 |
+| block/ | 47 | 0.5% | 块 IO 层 |
+| scripts/ | 46 | 0.5% | DTC 等工具脚本 |
+| io_uring/ | 40 | 0.4% | 异步 IO 框架 |
+| security/ | 22 | 0.2% | Linux 安全模块 |
+| ipc/ | 11 | 0.1% | SysV IPC |
+| init/ | 9 | 0.1% | 内核启动初始化 |
+| virt/ | 9 | 0.1% | KVM 虚拟化 |
+| certs/ | 2 | 0.0% | 系统证书 |
+| (root)/ | 1 | 0.0% | 导出符号文件 |
+| usr/ | 1 | 0.0% | initramfs |
+| **总计** | **10,061** | 100% | |
 
 ---
 
-## 5. 驱动子系统详细分解 (drivers/ — 6,351 文件)
+## 5. 驱动子系统详细分解 (drivers/ — 7,160 文件)
 
-| 驱动模块 | 文件数 | 说明 |
-|----------|--------|------|
-| **drivers/gpu** | 1,386 | GPU 驱动 (最大模块) |
-| **drivers/net** | 938 | 网络设备驱动 (以太网/WiFi) |
-| **drivers/clk** | 595 | 时钟框架 (SoC 时钟管理) |
-| **drivers/media** | 456 | 多媒体 (V4L2/DVB) |
-| **drivers/usb** | 230 | USB 主机/设备 |
-| **drivers/acpi** | 224 | ACPI (ARM64 上也编译) |
-| **drivers/pinctrl** | 187 | 引脚控制 (GPIO 复用) |
-| **drivers/firmware** | 107 | 固件接口 (EFI/SCMI) |
-| **drivers/phy** | 102 | 物理层驱动 |
-| **drivers/soc** | 100 | SoC 特定驱动 |
-| **drivers/pci** | 98 | PCI 总线 |
-| **drivers/mtd** | 97 | 内存技术设备 (闪存) |
-| **drivers/tty** | 91 | 终端/串口 |
-| **drivers/base** | 64 | 设备模型基础 |
-| **drivers/char** | 64 | 字符设备 |
-| **drivers/mmc** | 61 | MMC/SD 卡 |
-| **drivers/irqchip** | 60 | 中断控制器 |
-| **drivers/crypto** | 60 | 硬件加密加速 |
-| **drivers/input** | 52 | 输入设备 |
-| **drivers/pmdomain** | 50 | 电源域管理 |
-| **drivers/dma** | 49 | DMA 引擎 |
-| **drivers/gpio** | 49 | GPIO |
-| **drivers/regulator** | 49 | 电压调节器 |
-| **drivers/rtc** | 48 | 实时时钟 |
-| **drivers/scsi** | 47 | SCSI 存储 |
-| **drivers/thermal** | 47 | 热管理 |
-| **drivers/iio** | 47 | 工业 IO |
-| **drivers/i2c** | 46 | I2C 总线 |
-| **drivers/mfd** | 44 | 多功能设备 |
-| **drivers/xen** | 44 | Xen 虚拟化 |
-| **drivers/video** | 43 | 帧缓冲/显示 |
-| **drivers/spi** | 40 | SPI 总线 |
-| **drivers/interconnect** | 39 | 互联总线 |
-| **drivers/cpufreq** | 33 | CPU 频率调节 |
-| **drivers/perf** | 31 | 性能计数器 |
-| **drivers/bus** | 30 | 总线控制器 |
-| **drivers/reset** | 29 | 复位控制器 |
-| **drivers/power** | 28 | 电源管理 |
-| **drivers/watchdog** | 28 | 看门狗 |
-| **drivers/hwtracing** | 26 | 硬件追踪 |
-| **drivers/hid** | 26 | 人机接口设备 |
-| **drivers/clocksource** | 25 | 时钟源 |
-| **drivers/ata** | 24 | ATA/SATA |
-| **drivers/mailbox** | 24 | 邮箱通信 |
-| **drivers/remoteproc** | 23 | 远程处理器 |
-| **drivers/pwm** | 23 | PWM |
-| **drivers/iommu** | 21 | IOMMU |
-| **drivers/misc** | 21 | 杂项设备 |
-| **drivers/nvmem** | 21 | 非易失性存储器 |
-| **drivers/md** | 20 | 软件 RAID |
-| **drivers/platform** | 20 | 平台设备 |
-| **drivers/leds** | 18 | LED |
-| **drivers/of** | 18 | 设备树 |
-| **drivers/staging** | 15 | 暂存驱动 |
-| **drivers/hwmon** | 14 | 硬件监控 |
-| **drivers/memory** | 14 | 内存控制器 |
-| **drivers/greybus** | 13 | Greybus |
-| **drivers/tee** | 13 | 可信执行环境 |
-| **drivers/ufs** | 13 | 通用闪存存储 |
-| **drivers/edac** | 11 | 错误检测与纠正 |
-| **drivers/pnp** | 11 | 即插即用 |
-| **drivers/rpmsg** | 11 | 远程处理器消息 |
-| **drivers/soundwire** | 11 | 音频总线 |
-| **drivers/vfio** | 10 | 用户态驱动框架 |
-| **drivers/virtio** | 10 | VirtIO 半虚拟化 |
-| **drivers/cpuidle** | 9 | CPU 空闲管理 |
-| **drivers/devfreq** | 9 | 设备频率调节 |
-| **drivers/ptp** | 9 | 精确时间协议 |
-| **drivers/dma-buf** | 8 | DMA 缓冲区共享 |
-| **drivers/fpga** | 7 | FPGA 管理 |
-| **drivers/counter** | 6 | 计数器 |
-| **drivers/block** | 5 | 块设备驱动 (brd, loop, nbd, virtio, xen) |
-| **drivers/extcon** | 5 | 外部连接器 |
-| **drivers/nfc** | 5 | NFC |
-| **drivers/nvme** | 5 | NVMe |
-| **drivers/opp** | 5 | 操作性能点 |
-| **drivers/slimbus** | 5 | SLIMbus |
-| **drivers/spmi** | 4 | 系统电源管理接口 |
-| **drivers/gnss** | 3 | 全球导航卫星系统 |
-| **drivers/hte** | 3 | 硬件时间戳引擎 |
-| **drivers/hwspinlock** | 3 | 硬件自旋锁 |
-| **drivers/mux** | 3 | 多路复用器 |
-| **drivers/pps** | 3 | 脉冲每秒 |
-| **drivers/amba** | 2 | AMBA 总线 |
-| **drivers/ras** | 2 | 可靠性可用性可服务性 |
-
----
-
-## 6. 文件系统详细分析 (fs/ — 652 文件)
-
-### 6.1 各文件系统实现
-
-| 文件系统 | 文件数 | 说明 |
-|----------|--------|------|
-| **fs/xfs** | 174 | XFS 日志文件系统 (最大) |
-| **fs/btrfs** | 62 | Btrfs (已编译但 `.config` 中未启用) |
-| **fs/nfs** | 59 | NFS 客户端 |
-| **fs/ext4** | 35 | EXT4 (默认文件系统) |
-| **fs/ubifs** | 29 | UBIFS 闪存文件系统 |
-| **fs/proc** | 28 | procfs 虚拟文件系统 |
-| **fs/f2fs** | 21 | F2FS 闪存友好文件系统 |
-| **fs/netfs** | 17 | 网络文件系统辅助库 |
-| **fs/lockd** | 17 | NFS 文件锁管理器 |
-| **fs/squashfs** | 16 | SquashFS 只读压缩文件系统 |
-| **fs/fuse** | 16 | FUSE 用户态文件系统 |
-| **fs/overlayfs** | 11 | Overlay 联合文件系统 |
-| **fs/9p** | 10 | 9P 协议文件系统 |
-| **fs/ext2** | 10 | EXT2 (通过 EXT4 驱动) |
-| **fs/notify** | 10 | inotify/fanotify |
-| **fs/iomap** | 9 | 块映射 I/O 路径 |
-| **fs/fat** | 8 | FAT/VFAT |
-| **fs/autofs** | 7 | 自动挂载 |
-| **fs/configfs** | 6 | 内核对象配置 |
-| **fs/jbd2** | 6 | EXT4 日志层 |
-| **fs/kernfs** | 5 | 内核文件系统基础 |
-| **fs/sysfs** | 5 | sysfs |
-| **fs/efivarfs** | 4 | EFI 变量文件系统 |
-| **fs/pstore** | 4 | 持久存储 |
-| **fs/nfs_common** | 3 | NFS 通用代码 |
-| **fs/nls** | 3 | 本地语言支持 |
-| **fs/quota** | 3 | 磁盘配额 |
-| **fs/debugfs** | 2 | 调试文件系统 |
-| **fs/ramfs** | 2 | RAM 文件系统 |
-
-### 6.2 VFS 核心层 (文件系统独立的单文件)
-
-| 文件 | 说明 |
-|------|------|
-| `fs/aio.c` | 异步 IO |
-| `fs/attr.c` | 文件属性 |
-| `fs/buffer.c` | 缓冲区缓存 |
-| `fs/char_dev.c` | 字符设备 |
-| `fs/coredump.c` | 核心转储 |
-| `fs/d_path.c` | 路径解析 |
-| `fs/dcache.c` | 目录项缓存 |
-| `fs/direct-io.c` | 直接 IO |
-| `fs/eventfd.c` | 事件通知 |
-| `fs/eventpoll.c` | epoll |
-| `fs/exec.c` | 程序执行 |
-| `fs/fcntl.c` | 文件控制 |
-| `fs/file.c` | 文件描述符 |
-| `fs/file_table.c` | 文件表 |
-| `fs/inode.c` | 索引节点 |
-| `fs/ioctl.c` | IO 控制 |
-| `fs/libfs.c` | 文件系统库 |
-| `fs/locks.c` | 文件锁 |
-| `fs/mbcache.c` | 元数据块缓存 |
-| `fs/namei.c` | 路径名查找 |
-| `fs/namespace.c` | 命名空间 |
-| `fs/open.c` | 文件打开 |
-| `fs/pipe.c` | 管道 |
-| `fs/read_write.c` | 读写 |
-| `fs/readdir.c` | 目录读取 |
-| `fs/select.c` | select/poll |
-| `fs/seq_file.c` | 序列文件 |
-| `fs/splice.c` | 零拷贝 |
-| `fs/stack.c` | 文件系统栈 |
-| `fs/stat.c` | 文件状态 |
-| `fs/super.c` | 超级块 |
-| `fs/sync.c` | 同步 |
-| `fs/xattr.c` | 扩展属性 |
+| 模块 | 文件数 |
+|------|--------|
+| drivers/gpu | 1465 |
+| drivers/net | 1040 |
+| drivers/media | 652 |
+| drivers/clk | 607 |
+| drivers/usb | 271 |
+| drivers/acpi | 227 |
+| drivers/pinctrl | 189 |
+| drivers/phy | 127 |
+| drivers/soc | 118 |
+| drivers/firmware | 108 |
+| drivers/pci | 103 |
+| drivers/mtd | 101 |
+| drivers/char | 86 |
+| drivers/crypto | 75 |
+| drivers/iio | 73 |
+| drivers/tty | 73 |
+| drivers/base | 67 |
+| drivers/input | 63 |
+| drivers/rtc | 63 |
+| drivers/thermal | 62 |
+| drivers/mmc | 61 |
+| drivers/irqchip | 60 |
+| drivers/spi | 56 |
+| drivers/dma | 54 |
+| drivers/gpio | 54 |
+| drivers/i2c | 52 |
+| drivers/regulator | 52 |
+| drivers/interconnect | 50 |
+| drivers/pmdomain | 50 |
+| drivers/scsi | 49 |
+| drivers/video | 49 |
+| drivers/mfd | 47 |
+| drivers/xen | 44 |
+| drivers/cpufreq | 39 |
+| drivers/perf | 39 |
+| drivers/hwtracing | 37 |
+| drivers/pwm | 36 |
+| drivers/watchdog | 36 |
+| drivers/power | 34 |
+| drivers/bus | 33 |
+| drivers/remoteproc | 33 |
+| drivers/reset | 32 |
+| drivers/hid | 30 |
+| drivers/bluetooth | 29 |
+| drivers/misc | 27 |
+| drivers/md | 26 |
+| drivers/ata | 25 |
+| drivers/clocksource | 25 |
+| drivers/mailbox | 25 |
+| drivers/nvmem | 25 |
+| drivers/platform | 24 |
+| drivers/hwmon | 23 |
+| drivers/leds | 22 |
+| drivers/iommu | 21 |
+| drivers/staging | 21 |
+| drivers/of | 18 |
+| drivers/memory | 15 |
+| drivers/rpmsg | 15 |
+| drivers/ufs | 15 |
+| drivers/fpga | 13 |
+| drivers/greybus | 13 |
+| drivers/soundwire | 13 |
+| drivers/tee | 13 |
+| drivers/devfreq | 12 |
+| drivers/edac | 12 |
+| drivers/pnp | 11 |
+| drivers/vfio | 10 |
+| drivers/virtio | 10 |
+| drivers/cpuidle | 9 |
+| drivers/ptp | 9 |
+| drivers/dma-buf | 8 |
+| drivers/slimbus | 8 |
+| drivers/block | 7 |
+| drivers/nfc | 7 |
+| drivers/nvme | 7 |
+| drivers/counter | 6 |
+| drivers/extcon | 6 |
+| drivers/gnss | 6 |
+| drivers/opp | 5 |
+| drivers/spmi | 5 |
+| drivers/hte | 4 |
+| drivers/hwspinlock | 3 |
+| drivers/mux | 3 |
+| drivers/pps | 3 |
+| drivers/amba | 2 |
+| drivers/ras | 2 |
 
 ---
 
-## 7. 网络协议栈详细分析 (net/ — 525 文件)
+## 6. 文件系统详细分析 (fs/ — 626 文件)
 
-| 网络模块 | 文件数 | 说明 |
-|----------|--------|------|
-| **net/ipv4** | 67 | IPv4 协议栈 (TCP/UDP/IP/ICMP/路由) |
-| **net/ipv6** | 51 | IPv6 协议栈 |
-| **net/core** | 50 | 网络核心 (sk_buff, netdevice, 邻居子系统) |
-| **net/netfilter** | 46 | 防火墙/NAT/连接跟踪 |
-| **net/mac80211** | 44 | WiFi MAC 层 |
-| **net/sunrpc** | 38 | SUN RPC (NFS 依赖) |
-| **net/ethtool** | 34 | 以太网工具接口 |
-| **net/bridge** | 27 | 网桥 |
-| **net/bluetooth** | 23 | 蓝牙协议栈 |
-| **net/wireless** | 20 | cfg80211 无线配置 |
-| **net/dsa** | 15 | 分布式交换机架构 |
-| **net/devlink** | 14 | 设备链路 |
-| **net/nfc** | 13 | 近场通信 |
-| **net/sched** | 11 | 流量控制 (tc) |
-| **net/8021q** | 7 | VLAN (802.1Q) |
-| **net/9p** | 7 | 9P 协议 |
-| **net/hsr** | 7 | 高可用性无缝冗余 |
-| **net/handshake** | 6 | TLS 握手 |
-| **net/can** | 5 | CAN 总线 |
-| **net/qrtr** | 5 | Qualcomm IPC Router |
-| **net/802** | 4 | 802.2 LLC / STP |
-| **net/unix** | 4 | Unix 域套接字 |
-| **net/llc** | 3 | 逻辑链路控制 |
-| **net/netlink** | 3 | Netlink 通信 |
-| **net/rfkill** | 3 | 射频开关 |
-| **net/bpf** | 2 | BPF 网络钩子 |
-| **net/dns_resolver** | 2 | DNS 解析 |
-| **net/ethernet** | 1 | 以太网头处理 |
-| **net/packet** | 1 | AF_PACKET |
-| **net/switchdev** | 1 | 交换机设备 |
+注：`fs/` 核心 VFS 单文件（namei.c、open.c、read_write.c、dcache.c、inode.c、file.c、namespace.c、exec.c、splice.c、xattr.c 等）计入“核心单文件”。
 
----
-
-## 8. 内核核心详细分析 (kernel/ — 244 文件)
-
-| 内核模块 | 文件数 | 核心文件 |
-|----------|--------|----------|
-| **kernel/bpf** | 55 | BPF 虚拟机、映射类型、验证器、JIT、迭代器 |
-| **kernel/time** | 27 | 定时器、hrtimer、clockevents、timekeeping、posix 定时器 |
-| **kernel/irq** | 21 | 中断处理、IRQ 域、MSI、IPI |
-| **kernel/sched** | 20 | CFS 调度器、负载均衡、空闲任务 |
-| **kernel/rcu** | 18 | RCU 同步、tree、update、sync |
-| **kernel/printk** | 12 | 内核日志、控制台、ratelimit |
-| **kernel/cgroup** | 12 | 控制组、cpuset、freezer |
-| **kernel/locking** | 11 | 自旋锁、互斥锁、信号量、读写锁、rtmutex |
-| **kernel/trace** | 10 | 追踪点、ring buffer、tracing |
-| 核心文件 | ~58 | fork, exit, signal, sys, pid, nsproxy, ptrace, user, cred, kthread, workqueue, params, resource, sysctl, 等 |
+| 模块 | 文件数 |
+|------|--------|
+| fs/xfs | 143 |
+| fs/btrfs | 63 |
+| fs/nfs | 60 |
+| fs/ext4 | 35 |
+| fs/ubifs | 29 |
+| fs/proc | 28 |
+| fs/f2fs | 21 |
+| fs/fuse | 18 |
+| fs/lockd | 17 |
+| fs/netfs | 17 |
+| fs/squashfs | 16 |
+| fs/overlayfs | 12 |
+| fs/9p | 10 |
+| fs/ext2 | 10 |
+| fs/notify | 10 |
+| fs/iomap | 9 |
+| fs/fat | 8 |
+| fs/autofs | 7 |
+| fs/configfs | 6 |
+| fs/jbd2 | 6 |
+| fs/kernfs | 5 |
+| fs/sysfs | 5 |
+| fs/efivarfs | 4 |
+| fs/pstore | 4 |
+| fs/nfs_common | 3 |
+| fs/nls | 3 |
+| fs/quota | 3 |
+| fs/debugfs | 2 |
+| fs/ramfs | 2 |
+| fs/devpts | 1 |
+| fs/exportfs | 1 |
+| fs/hugetlbfs | 1 |
+| fs/ 核心单文件 | 67 |
 
 ---
 
-## 9. 内存管理详细分析 (mm/ — 94 文件)
+## 7. 网络协议栈详细分析 (net/ — 597 文件)
+
+| 模块 | 文件数 |
+|------|--------|
+| net/ipv4 | 76 |
+| net/ipv6 | 60 |
+| net/netfilter | 60 |
+| net/core | 50 |
+| net/mac80211 | 45 |
+| net/sunrpc | 38 |
+| net/ethtool | 34 |
+| net/sched | 30 |
+| net/bridge | 29 |
+| net/bluetooth | 25 |
+| net/dsa | 20 |
+| net/wireless | 20 |
+| net/nfc | 15 |
+| net/devlink | 14 |
+| net/802 | 9 |
+| net/can | 9 |
+| net/qrtr | 9 |
+| net/8021q | 8 |
+| net/9p | 7 |
+| net/hsr | 7 |
+| net/handshake | 6 |
+| net/llc | 4 |
+| net/rfkill | 4 |
+| net/unix | 4 |
+| net/netlink | 3 |
+| net/bpf | 2 |
+| net/dns_resolver | 2 |
+| net/ethernet | 1 |
+| net/packet | 1 |
+| net/switchdev | 1 |
+| net/ 核心单文件 | 4 |
+
+---
+
+## 8. 内核核心详细分析 (kernel/ — 247 文件)
+
+注：fork/exit/signal/sys/pid/nsproxy/ptrace/cred/kthread/workqueue/softirq/irq_work/async/task_work 等核心单文件计入“核心单文件”；本裁剪配置下 sched/rcu/trace 等仅编译部分实现文件。
+
+| 模块 | 文件数 |
+|------|--------|
+| kernel/bpf | 55 |
+| kernel/time | 27 |
+| kernel/irq | 19 |
+| kernel/locking | 11 |
+| kernel/power | 11 |
+| kernel/dma | 9 |
+| kernel/cgroup | 8 |
+| kernel/module | 7 |
+| kernel/futex | 5 |
+| kernel/printk | 5 |
+| kernel/rcu | 5 |
+| kernel/events | 4 |
+| kernel/sched | 4 |
+| kernel/entry | 2 |
+| kernel/trace | 1 |
+| kernel/ 核心单文件 | 74 |
+
+---
+
+## 9. 内存管理详细分析 (mm/ — 91 文件)
 
 | 分类 | 核心文件 |
 |------|----------|
-| 页面分配 | `mm/page_alloc.c`, `mm/mm_init.c`, `mm/memblock.c` |
-| 内存映射 | `mm/mmap.c`, `mm/mremap.c`, `mm/mprotect.c`, `mm/mlock.c`, `mm/msync.c` |
-| 页面缓存 | `mm/filemap.c`, `mm/readahead.c`, `mm/truncate.c` |
-| 交换 | `mm/swap.c`, `mm/swap_state.c`, `mm/swapfile.c`, `mm/page_io.c` |
-| 页面回收 | `mm/vmscan.c`, `mm/shrinker.c`, `mm/oom_kill.c` |
-| 内存分配器 | `mm/slub.c`, `mm/slab_common.c`, `mm/mempool.c` |
-| 虚拟内存 | `mm/vmalloc.c`, `mm/memory.c`, `mm/rmap.c`, `mm/huge_memory.c` |
-| 大页 | `mm/hugetlb.c`, `mm/hugetlb_vmemmap.c` |
-| 共享内存 | `mm/shmem.c`, `mm/memfd.c` |
-| 内存压缩 | `mm/compaction.c`, `mm/migrate.c` |
-| 内存控制组 | `mm/memcontrol.c`, `mm/memcontrol-v1.c` |
-| CMA | `mm/cma.c` |
-| 压缩 | `mm/zswap.c`, `mm/zsmalloc.c`, `mm/zpool.c` |
-| 其他 | `mm/backing-dev.c`, `mm/balloon.c`, `mm/dmapool.c`, `mm/execmem.c`, `mm/gup.c`, `mm/highmem.c`, `mm/kmemleak.c`, `mm/kmsan.c`, `mm/maccess.c`, `mm/madvise.c`, `mm/memremap.c`, `mm/memtest.c`, `mm/mincore.c`, `mm/mlock.c`, `mm/mmap_lock.c`, `mm/mmzone.c`, `mm/mseal.c`, `mm/numa.c`, `mm/page_ext.c`, `mm/pagewalk.c`, `mm/percpu.c`, `mm/ptdump.c`, `mm/show_mem.c`, `mm/shuffle.c`, `mm/sparse.c`, `mm/usercopy.c`, `mm/util.c`, `mm/vma.c`, `mm/vma_exec.c`, `mm/vma_init.c`, `mm/vmstat.c` |
+| 页面分配 | `init-mm.c`, `memblock.c`, `mm_init.c`, `page_alloc.c`, `page_frag_cache.c` |
+| 内存映射 | `mlock.c`, `mmap.c`, `mmap_lock.c`, `mprotect.c`, `mremap.c`, `msync.c`, `vma.c`, `vma_exec.c`, `vma_init.c`, `vmalloc.c` |
+| 页面缓存 | `fadvise.c`, `filemap.c`, `folio-compat.c`, `page-writeback.c`, `readahead.c`, `truncate.c`, `workingset.c` |
+| 交换 | `page_io.c`, `swap.c`, `swap_cgroup.c`, `swap_state.c`, `swapfile.c` |
+| 页面回收 | `oom_kill.c`, `page_reporting.c`, `shrinker.c`, `vmpressure.c`, `vmscan.c` |
+| 分配器 | `mempool.c`, `page_counter.c`, `slab_common.c`, `slub.c` |
+| 虚拟内存 | `gup.c`, `huge_memory.c`, `memory.c`, `mmu_gather.c`, `mmu_notifier.c`, `process_vm_access.c`, `rmap.c` |
+| 大页 | `hugetlb.c`, `hugetlb_cgroup.c`, `hugetlb_cma.c`, `hugetlb_sysctl.c`, `hugetlb_sysfs.c`, `khugepaged.c` |
+| 共享/秘密内存 | `memfd.c`, `secretmem.c`, `shmem.c`, `shmem_quota.c` |
+| 压缩/迁移 | `balloon.c`, `compaction.c`, `migrate.c`, `page_isolation.c` |
+| 内存控制组 | `bpf_memcontrol.c`, `memcontrol.c` |
+| CMA/连续 | `cma.c`, `dmapool.c`, `execmem.c` |
+| NUMA/分层 | `memory-tiers.c`, `memory_hotplug.c`, `mempolicy.c`, `numa.c`, `numa_memblks.c` |
+| 其他 | `backing-dev.c`, `debug.c`, `early_ioremap.c`, `highmem.c`, `interval_tree.c`, `ioremap.c`, `ksm.c`, `list_lru.c`, `maccess.c`, `madvise.c`, `memory-failure.c`, `memtest.c`, `mincore.c`, `mmzone.c`, `mseal.c`, `page_vma_mapped.c`, `pagewalk.c`, `percpu.c`, `pgtable-generic.c`, `show_mem.c`, `sparse-vmemmap.c`, `sparse.c`, `util.c`, `vmstat.c` |
 
 ---
 
-## 10. 加密子系统 (crypto/ — 83 文件)
+## 10. 加密子系统 (crypto/ — 112 文件)
 
-| 分类 | 文件 | 说明 |
-|------|------|------|
-| 核心 API | `api.c`, `algapi.c`, `algboss.c`, `crypto_user.c`, `crypto_engine.c` | 加密框架 |
-| 对称加密 | `aes.c`, `sm4.c`, `seed.c`, `tea.c`, `arc4.c` | 分组密码 |
-| 块加密模式 | `cbc.c`, `ecb.c`, `ctr.c`, `xts.c`, `cts.c`, `lrw.c`, `pcbc.c`, `xctr.c` | 加密模式 |
-| AEAD | `gcm.c`, `ccm.c`, `cmac.c`, `xcbc.c` | 认证加密 |
-| 哈希 | `sha1.c`, `sha3.c`, `md4.c`, `md5.c`, `hmac.c`, `sm3.c` | 哈希算法 |
-| 非对称 | `rsa.c`, `ecc.c`, `ecdh.c`, `dh.c` | 公钥加密 |
-| KDF | `hkdf.c` | 密钥派生 |
-| 随机数 | `rng.c`, `drbg.c` | 随机数生成 |
-| 压缩 | `lzo.c`, `lz4.c`, `zstd.c`, `842.c` | 压缩算法 |
-| 签名验证 | `sig.c`, `asymmetric_keys/` | 签名 |
-| 其他 | `aead.c`, `ahash.c`, `akcipher.c`, `kpp.c`, `proc.c`, `fips.c`, `simd.c`, `xor.c`, `af_alg.c`, `seqiv.c`, `echainiv.c` | 辅助模块 |
+| 分类 | 核心文件 |
+|------|----------|
+| 核心 API | `acompress.c`, `aead.c`, `af_alg.c`, `af_alg.mod.c`, `ahash.c`, `akcipher.c`, `algapi.c`, `algboss.c`, `algif_rng.c`, `algif_rng.mod.c`, `api.c`, `bpf_crypto_skcipher.c`, `cipher.c`, `crypto_engine.c`, `crypto_engine.mod.c`, `crypto_user.c`, `geniv.c`, `kpp.c`, `lskcipher.c`, `proc.c`, `scatterwalk.c`, `scompress.c`, `shash.c`, `skcipher.c` |
+| 对称/分组 | `blake2b_generic.mod.c`, `chacha.c`, `curve25519-generic.mod.c`, `des_generic.c`, `des_generic.mod.c`, `sm4.c`, `sm4.mod.c`, `sm4_generic.c`, `sm4_generic.mod.c` |
+| 块加密模式 | `authenc.c`, `authenc.mod.c`, `authencesn.c`, `authencesn.mod.c`, `cbc.c`, `cbc.mod.c`, `ccm.c`, `ccm.mod.c`, `cmac.c`, `cmac.mod.c`, `ctr.c`, `ctr.mod.c`, `ecb.c`, `ecb.mod.c`, `echainiv.c`, `gcm.c`, `gcm.mod.c`, `xts.c`, `xts.mod.c` |
+| 哈希 | `crc32c.c`, `ghash-generic.c`, `ghash-generic.mod.c`, `hmac.c`, `md5.c`, `md5.mod.c`, `michael_mic.c`, `michael_mic.mod.c`, `sha1.c`, `sha256.c`, `sha256_generic.mod.c`, `sha3_generic.mod.c`, `sha512.c`, `sm3.mod.c`, `sm3_generic.c`, `sm3_generic.mod.c`, `xxhash_generic.c`, `xxhash_generic.mod.c` |
+| 非对称 | `asymmetric_keys/asymmetric_type.c`, `asymmetric_keys/pkcs7.asn1.c`, `asymmetric_keys/pkcs7_parser.c`, `asymmetric_keys/pkcs7_trust.c`, `asymmetric_keys/pkcs7_verify.c`, `asymmetric_keys/public_key.c`, `asymmetric_keys/restrict.c`, `asymmetric_keys/signature.c`, `asymmetric_keys/x509.asn1.c`, `asymmetric_keys/x509_akid.asn1.c`, `asymmetric_keys/x509_cert_parser.c`, `asymmetric_keys/x509_loader.c`, `asymmetric_keys/x509_public_key.c`, `dh.c`, `dh_generic.mod.c`, `dh_helper.c`, `ecc.c`, `ecc.mod.c`, `ecdh.c`, `ecdh_generic.mod.c`, `ecdh_helper.c`, `rsa-pkcs1pad.c`, `rsa.c`, `rsa_helper.c`, `rsaprivkey.asn1.c`, `rsapubkey.asn1.c`, `rsassa-pkcs1.c` |
+| 随机数 | `drbg.c`, `jitterentropy-kcapi.c`, `jitterentropy.c`, `rng.c` |
+| 压缩 | `deflate.c`, `lzo-rle.c`, `lzo.c`, `zstd.c` |
+| 签名/测试 | `sig.c`, `tcrypt.c`, `tcrypt.mod.c`, `testmgr.c` |
+| 其他 | `crypto_null.c`, `xor.c`, `xor.mod.c` |
 
 ---
 
@@ -390,11 +335,11 @@ make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 -j12
 
 | 分类 | 核心文件 |
 |------|----------|
-| 核心 IO | `blk-core.c`, `blk-mq.c`, `blk-mq-sched.c`, `blk-mq-tag.c`, `blk-mq-cpumap.c` |
-| 块设备 | `bdev.c`, `genhd.c`, `partitions/core.c`, `partitions/msdos.c`, `partitions/efi.c` |
-| IO 调度 | `bfq-iosched.c`, `bfq-wf2q.c`, `bfq-cgroup.c`, `mq-deadline.c`, `kyber-iosched.c`, `blk-ioprio.c` |
-| BIO | `bio.c`, `bio-integrity.c`, `blk-integrity.c` |
-| 其他 | `blk-flush.c`, `blk-cgroup.c`, `blk-stat.c`, `badblocks.c`, `bsg.c`, `ioctl.c`, `fops.c`, `blk-zoned.c`, `blk-ia-ranges.c`, `elevator.c`, `early-lookup.c` |
+| 核心 IO | `blk-core.c`, `blk-flush.c`, `blk-lib.c`, `blk-map.c`, `blk-merge.c`, `blk-mq-cpumap.c`, `blk-mq-debugfs.c`, `blk-mq-dma.c`, `blk-mq-sched.c`, `blk-mq-sysfs.c`, `blk-mq-tag.c`, `blk-mq.c`, `blk-pm.c`, `blk-rq-qos.c`, `blk-settings.c`, `blk-timeout.c` |
+| 块设备 | `bdev.c`, `blk-sysfs.c`, `disk-events.c`, `early-lookup.c`, `fops.c`, `genhd.c`, `holder.c`, `ioctl.c`, `partitions/core.c`, `partitions/efi.c`, `partitions/msdos.c` |
+| IO 调度 | `bfq-cgroup.c`, `bfq-iosched.c`, `bfq-wf2q.c`, `blk-cgroup-rwstat.c`, `blk-cgroup.c`, `blk-ioc.c`, `elevator.c`, `ioprio.c`, `kyber-iosched.c`, `mq-deadline.c` |
+| BIO/完整性 | `bio-integrity-auto.c`, `bio-integrity.c`, `bio.c`, `blk-integrity.c`, `t10-pi.c` |
+| 其他 | `badblocks.c`, `blk-ia-ranges.c`, `blk-stat.c`, `bsg-lib.c`, `bsg.c` |
 
 ---
 
@@ -403,48 +348,112 @@ make CROSS_COMPILE=aarch64-linux-gnu- ARCH=arm64 -j12
 | 配置项 | 状态 | 影响 |
 |--------|------|------|
 | `CONFIG_DEBUG_INFO=y` | 开启 | 完整 DWARF 调试信息 |
-| `CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT=y` | 开启 | 工具链默认 DWARF 版本 |
 | `CONFIG_GDB_SCRIPTS=y` | 开启 | GDB 内核调试脚本 |
 | `CONFIG_DYNAMIC_DEBUG=y` | 开启 | 运行时动态调试打印 |
-| `CONFIG_EXT4_FS=y` | 开启 | EXT4 默认文件系统 (含 EXT2 兼容) |
+| `CONFIG_EXT4_FS=y` | 开启 | EXT4 默认文件系统 |
 | `CONFIG_NET=y` | 开启 | 完整网络协议栈 |
 | `CONFIG_BPF=y` | 开启 | BPF 虚拟机 + JIT |
 | `CONFIG_AUDIT=y` | 开启 | 审计子系统 |
 | `CONFIG_AUDITSYSCALL=y` | 开启 | 系统调用审计 |
 | `CONFIG_IRQ_FORCED_THREADING=y` | 开启 | 强制中断线程化 |
 | `CONFIG_HIGH_RES_TIMERS=y` | 开启 | 高精度定时器 |
-| `CONFIG_NO_HZ_IDLE=y` | 开启 | 动态时钟中断 (空闲时) |
+| `CONFIG_NO_HZ_IDLE=y` | 开启 | 动态时钟中断 |
 | `CONFIG_TICK_ONESHOT=y` | 开启 | 单次触发时钟 |
 | `CONFIG_CONTEXT_TRACKING=y` | 开启 | 上下文追踪 |
-| `CONFIG_PGTABLE_LEVELS=5` | 5级页表 | 支持 52-bit 虚拟地址 |
-| `CONFIG_ARM64_VA_BITS=52` | 52-bit VA | 完整地址空间 |
-| `CONFIG_ARM64_PA_BITS=52` | 52-bit PA | 大物理内存 |
-| `CONFIG_NR_CPUS=512` | 512 CPU | 大规模多核 |
-| `CONFIG_HZ=250` | 250 Hz | 定时器频率 |
-| `CONFIG_CMA_AREAS=20` | 20 区域 | 连续内存分配 |
-| `CONFIG_BTRFS_FS` | 未开启 | 代码已编译但未启用 |
-| `CONFIG_KASAN` | 未开启 | 编译标志中有 KASAN 相关项但未启用 |
-| `CONFIG_UBSAN` | 未开启 | 未定义行为检测未启用 |
-| `CONFIG_KCOV` | 未开启 | 代码覆盖率未启用 |
+| `CONFIG_KVM=y` | 开启 | KVM 虚拟化 |
+| `CONFIG_VIRTIO=y` | 开启 | virtio 半虚拟化 |
+| `CONFIG_VFIO=y` | 开启 | 用户态驱动框架 |
+| `CONFIG_PGTABLE_LEVELS=5` | 5 | 5 级页表 |
+| `CONFIG_ARM64_VA_BITS=52` | 52 | 52-bit 虚拟地址 |
+| `CONFIG_ARM64_PA_BITS=52` | 52 | 52-bit 物理地址 |
+| `CONFIG_NR_CPUS=512` | 512 | 大规模多核 |
+| `CONFIG_HZ=250` | 250 | 定时器频率 |
+| `CONFIG_CMA_AREAS=20` | 20 | 连续内存分配 |
+| `CONFIG_MODULES` | 未开启 | 全部内置，不能 insmod；模块文档仅作源码分析 |
+| `CONFIG_SECURITY` | 未开启 | 无 LSM/SELinux/AppArmor/IMA/EVM |
+| `CONFIG_CRYPTO` | 未开启 | 无 crypto API/AF_ALG |
+| `CONFIG_KEYS` | 未开启 | 无 keyring |
+| `CONFIG_BTRFS_FS` | 未开启 | 无 Btrfs |
+| `CONFIG_KASAN` | 未开启 | 无地址消毒器 |
+| `CONFIG_UBSAN` | 未开启 | 无未定义行为检测 |
+| `CONFIG_KCOV` | 未开启 | 无代码覆盖率 |
+| `CONFIG_RANDOMIZE_BASE` | 未开启 | 无 KASLR |
 
 ---
 
 ## 13. 总结
 
-这是一个**完整编译的 ARM64 Linux 7.0.0 内核**，具有以下特点：
+这是一个**完整编译的 ARM64 Linux 7.2.0 内核**（裁剪调试配置），特点：
 
-1. **全部内置，零模块**：所有 1,091 个配置项均为 `=y`，适合嵌入式/固件部署场景
-
-2. **调试友好**：开启完整 DEBUG_INFO、GDB_SCRIPTS、DYNAMIC_DEBUG，适合内核开发调试
-
-3. **驱动密集**：70.8% 的文件为驱动代码，GPU 驱动(1,386)和网络驱动(938)是最大贡献者
-
-4. **文件系统丰富**：XFS(174)、Btrfs(62)、NFS(59)、EXT4(35)、F2FS(21) 等均已编译
-
+1. **全部内置，零模块**：1,110 个配置项均为 `=y`，适合嵌入式/固件部署场景
+2. **调试友好**：开启 DEBUG_INFO、GDB_SCRIPTS、DYNAMIC_DEBUG，适合内核开发调试
+3. **驱动密集**：71.2% 的文件为驱动代码，GPU（1,465）与网络驱动（1,040）是最大贡献者
+4. **文件系统丰富**：XFS（143）、Btrfs（63）、NFS（60）、EXT4（35）、F2FS（21）等均已编译
 5. **网络栈完整**：IPv4/IPv6、Netfilter、mac80211、Bluetooth、Bridge、VLAN 等全部包含
+6. **安全特性**：栈保护（stack-protector-strong）、PAC 返回地址签名、自动变量零初始化
+7. **大规模支持**：52-bit 地址空间、5 级页表、512 CPU、20 个 CMA 区域
+8. **`compile_commands.json` 已就绪**：可用于 clangd/ccls/LSP 代码导航、补全与静态分析
+9. **裁剪边界**：SECURITY/CRYPTO/KEYS/MODULES/IOMMU/ACPI 等未启用，相关笔记分析的是源码能力而非本次编译启用能力
 
-6. **安全特性**：栈保护(stprotector-strong)、PAC 返回地址签名、自动变量零初始化
+---
 
-7. **大规模支持**：52-bit 地址空间、5级页表、512 CPU、20 个 CMA 区域
+## 14. 复现与校验
 
-8. **`compile_commands.json` 已就绪**：可用于 clangd、ccls、LSP 等语言服务器进行代码导航、自动补全和静态分析
+本节给出复现本报告全部数字的命令，便于在源码树更新后重新核对。
+
+### 14.1 版本与编译器
+
+```bash
+sed -n '1,5p' Makefile                 # VERSION/PATCHLEVEL/SUBLEVEL -> 7.2.0
+grep LINUX_COMPILER include/generated/compile.h
+```
+
+`include/generated/compile.h` 中的编译器串为：`aarch64-linux-gnu-gcc (Ubuntu 15.2.0-16ubuntu1) 15.2.0, GNU ld (GNU Binutils for Ubuntu) 2.46`。
+
+### 14.2 配置与文件计数
+
+```bash
+grep -c '=y$' .config                  # 1110
+grep -c '=m$' .config                  # 0
+python3 - <<'EOF'
+import json, os, collections
+d = json.load(open('compile_commands.json'))
+ext = collections.Counter(os.path.splitext(e['file'])[1] for e in d)
+print(len(d), ext)                     # 10061 Counter({'.c': 9986, '.S': 75})
+EOF
+```
+
+### 14.3 编译记录的完整性校验
+
+`compile_commands.json` 由 `scripts/clang-tools/gen_compile_commands.py` 扫描构建目录中的 `.*.o.cmd` 生成。二者数量应基本对应（`.cmd` 还包含部分不产出独立目标文件的中间规则）：
+
+```bash
+find . -name '.*.o.cmd' -not -path './notes/*' | wc -l    # 10916
+ls kernel/sched/.*.o.cmd | wc -l                          # 4
+python3 -c "import json;d=json.load(open('compile_commands.json'));\
+print(sum(1 for e in d if 'kernel/sched/' in e['file']))" # 4
+```
+
+针对同一子系统两侧计数一致，说明本报告的统计数据与当前 `.config`/构建产物是同一快照。
+
+### 14.4 关键构建产物
+
+| 产物 | 说明 |
+|------|------|
+| `vmlinux` | 未压缩 ELF 内核镜像（含符号与调试信息） |
+| `vmlinux.o` | 链接前的单一目标文件，含全部内置代码 |
+| `vmlinux.a` / `built-in.a` | `obj-y` 归档，Kbuild 两阶段链接的中间产物 |
+| `vmlinux.unstripped` | 调试用未剥离镜像 |
+| `System.map` | 符号地址表 |
+| `Module.symvers` / `modules.builtin` / `modules.order` | 导出符号与内置模块清单（当前 `=m` 为 0，`modules.builtin` 记录全部内置项） |
+| `compile_commands.json` | 10,061 条编译记录，供 clangd/ccls 使用 |
+| `.config` / `defconfig` | 本次裁剪配置及其备份 |
+
+### 14.5 文档侧校验
+
+```bash
+mdbook build                                   # 产物写入 book/
+python3 notes/00-overview/tools/gen_summary.py # 由根 README.md 重新生成 notes/SUMMARY.md
+```
+
+`book.toml` 中 `[output.html.search] enable = false`（仅本地阅读，不生成搜索索引），且未配置 `git-repository-url` / `edit-url-template`（不发布到 GitHub Pages）。维护约定见根 `README.md` 附录 C。

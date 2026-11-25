@@ -2,7 +2,6 @@
 
 > 本文档拆分自 [block_layer_analysis.md](block_layer_analysis.md) Part I，涵盖总体概览、核心数据结构、请求队列管理、Bio层、多队列框架(blk-mq)
 
-# Linux 7.2 块层（Block Layer）代码分析报告
 
 ## 目录
 

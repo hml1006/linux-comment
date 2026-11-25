@@ -25,7 +25,7 @@
    - 5.5 [struct proto](#55-struct-proto)
    - 5.6 [struct inet_sock](#56-struct-inet_sock)
 6. [函数调用流程](#6-函数调用流程)
-   - 6.1 [socket() → 创建完整的调用链](#61-socket--创建完整的调用链)
+   - 6.1 [socket() → 创建完整的调用链](#61-socket-创建完整的调用链)
    - 6.2 [send/recv 完整调用链](#62-sendrecv-完整调用链)
    - 6.3 [bind/listen/accept 调用链](#63-bindlistenaccept-调用链)
 
@@ -473,7 +473,7 @@ struct sock_common {
 
 文件：`include/net/sock.h:360`
 
-详见 [网络子系统概览文档](file:///home/louis/code/linux/notes/network/network_subsystem_analysis.md#52-struct-sock)，此处补充关键说明：
+详见 [网络子系统概览文档](file:///home/louis/code/linux/notes/06-networking/core/network_subsystem_analysis.md#52-struct-sock)，此处补充关键说明：
 
 **缓存行分组设计**：`struct sock` 按访问频率和方向将字段分组到不同的缓存行，避免多核竞争时的缓存颠簸：
 

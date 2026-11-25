@@ -146,7 +146,7 @@ static struct platform_driver gen_pci_driver = {
 };
 ```
 
-## 驱动注册与探测调用栈
+### 2.1 驱动注册与探测调用栈
 
 ```text
 # PCI 总线驱动探测 - 函数调用栈 (kernel_init → pci_host_probe)
@@ -228,7 +228,7 @@ kernel_init
                                                                                   # 枚举设备, 分配资源
 ```
 
-## pci_host_probe 内部枚举过程
+### 2.2 pci_host_probe 内部枚举过程
 
 ```text
 # pci_host_probe 内部调用栈 (PCI 总线枚举核心流程)
@@ -345,7 +345,7 @@ pci_host_probe
       #     └─ pci_assign_resource - 分配 BAR 资源
 ```
 
-# PCI 驱动注册流程
+## 3. PCI 驱动注册流程
 
 `__pci_register_driver` 有 3 种调用路径:
 
@@ -637,7 +637,7 @@ pci_assign_unassigned_resources
 #   4. 如果资源不足, 尝试重新分配
 ```
 
-# device_driver 结构体
+## 5. device_driver 结构体
 
 ```text
 # struct device_driver - 设备驱动结构
@@ -684,7 +684,7 @@ enum probe_type {
 };
 ```
 
-# bus_type 结构体
+## 6. bus_type 结构体
 
 ```text
 # struct bus_type - 总线类型结构
@@ -752,7 +752,7 @@ enum bus_notifier_event {
 };
 ```
 
-# device 结构体
+## 7. device 结构体
 
 ```text
 # struct device - 通用设备结构
@@ -850,6 +850,7 @@ struct device {
     dma_iommu         : bool    # 使用 IOMMU DMA
 };
 
+```
 ---
 
 ## 8. PCIe 设备关键数据结构
@@ -1210,6 +1211,3 @@ pci_driver
             └── driver_attach()             // 遍历已有设备匹配
 ```
 
-```
-```
-```

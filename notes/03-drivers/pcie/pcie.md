@@ -1383,6 +1383,7 @@ pci_bus_assign_resources(bus)                                    [setup-bus.c:14
                 │
                 └── pci_setup_bridge(b)                          [setup-bus.c:892]
                     ├── pci_setup_bridge_io(bridge)
+```
 
 ### 6.15 BAR (Base Address Register) 地址详解
 
@@ -2250,4 +2251,3 @@ pci_bus (root, number=0x00)
 6. **能力延迟初始化**：`pci_init_capabilities()` 在 `pci_setup_device()` 之后独立调用，通过 PCI 配置空间的 Capability 链表遍历发现所有能力结构，每种能力独立初始化。
 
 7. **热插拔支持**：`pci_scan_bridge_extend()` 会为支持热插拔的桥预留额外总线号，`pci_scan_child_bus_extend()` 的 `available_buses` 参数用于管理可分配的总线号数量。
-```

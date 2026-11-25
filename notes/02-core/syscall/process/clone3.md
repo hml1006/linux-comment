@@ -33,7 +33,7 @@ int clone3(struct clone_args *args, size_t size);
 ### 内核入口
 
 ```c
-// kernel/fork.c:2934
+// kernel/fork.c:3029
 SYSCALL_DEFINE2(clone3, struct clone_args __user *, uargs, size_t, size)
 {
     int err;
@@ -62,7 +62,7 @@ SYSCALL_DEFINE2(clone3, struct clone_args __user *, uargs, size_t, size)
 ```
 clone3(uargs, size)
 └─ syscall(__NR_clone3, uargs, size)
-   └─ SYSCALL_DEFINE2(clone3)                       // kernel/fork.c:2934
+   └─ SYSCALL_DEFINE2(clone3)                       // kernel/fork.c:3029
       ├─ copy_clone_args_from_user(&kargs, uargs, size)  // 从用户态拷贝参数
       │  ├─ [size == CLONE_ARGS_SIZE_VER0]  → 64字节版本
       │  ├─ [size == CLONE_ARGS_SIZE_VER1]  → 80字节版本（+ set_tid, set_tid_size）
@@ -290,6 +290,6 @@ int main() {
 ## 9. 参考
 
 - [ARM64 系统调用表](../arm64-syscall-table.md#8-进程控制)
-- `kernel/fork.c:2934` - SYSCALL_DEFINE2(clone3)
+- `kernel/fork.c:3029` - SYSCALL_DEFINE2(clone3)
 - `include/uapi/linux/sched.h` - struct clone_args 定义
 - `kernel/fork.c:2798` - copy_clone_args_from_user

@@ -199,3 +199,6 @@ sphinx_*/
 # disk image file
 /*.img
 /rootfs/
+
+# mdBook build output
+/book/

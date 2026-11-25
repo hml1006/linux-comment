@@ -17,14 +17,14 @@
   - [3.2 raw_spinlock_t 保持不变](#32-raw_spinlock_t-保持不变)
   - [3.3 rwlock_t → rwbase_rt](#33-rwlock_t--rwbase_rt)
   - [3.4 mutex → rt_mutex 基础](#34-mutex--rt_mutex-基础)
-  - [3.5 local_lock 行为变化](#35-locallock-行为变化)
+  - [3.5 local_lock 行为变化](#35-local_lock-行为变化)
 - [4. 中断与软中断的变化](#4-中断与软中断的变化)
   - [4.1 强制中断线程化 (force_irqthreads)](#41-强制中断线程化-force_irqthreads)
   - [4.2 软中断处理变化](#42-软中断处理变化)
   - [4.3 local_bh 禁用变化](#43-local_bh-禁用变化)
 - [5. 高精度定时器 (hrtimer) 的变化](#5-高精度定时器-hrtimer-的变化)
-  - [5.1 HRTIMER_MODE_HARD 区分](#51-hrtimermodehard-区分)
-  - [5.2 hrtimer_cancel_wait_running](#52-hrtimercancelwaitrunning)
+  - [5.1 HRTIMER_MODE_HARD 区分](#51-hrtimer_mode_hard-区分)
+  - [5.2 hrtimer_cancel_wait_running](#52-hrtimer_cancel_wait_running)
 - [6. RCU 的变化](#6-rcu-的变化)
 - [7. task_struct 中的 PREEMPT_RT 字段](#7-task_struct-中的-preempt_rt-字段)
 - [8. 内存管理的变化](#8-内存管理的变化)
@@ -76,7 +76,7 @@ NOKPROBE_SYMBOL(schedule_rtlock);
 
 `schedule_rtlock()` 是 PREEMPT_RT 专用的调度入口，用于 RT 锁（如 `spinlock_t` 在 RT 下的实现）等待时的调度。它使用 `SM_RTLOCK_WAIT` 调度模式，该模式：
 
-- **在 `__schedule()` 中**：`sched_mode > SM_NONE` 判断为抢占，因此 `schedule_debug()` 和 RCU 将其视为一次抢占（`kernel/sched/core.c:6768`）
+- **在 `__schedule()` 中**：`sched_mode > SM_NONE` 判断为抢占，因此 `schedule_debug()` 和 RCU 将其视为一次抢占（`kernel/sched/core.c:7068`）
 - **非抢占含义**：虽然是"抢占"语义，但实际上是任务主动让出 CPU 等待锁，与普通抢占的触发路径不同
 
 ### 2.2 TASK_RTLOCK_WAIT 任务状态
@@ -149,7 +149,7 @@ PREEMPT_RT 下关闭 TTWU_QUEUE 特性：
 
 - **作用**：负载均衡时，每次迁移最多处理的 task 数量上限，防止长时间持有 rq lock
 - **RT 下减少到 8**：减少每次迁移操作的时间，降低锁持有时间，从而降低调度延迟
-- 对应 `kernel/sched/core.c:2718-2725` 中 `kfree_rcu()` 的使用：因为 PREEMPT_RT 下 pi_lock 持有期间不能调用 `kfree()`，因此使用 `kfree_rcu()` 延迟释放
+- 对应 `kernel/sched/core.c:2821-2823` 中 `kfree_rcu()` 的使用：因为 PREEMPT_RT 下 pi_lock 持有期间不能调用 `kfree()`，因此使用 `kfree_rcu()` 延迟释放
 
 ### 2.5 动态抢占模式禁用
 

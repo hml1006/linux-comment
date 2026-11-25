@@ -1251,7 +1251,7 @@ void synchronize_rcu_tasks_trace(void);
 | [kernel/rcu/tree.c](file:///home/louis/code/linux/kernel/rcu/tree.c)               | Tree RCU 核心实现（GP 生命周期、`synchronize_rcu`、`call_rcu`）                                                                  |
 | [kernel/rcu/tree.h](file:///home/louis/code/linux/kernel/rcu/tree.h)               | Tree RCU 数据结构（`rcu_state`、`rcu_node`、`rcu_data`）                                                                       |
 | [kernel/rcu/tree_plugin.h](file:///home/louis/code/linux/kernel/rcu/tree_plugin.h) | PREEMPT_RCU 插件（`__rcu_read_lock/unlock`、`rcu_note_context_switch`、`rcu_preempt_ctxt_queue`、`rcu_read_unlock_special`） |
-| [kernel/rcu/srcu.c](file:///home/louis/code/linux/kernel/rcu/srcu.c)               | SRCU 实现                                                                                                                            |
+| [kernel/rcu/srcutree.c](file:///home/louis/code/linux/kernel/rcu/srcutree.c)       | SRCU 实现                                                                                                                            |
 | [kernel/rcu/tasks.h](file:///home/louis/code/linux/kernel/rcu/tasks.h)             | Tasks RCU 实现                                                                                                                       |
 | [kernel/rcu/rcu.h](file:///home/louis/code/linux/kernel/rcu/rcu.h)                 | RCU 内部辅助函数                                                                                                                     |
 

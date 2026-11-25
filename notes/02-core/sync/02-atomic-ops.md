@@ -277,7 +277,7 @@ if (atomic_try_cmpxchg(&v, &old, 1))   // 仅当 v==0 时设为 1
 | 文件 | 说明 |
 |------|------|
 | [include/linux/atomic.h](file:///home/louis/code/linux/include/linux/atomic.h) | 原子操作 API 定义 |
-| [include/linux/atomic-arch-fallback.h](file:///home/louis/code/linux/include/linux/atomic-arch-fallback.h) | 架构回退实现 |
+| [include/linux/atomic/atomic-arch-fallback.h](file:///home/louis/code/linux/include/linux/atomic/atomic-arch-fallback.h) | 架构回退实现 |
 | [include/linux/bitops.h](file:///home/louis/code/linux/include/linux/bitops.h) | 原子位操作 API |
 | [arch/arm64/include/asm/atomic.h](file:///home/louis/code/linux/arch/arm64/include/asm/atomic.h) | ARM64 原子操作实现 |
 | [include/linux/kref.h](file:///home/louis/code/linux/include/linux/kref.h) | 基于 atomic_t 的引用计数 |

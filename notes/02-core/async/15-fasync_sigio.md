@@ -179,3 +179,84 @@ fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | FASYNC);
 | 支持文件 I/O | 部分 | 部分 | 全部 |
 | 内核复杂度 | 低 | 中 | 高 |
 | 当前状态 | 已过时 | 推荐 | 推荐（新项目） |
+
+## 7 数据结构与 slab 初始化核实
+
+`struct fasync_struct`（`include/linux/fs.h`）与第 2.1 节一致，含 `fa_lock` 读写锁、`magic`、`fa_fd`、单向 `fa_next`、`fa_file` 与 `fa_rcu`。这些条目从专用 slab 分配，`fcntl_init()`（`module_init`）创建：
+
+```c
+// fs/fcntl.c: fcntl_init()
+fasync_cache = kmem_cache_create("fasync_cache",
+                 sizeof(struct fasync_struct), 0,
+                 SLAB_PANIC | SLAB_ACCOUNT, NULL);
+```
+
+`fasync_alloc()` 即 `kmem_cache_alloc(fasync_cache, GFP_KERNEL)`；`fasync_free()` 仅用于**尚未插入链表**的条目，已插入的必须经 RCU 释放（见下）。
+
+## 8 注册/移除调用链
+
+`fasync_helper()` 按 `on` 分流：
+
+```c
+// fs/fcntl.c
+int fasync_helper(int fd, struct file *filp, int on, struct fasync_struct **fapp)
+{
+    if (!on)
+        return fasync_remove_entry(filp, fapp);
+    return fasync_add_entry(fd, filp, fapp);
+}
+```
+
+`fasync_add_entry()` 先 `fasync_alloc()`，再 `fasync_insert_entry()`：持 `filp->f_lock` + 全局 `fasync_lock`，若链表已有同 `filp` 条目则仅在 `fa_lock` 写锁下更新 `fa_fd`（返回旧条目，调用者 `fasync_free()` 新条目并返回 0）；否则初始化 `fa_lock`/`magic=FASYNC_MAGIC`/`fa_file`/`fa_fd`，`rcu_assign_pointer(*fapp, new)` 头插并置 `filp->f_flags |= FASYNC`。
+
+`fasync_remove_entry()` 找到匹配条目后，写锁下置 `fa->fa_file = NULL`，摘链，`kfree_rcu(fa, fa_rcu)` 延迟释放，清 `FASYNC` 标志。源码注释强调：**FASYNC 标志必须与"filp 是否在 fasync 链表上"严格一致**。`fcntl(F_SETFL, ...|FASYNC)` 经 `do_fcntl` 最终调到驱动的 `.fasync`，驱动再调 `fasync_helper`。
+
+## 9 kill_fasync 与 SIGIO 发送
+
+```c
+// fs/fcntl.c: kill_fasync()
+if (*fp) {                       // 无锁快速判空
+    rcu_read_lock();
+    kill_fasync_rcu(rcu_dereference(*fp), sig, band);
+    rcu_read_unlock();
+}
+```
+
+`kill_fasync_rcu()` 遍历链表：校验 `magic`（坏则 `printk` 报错返回），`read_lock_irqsave(&fa->fa_lock)`，取 `file_f_owner(fa->fa_file)`，对 SIGURG 且 `signum==0` 跳过（SIGURG 有独立默认机制），否则 `send_sigio(fown, fa->fa_fd, band)`，最后 `rcu_dereference(fa->fa_next)` 前进。
+
+`send_sigio()` 持 `fown->lock` 读锁，按 `pid_type` 用 `pid_task()`（单任务）或 `do_each_pid_task()`（进程组）在 RCU 读侧找到目标，调 `send_sigio_to_task()`：
+
+```c
+// fs/fcntl.c: send_sigio_to_task() 要点
+int signum = READ_ONCE(fown->signum);   // F_SETSIG 可并行改，读一次
+if (!sigio_perm(p, fown, signum)) return;
+si.si_signo = signum; si.si_code = reason;
+si.si_band = mangle_poll(band_table[reason - POLL_IN]);
+si.si_fd = fd;
+if (!do_send_sig_info(signum, &si, p, type))
+    break;
+// 失败或 signum==0 → 回退 do_send_sig_info(SIGIO, SEND_SIG_PRIV, ...)
+```
+
+`F_SETSIG` 设自定义信号（常为实时信号）以携带 `si_fd`/`si_band`；若该信号已有专属 si_code 语义，则改用 `SI_SIGIO` 消除歧义。`send_sigurg()` 走类似路径但发 `SIGURG`。`F_SETOWN`/`F_SETSIG` 在 `do_fcntl` 中处理，设置 `f_owner` 的 pid/pid_type/signum。
+
+## 10 与 RCU、epoll 的关系
+
+- **RCU**：fasync 链表读侧（`kill_fasync`）用 `rcu_read_lock` + `rcu_dereference`，删除用 `kfree_rcu`，保证发送信号时遍历到的条目不被释放；`fa_lock` 保护 `fa_fd`/`fa_file` 的并发更新。这与 [RCU 回调](06-rcu-callback.md) 的延迟释放思想一致。
+- **epoll**：`fs/eventpoll.c` 不使用 fasync（无 `kill_fasync` 调用），epoll 就绪靠 `ep_poll_callback` → `wake_up` 唤醒等待队列，是独立机制。许多驱动同时支持两者：数据到达时既 `wake_up` 供 poll/epoll，又 `kill_fasync` 供 SIGIO。epoll 无信号队列溢出问题、支持边缘触发与海量 fd，故为新项目首选。
+- **信号驱动 I/O 的局限**：SIGIO 默认不排队（标准信号会合并），大量 fd 同时就绪易丢事件；用 `F_SETSIG` 指定实时信号可排队并携带 fd 信息，但仍不如 epoll/io_uring 高效。
+
+## 11 配置、调试与关键文件
+
+- 本树 `CONFIG_EPOLL=y`、`CONFIG_SIGNALFD=y`；fasync 无独立开关，随 `CONFIG_FILE_LOCKING`/fcntl 常开。
+- `kill_fasync_rcu()` 的 magic 校验失败会打 `KERN_ERR`，可捕获链表损坏。
+- 用户态调试：`fcntl(F_GETFL)` 查 FASYNC 位，`/proc/<pid>/fdinfo/<fd>` 查文件状态；信号使用 `sigaction` + `SA_SIGINFO` 收取 `si_fd`/`si_band`。
+
+| 文件 | 作用 |
+|--|--|
+| `fs/fcntl.c` | `fasync_helper`/`kill_fasync`/`send_sigio`/`send_sigurg`/`fcntl_init` |
+| `include/linux/fs.h` | `fasync_struct`/`fown_struct`/`file` |
+| `kernel/signal.c` | `do_send_sig_info` 信号投递 |
+| `fs/eventpoll.c` | epoll（独立就绪通知，对照） |
+
+相关笔记：[RCU 回调](06-rcu-callback.md)、[task_work](11-task_work.md)、[异步执行概要](async-execution-summary.md)。

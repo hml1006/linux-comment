@@ -51,12 +51,12 @@
 ### Part II: I/O 调度与策略控制
 
 6. [I/O 调度器](#6-io-调度器)
-    - [6.1 elevator.c — 调度器框架（895 行）](#61-elevatorc-调度器框架895-行)
+    - [6.1 elevator.c — 调度器框架（895 行）](#61-elevatorc--调度器框架895-行)
     - [6.2 BFQ 调度器（Budget Fair Queueing）](#62-bfq-调度器budget-fair-queueing)
     - [6.3 MQ-Deadline 调度器（1,029 行）](#63-mq-deadline-调度器1029-行)
     - [6.4 Kyber 调度器（1,033 行）](#64-kyber-调度器1033-行)
-    - [6.5 none 调度器 — 无调度器模式](#65-none-调度器-无调度器模式)
-    - [6.6 Plug 机制 — 批量提交优化](#66-plug-机制-批量提交优化)
+    - [6.5 none 调度器 — 无调度器模式](#65-none-调度器--无调度器模式)
+    - [6.6 Plug 机制 — 批量提交优化](#66-plug-机制--批量提交优化)
 7. [I/O 合并与分段](#7-io-合并与分段)
     - [7.1 概述](#71-概述)
     - [7.2 合并前置条件](#72-合并前置条件)
@@ -77,7 +77,7 @@
     - [8.6 三阶段刷新序列](#86-三阶段刷新序列)
     - [8.7 刷新触发机制：`blk_kick_flush`](#87-刷新触发机制blk_kick_flush)
     - [8.8 刷新完成处理：`flush_end_io`](#88-刷新完成处理flush_end_io)
-    - [8.9 `blk_flush_complete_seq` — 阶段推进](#89-blk_flush_complete_seq-阶段推进)
+    - [8.9 `blk_flush_complete_seq` — 阶段推进](#89-blk_flush_complete_seq--阶段推进)
     - [8.10 数据阶段完成：`mq_flush_data_end_io`](#810-数据阶段完成mq_flush_data_end_io)
     - [8.11 硬件队列中的刷新路由](#811-硬件队列中的刷新路由)
     - [8.12 NVMe 驱动中的 FUA 支持](#812-nvme-驱动中的-fua-支持)
@@ -85,11 +85,11 @@
     - [8.14 完整刷新序列调用链](#814-完整刷新序列调用链)
 9. [QoS 与资源控制](#9-qos-与资源控制)
     - [9.1 概述：rq_qos 框架架构](#91-概述rq_qos-框架架构)
-    - [9.2 blk-throttle.c — 带宽节流（1,849 行）](#92-blk-throttlec-带宽节流1849-行)
-    - [9.3 blk-iolatency.c — 延迟控制（1,068 行）](#93-blk-iolatencyc-延迟控制1068-行)
-    - [9.4 blk-iocost.c — IO 成本模型（3,551 行）](#94-blk-iocostc-io-成本模型3551-行)
-    - [9.5 blk-wbt.c — 写回节流（1,025 行）](#95-blk-wbtc-写回节流1025-行)
-    - [9.6 blk-ioprio.c — I/O 优先级（179 行）](#96-blk-ioprioc-io-优先级179-行)
+    - [9.2 blk-throttle.c — 带宽节流（1,849 行）](#92-blk-throttlec--带宽节流1849-行)
+    - [9.3 blk-iolatency.c — 延迟控制（1,068 行）](#93-blk-iolatencyc--延迟控制1068-行)
+    - [9.4 blk-iocost.c — IO 成本模型（3,551 行）](#94-blk-iocostc--io-成本模型3551-行)
+    - [9.5 blk-wbt.c — 写回节流（1,025 行）](#95-blk-wbtc--写回节流1025-行)
+    - [9.6 blk-ioprio.c — I/O 优先级（179 行）](#96-blk-ioprioc--io-优先级179-行)
     - [9.7 QoS 策略对比总结](#97-qos-策略对比总结)
 10. [Cgroup 集成](#10-cgroup-集成)
     - [10.1 概述](#101-概述)
@@ -103,7 +103,7 @@
     - [10.9 Cgroup 写回集成（CONFIG_CGROUP_WRITEBACK）](#109-cgroup-写回集成config_cgroup_writeback)
     - [10.10 辅助 Cgroup 文件](#1010-辅助-cgroup-文件)
     - [10.11 Cgroup v2 接口汇总](#1011-cgroup-v2-接口汇总)
-    - [10.12 `io_cgrp_subsys` — cgroup 子系统定义](#1012-io_cgrp_subsys-cgroup-子系统定义)
+    - [10.12 `io_cgrp_subsys` — cgroup 子系统定义](#1012-io_cgrp_subsys--cgroup-子系统定义)
     - [10.13 关键设计要点总结](#1013-关键设计要点总结)
 
 ### Part III: 设备管理与调试
@@ -123,19 +123,19 @@
     - [13.1 blk-zoned.c（2,363 行）](#131-blk-zonedc2363-行)
 14. [Sysfs 与调试接口](#14-sysfs-与调试接口)
     - [14.1 blk-sysfs.c（1,030 行）](#141-blk-sysfsc1030-行)
-    - [14.2 blk-mq-debugfs.c / blk-mq-debugfs.h](#142-blk-mq-debugfsc-blk-mq-debugfsh)
-    - [14.3 blktrace — 块层跟踪](#143-blktrace-块层跟踪)
+    - [14.2 blk-mq-debugfs.c / blk-mq-debugfs.h](#142-blk-mq-debugfsc--blk-mq-debugfsh)
+    - [14.3 blktrace — 块层跟踪](#143-blktrace--块层跟踪)
     - [14.4 ioctl.c（975 行）](#144-ioctlc975-行)
     - [14.5 fops.c（978 行）](#145-fopsc978-行)
-    - [14.6 bsg.c / bsg-lib.c](#146-bsgc-bsg-libc)
+    - [14.6 bsg.c / bsg-lib.c](#146-bsgc--bsg-libc)
     - [14.7 disk-events.c（489 行）](#147-disk-eventsc489-行)
     - [14.8 holder.c](#148-holderc)
     - [14.9 early-lookup.c（316 行）](#149-early-lookupc316-行)
 15. [超时与电源管理](#15-超时与电源管理)
     - [15.1 blk-timeout.c](#151-blk-timeoutc)
-    - [15.2 blk-pm.c / blk-pm.h](#152-blk-pmc-blk-pmh)
+    - [15.2 blk-pm.c / blk-pm.h](#152-blk-pmc--blk-pmh)
 16. [统计与跟踪](#16-统计与跟踪)
-    - [16.1 blk-stat.c / blk-stat.h](#161-blk-statc-blk-stath)
+    - [16.1 blk-stat.c / blk-stat.h](#161-blk-statc--blk-stath)
     - [16.2 块层 Tracepoints](#162-块层-tracepoints)
     - [16.3 blk-ioc.c（442 行）](#163-blk-iocc442-行)
     - [16.4 ioprio.c（249 行）](#164-ioprioc249-行)
@@ -150,7 +150,7 @@
     - [17.3 Page Cache 读路径](#173-page-cache-读路径)
     - [17.4 Page Cache 写路径](#174-page-cache-写路径)
     - [17.5 buffer_head 到 bio 的转换](#175-buffer_head-到-bio-的转换)
-    - [17.6 块设备自身的 Page Cache](#176-块设备自身的-page-cache)
+    - [17.6 块设备自身的 Page Cache](#176-块设备自身的-page-cachebdev-mapping)
     - [17.7 关键数据流对比](#177-关键数据流对比)
     - [17.8 总结](#178-总结)
 18. [Writeback 回写机制 — Flush 线程下刷数据流程](#18-writeback-回写机制--flush-线程下刷数据流程)
@@ -10686,9 +10686,9 @@ nvme_ns_remove(ns)                                   [core.c]
 
 ---
 
-### 18.4 与块层的交互接口
+### 20.4 与块层的交互接口
 
-#### 18.4.1 概述
+#### 20.4.1 概述
 
 NVMe 驱动与通用块层的交互贯穿整个 **块设备注册** 和 **移除** 流程。从驱动视角看，核心交互点包括：
 

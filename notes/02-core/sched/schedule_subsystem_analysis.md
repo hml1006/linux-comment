@@ -27,7 +27,7 @@
    - 4.5 [调度模式 (sched_mode)](#45-调度模式-sched_mode)
    - 4.6 [PREEMPT_RT 调度整合](#46-preempt_rt-调度整合)
 5. [CFS/EEVDF 完全公平调度器](#5-cfseevdf-完全公平调度器)
-   - 5.1 [EEVDF 算法概述](#51-eedf-算法概述)
+   - 5.1 [EEVDF 算法概述](#51-eevdf-算法概述)
    - 5.2 [虚拟运行时间 (vruntime)](#52-虚拟运行时间-vruntime)
    - 5.3 [enqueue_task_fair / dequeue_task_fair](#53-enqueue_task_fair--dequeue_task_fair)
    - 5.4 [pick_next_task_fair 与延迟出队](#54-pick_next_task_fair-与延迟出队)

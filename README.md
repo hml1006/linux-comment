@@ -7,9 +7,9 @@
 ## 快速入口
 
 - [内核子系统地图](notes/00-overview/kernel-map.md) — 源码目录、分层视图、四条典型路径
-- [编译快照与文件统计](notes/00-overview/analysis_report.md) — 基于 Linux 7.0 的历史编译快照，已标注与当前 7.2 树的差异
+- [编译快照与文件统计](notes/00-overview/analysis_report.md) — 基于当前 Linux 7.2 树与裁剪配置的编译快照（含复现命令）
 - [文档状态矩阵](#附录-a文档状态矩阵) — 每个子系统的覆盖程度与配置状态
-- 文档规模：537 篇 Markdown，约 21.9 万行（含拆分篇与总篇）
+- 文档规模：525 篇 Markdown，约 23.9 万行（含拆分篇与总篇）
 
 ## 目录
 
@@ -414,11 +414,11 @@ notes/
 ### 11.6 SSD 专题
 
 - [SSD 笔记阅读说明](notes/04-storage/ssd/README.md)
-- [LightNVM 代码分析](notes/04-storage/ssd/lightnvm代码分析/src/SUMMARY.md)
-- [NAND 原理](notes/04-storage/ssd/nand原理/src/SUMMARY.md)
-- [NVMe 原理](notes/04-storage/ssd/nvme原理/src/SUMMARY.md)
-- [ZNS / ZenFS](notes/04-storage/ssd/zns/src/SUMMARY.md)
-- [NAND Flash 文档](notes/04-storage/ssd/nand-flash.docx)
+- [NAND Flash 解密](notes/04-storage/ssd/nand-flash.md)
+- NAND 原理
+  - [简介](notes/04-storage/ssd/nand原理/README.md) | [闪存物理特性](notes/04-storage/ssd/nand原理/physical.md) | [闪存内部结构原理](notes/04-storage/ssd/nand原理/arch.md) | [命令](notes/04-storage/ssd/nand原理/cmd.md) | [FTL](notes/04-storage/ssd/nand原理/ftl.md)
+- NVMe 原理
+  - [简介](notes/04-storage/ssd/nvme原理/intro.md) | [nvme设备基本原理](notes/04-storage/ssd/nvme原理/arch.md) | [nvme数据结构定义](notes/04-storage/ssd/nvme原理/define.md) | [nvme命令](notes/04-storage/ssd/nvme原理/cmd.md)
 
 ## 12. 文件系统
 
@@ -429,9 +429,9 @@ notes/
 ### 12.2 特殊文件系统
 
 - [01-procfs](notes/05-filesystems/special/01-procfs.md) | [02-sysfs](notes/05-filesystems/special/02-sysfs.md) | [03-debugfs](notes/05-filesystems/special/03-debugfs.md) | [04-ramfs/tmpfs](notes/05-filesystems/special/04-ramfs-tmpfs.md)
-- [05-bdevfs](notes/05-filesystems/special/05-bdevfs.md) | [06-sockfs](notes/05-filesystems/special/06-sockfs.md) | [08-cgroup](notes/05-filesystems/special/08-cgroup.md) | [09-devtmpfs](notes/05-filesystems/special/09-devtmpfs.md)
-- [10-configfs](notes/05-filesystems/special/10-configfs.md) | [11-securityfs](notes/05-filesystems/special/11-securityfs.md) | [12-bpf](notes/05-filesystems/special/12-bpf.md) | [13-pipefs](notes/05-filesystems/special/13-pipefs.md)
-- [14-hugetlbfs](notes/05-filesystems/special/14-hugetlbfs.md) | [15-rpc_pipefs](notes/05-filesystems/special/15-rpc_pipefs.md) | [16-devpts](notes/05-filesystems/special/16-devpts.md)
+- [05-bdevfs](notes/05-filesystems/special/05-bdevfs.md) | [06-sockfs](notes/05-filesystems/special/06-sockfs.md) | [07-cgroup](notes/05-filesystems/special/07-cgroup.md) | [08-devtmpfs](notes/05-filesystems/special/08-devtmpfs.md)
+- [09-configfs](notes/05-filesystems/special/09-configfs.md) | [10-securityfs](notes/05-filesystems/special/10-securityfs.md) | [11-bpf](notes/05-filesystems/special/11-bpf.md) | [12-pipefs](notes/05-filesystems/special/12-pipefs.md)
+- [13-hugetlbfs](notes/05-filesystems/special/13-hugetlbfs.md) | [14-rpc_pipefs](notes/05-filesystems/special/14-rpc_pipefs.md) | [15-devpts](notes/05-filesystems/special/15-devpts.md)
 
 ### 12.3 真实文件系统
 
@@ -642,7 +642,7 @@ notes/
 | 调试与追踪 | 完整 | 部分启用 | 文档全面；FTRACE/KPROBES/KGDB/KASAN/KCSAN 未启用 |
 | 构建/模块 | 新增 | 部分启用 | KEXEC_FILE=y；MODULES 未启用 |
 | Rust | 新增 | 未启用 | 源码有 rust/；当前 .config 无 CONFIG_RUST |
-| SSD 专题 | 部分 | 不适用 | NAND/NVMe/ZNS/LightNVM 读书笔记 |
+| SSD 专题 | 完整 | 不适用 | NAND/NVMe 原理入门（含物理特性、ONFI 命令、FTL/GC/磨损均衡、NVMe 队列与 PRP/SGL）；lightnvm/ZNS 子书已移除，nand/nvme 已并入本书 |
 
 ## 附录 B：配置裁剪清单
 
@@ -693,7 +693,7 @@ notes/
 
 1. **目录编号**：`00-overview` 到 `12-rust` 按“总览 → 架构 → 核心 → 驱动/存储/FS/网络 → 安全/虚拟化/容器 → 调试/构建”排序；新增文档放入对应子目录，不再新增顶级目录。
 2. **文档命名**：同一目录内用 `NN-topic.md` 编号；单篇专题可用 `topic.md`。
-3. **链接规则**：README 使用仓库相对路径；笔记之间使用相对路径；引用源码使用 `` `path/to/file.c` ``，关键位置可加 `file:///` 链接。
+3. **链接规则**：README 使用仓库相对路径；笔记之间使用相对路径；引用源码使用 `` `path/to/file.c` ``，关键位置可加 `file:///` 链接。源码行号会随注释增补漂移，视为近似定位，引用前以当前树 `grep -n` 核实。
 4. **版本规则**：文档标题和“本文基于”统一写当前源码版本（Linux 7.2）；描述“自 7.0 引入”的历史特性时保留原版本号。
 5. **配置说明**：涉及当前 `.config` 未启用的功能，必须在文档开头或相关章节注明“源码存在，当前配置未启用”。
 6. **新增文档模板**：概述 → 核心数据结构 → 初始化/关键流程 → 调用链 → 与其他子系统交互 → 配置与调试 → 关键文件清单。

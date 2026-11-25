@@ -668,7 +668,6 @@ struct folio_batch {
     struct folio *folios[PAGEVEC_SIZE];  // folio 指针数组
 };
 ```
-```
 
 ---
 
@@ -744,4 +743,3 @@ nvme_poll_cq → nvme_handle_cqe → blk_mq_add_to_batch
 - 多线程并发 `pread64` 无需加锁——每个线程的 `pos` 在各自栈上
 - ext4 无 `.read` 方法，通过 `new_sync_read` 适配到 `.read_iter` 路径
 - 从 `new_sync_read` 往下的所有层（ext4/page cache/block/NVMe）与 `read`/`readv` 共享代码
-```

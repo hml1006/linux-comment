@@ -83,6 +83,38 @@ ima_inode_get_iint(const struct inode *inode)
 
 `enum integrity_status`（`include/linux/integrity.h`）：`INTEGRITY_PASS`、`PASS_IMMUTABLE`、`FAIL`、`FAIL_IMMUTABLE`、`NOLABEL`、`NOXATTRS`、`UNKNOWN`。
 
+iint 的分配与释放在 `ima_iint.c` 中实现，构成完整生命周期：
+
+```c
+// security/integrity/ima/ima_iint.c:91
+struct ima_iint_cache *ima_inode_get(struct inode *inode)
+{
+	struct ima_iint_cache *iint;
+
+	iint = ima_iint_find(inode);
+	if (iint)
+		return iint;
+
+	iint = kmem_cache_alloc(ima_iint_cache, GFP_NOFS);
+	if (!iint)
+		return NULL;
+
+	ima_iint_init_always(iint, inode);
+
+	inode->i_flags |= S_IMA;
+	ima_inode_set_iint(inode, iint);
+
+	return iint;
+}
+```
+
+- 专用 slab `ima_iint_cache` 由 `ima_iintcache_init()` 以 `SLAB_PANIC` 标志创建——启动期创建失败即致命错误；
+- `ima_iint_find()` 先检查 `IS_IMA(inode)`（即 `S_IMA` 标志），避免读取未初始化的 blob；
+- inode 释放时由 `inode_free_security_rcu` hook 调用 `ima_inode_free_rcu()`，释放 `ima_hash` 并把 iint 归还 slab；
+- `ima_iint_init_always()` 把五个状态字段初始化为 `INTEGRITY_UNKNOWN`，并按 `s_stack_depth` 对 `iint->mutex` 做 lockdep 类标注（`IMA_MAX_NESTING = FILESYSTEM_MAX_STACK_DEPTH + 1`），避免 overlayfs 与底层文件系统嵌套加锁的误报。
+
+iint 是**惰性分配**的：只有真正命中策略的 inode 才会获得 iint，内存开销与策略覆盖的文件数成正比，而不是与系统 inode 总数成正比。LSM blob 机制本身见 [01-lsm.md](01-lsm.md)。
+
 ### 3.2 策略规则 `ima_rule_entry`
 
 ```c
@@ -174,6 +206,37 @@ static int process_measurement(struct file *file, const struct cred *cred,
 7. 评估：`ima_appraise_measurement()`（见第 5 节）；
 8. 审计：`ima_audit_measurement()`。
 
+逐行阅读 `process_measurement()`（`ima_main.c:254`）还能看到几个容易忽略的设计点：
+
+**动作位运算。** IMA 把“要做”与“已做”编码在相邻位上（`IMA_MEASURE 0x1`/`IMA_MEASURED 0x2`，`ima.h:142`）：
+
+```c
+// ima_main.c:371
+iint->flags |= action;
+action &= IMA_DO_MASK;
+action &= ~((iint->flags & (IMA_DONE_MASK ^ IMA_MEASURED)) >> 1);
+
+/* If target pcr is already measured, unset IMA_MEASURE action */
+if ((action & IMA_MEASURE) && (iint->measured_pcrs & (0x1 << pcr)))
+	action ^= IMA_MEASURE;
+```
+
+把 DONE 位右移一位再取反，就得到“尚未完成的动作”；`measured_pcrs` 按 PCR 记录，因此同一文件可以分别度量到不同 PCR 各一次。
+
+**文件变化检测。** `ima_detect_file_change()`（`ima_main.c:188`）优先用 `vfs_getattr_nosec()` 取 `STATX_CHANGE_COOKIE`，不支持时退回 `i_version`，两者都没有则保守地认为文件已变化。写侧由 `ima_file_free()`（`file_free` hook，`__fput()` 时调用）→ `ima_check_last_writer()`：最后一个写者关闭文件（`i_writecount == 1`）时，若文件有变化就清掉 `IMA_DONE_MASK` 与 `measured_pcrs`，并在 `IMA_UPDATE_XATTR` 置位时调用 `ima_update_xattr()` 重写 `security.ima` 哈希，保证下一次读取重新评估新内容。
+
+**其它边界行为**：
+
+| 场景 | 行为 |
+|------|------|
+| `IMA_FILE_APPRAISE` 规则 | 把 `func` 归一为 `FILE_CHECK`，共用文件状态缓存 |
+| `SB_I_IMA_UNVERIFIABLE_SIGNATURE` 文件系统 | 除非可信挂载且策略未要求 `IMA_FAIL_UNVERIFIABLE_SIGS`，否则清 DONE 位强制重评 |
+| `READING_MODULE_COMPRESSED` | 压缩模块的评估推迟到解压后的 `READING_MODULE` 阶段 |
+| `allowed_algos` 不匹配 | 返回 `-EACCES` 并审计 `denied-hash-algorithm` |
+| `O_DIRECT` + `IMA_PERMIT_DIRECTIO` | 清零错误码，允许直接 I/O 绕过哈希失败 |
+| 写打开已签名文件（`MAY_WRITE` + `IMA_DIGSIG`） | 直接 `-EACCES`：签名文件不允许被写 |
+| `must_appraise` 且 `IMA_APPRAISE_ENFORCE` | 最终统一返回 `-EACCES`；否则返回 0 只记录 |
+
 ### 4.3 测量日志与 TPM
 
 `ima_store_measurement()` → `ima_alloc_init_template()`（按 `template_desc` 逐字段填充）→ `ima_add_template_entry()`（`ima_queue.c:242`）：
@@ -185,6 +248,43 @@ static int process_measurement(struct file *file, const struct cred *cred,
 - 测量日志可通过 `securityfs` 读取：`/sys/kernel/security/ima/ascii_runtime_measurements`、`binary_runtime_measurements`、`runtime_measurements_count`、`violations`（`ima_fs.c:773` 的 `ima_fs_init()`）。
 
 启动时 `init_ima()`（`ima_init.c`）依次：`integrity_init_keyring(INTEGRITY_KEYRING_IMA)` → `ima_init_crypto()` → `ima_init_template()` → `ima_init_digests()` → `ima_init_htable()` → `ima_add_boot_aggregate()`（boot aggregate 必须作为第一条记录，聚合 TPM 0-7 PCR 或使用 `boot_aggregate` 模板）→ `ima_init_policy()` → `ima_fs_init()`。无 TPM 时打印 `No TPM chip found, activating TPM-bypass!`，度量仍记录但不 extend。
+
+深入 `ima_queue.c` 可以看到，测量日志是**只追加**的（文件头注释明确 “No entry is ever removed or changed during the boot-cycle”），并发模型如下：
+
+- `ima_extend_list_mutex` 保护“追加 + TPM extend”的原子性；TPM 操作可能很慢，所以用 mutex 而非 spinlock；
+- 读侧（securityfs dump、`ima_lookup_digest_entry()`）走 RCU；
+- reboot notifier `ima_reboot_notifier()` 在重启前置位 `ima_measurements_suspended`，此后追加返回 `-ENODEV`（审计 cause `measurements_suspended`），避免向已关闭的 TPM 写入；kexec 重启则先度量一条 `kexec_execute` 事件。
+
+**去重键是摘要而不是 inode。** `ima_lookup_digest_entry()`（`ima_queue.c:107`）用 `ima_hash_key()`（取摘要前两字节模 `IMA_MEASURE_HTABLE_SIZE`，`ima.h:348`）定位桶，再 `memcmp()` 比较 `digests[ima_hash_algo_idx]` 与 `pcr`，命中即返回 `-EEXIST`（审计 `hash_exists`）。因此同一文件在不同文件系统上的两份拷贝只度量一次；iint 里的 `(inode, version)` 信息负责判断“是否需要重新哈希”，htable 负责“日志里是否已有”。`CONFIG_IMA_DISABLE_HTABLE` 可关闭去重（每次度量都记录），`ima_flush_htable` 启动参数则在清空 staged 列表时一并重建哈希表。
+
+**违例条目使 PCR 失效。** `ima_add_violation()`（`ima_api.c:135`）在日志里存全零摘要，但实际 extend 到 PCR 的是预分配的全 `0xFF` `digests` 数组（`ima_init_digests()`，`ima_queue.c:550`）——验证者无法从日志复现全 FF 的 extend，PCR 即被视为不可信。
+
+**staged 列表管理。** `ima_queue_stage()` 把 `ima_measurements` 整体移入 `ima_measurements_staged`（`list_replace`），`ima_queue_staged_delete_all()` 清空 staged 列表，`ima_queue_delete_partial()` 从当前列表头部裁剪指定条数；三者都拒绝在 suspend 之后操作，保证 kexec dump 可以无锁读取。释放条目时 `ima_queue_delete()` 只释放 `template_data` 而保留 `digests`（仍被 htable 引用），除非同时 flush 哈希表。
+
+### 4.4 哈希计算与多 bank 摘要（`ima_crypto.c`）
+
+IMA 只使用同步 shash 前端（Crypto API 分层见 [04-crypto-keyring.md](04-crypto-keyring.md)）：
+
+```c
+// ima_crypto.c:193 ima_calc_file_hash_tfm() 核心循环
+rbuf = kzalloc(PAGE_SIZE, GFP_KERNEL);
+while (offset < i_size) {
+	rbuf_len = integrity_kernel_read(file, offset, rbuf, PAGE_SIZE);
+	if (rbuf_len < 0) { rc = rbuf_len; break; }
+	if (rbuf_len == 0) { rc = -EINVAL; break; }	/* unexpected EOF */
+	offset += rbuf_len;
+	rc = crypto_shash_update(shash, rbuf, rbuf_len);
+	if (rc) break;
+}
+```
+
+- 默认算法的 tfm（`ima_shash_tfm`）在启动时由 `ima_init_crypto()` 分配；其它算法先查 `ima_algo_array[]`（每个 TPM bank 一个槽位，外加 `ima_extra_slots`），查不到才临时分配、用完释放；
+- `ima_calc_file_hash()` 对 `O_DIRECT` 文件直接返回 `-EINVAL`；对只写打开的文件用 `dentry_open()` 重开一个只读实例来读内容；
+- 缓冲区哈希（`ima_calc_buffer_hash()`，用于模块/固件/kexec cmdline 等）同样按 `PAGE_SIZE` 分块 update。
+
+**模板摘要按 bank 计算。** `ima_calc_field_array_hash()`（`ima_crypto.c:335`）先算 SHA1 摘要（`ima_sha1_idx` 槽位恒存在），再对每个 TPM bank 各算一遍；内核不认识的 bank 算法用 SHA1 摘要填充。非 `ima` 模板的每个字段带 4 字节长度前缀参与哈希（`ima_canonical_fmt` 时为小端）； legacy `ima` 模板的文件名字段则填充到固定 `IMA_EVENT_NAME_LEN_MAX + 1` 长度——这是两种模板格式兼容性差异的来源。
+
+**boot aggregate 的 bank 选择。** `ima_calc_boot_aggregate()` 优先选与默认算法一致的 bank，其次 SHA256，再次 SHA1；`ima_calc_boot_aggregate_tfm()` 对 PCR 0–7 做累积哈希，非 SHA1 bank 还额外计入 PCR 8–9（命令行与内核镜像），避免 SHA1 下 PCR 8/9 用途的歧义。
 
 ## 5. 评估（appraisal）路径
 
@@ -202,6 +302,40 @@ static int process_measurement(struct file *file, const struct cred *cred,
 `ima_appraise=` 解析在 `ima_appraise.c:29` 附近（`core_param(ima_appraise, ...)`），需要 `CONFIG_IMA_APPRAISE_BOOTPARAM`。模式位定义在 `ima.h:471`：`IMA_APPRAISE_ENFORCE 0x01`、`FIX 0x02`、`LOG 0x04`、`MODULES 0x08`、`FIRMWARE 0x10`、`POLICY 0x20`、`KEXEC 0x40`。
 
 xattr 写入路径由 `ima_inode_setxattr()`/`ima_inode_removexattr()` 守门：非特权用户不能随意写 `security.ima`；`security_inode_init_security` 期间由 `ima_inode_init_security()` 生成初始哈希。
+
+### 5.1 xattr 类型推断与旧格式兼容
+
+`ima_get_hash_algo()`（`ima_appraise.c:184`）从 xattr 本身推断哈希算法，保证“验签用的算法与签名时一致”：
+
+| xattr 类型 | 推断规则 |
+|-----------|----------|
+| `IMA_XATTR_DIGEST_NG` | `data[0]` 即算法 ID |
+| `IMA_XATTR_DIGEST` | 长度 21：末 4 字节为零 → MD5，否则 SHA1；长度 17 → MD5（历史遗留） |
+| `EVM_IMA_XATTR_DIGSIG` | `signature_v2_hdr.hash_algo`（版本须为 2 或 3） |
+| `IMA_VERITY_DIGSIG` | `signature_v2_hdr.hash_algo`（版本须为 3） |
+
+`xattr_verify()`（`ima_appraise.c:250`）的边界检查值得留意——源码注释明确说明用加法而非减法，防止过短的 `xattr_len` 在无符号运算下回绕绕过检查：
+
+```c
+if (xattr_len >= (int)sizeof(xattr_value->type) + hash_start +
+		(int)iint->ima_hash->length)
+	rc = memcmp(&xattr_value->data[hash_start],
+		    iint->ima_hash->digest,
+		    iint->ima_hash->length);
+else
+	rc = -EINVAL;
+```
+
+**新文件豁免**：无 xattr 且 `FMODE_CREATED`/`IMA_NEW_FILE` 置位时，若不要求签名（或文件长度为 0），状态直接给 `INTEGRITY_PASS`——否则每个新建文件都会评估失败。`bprm_is_check` 为真（`AT_EXECVE_CHECK` 场景）时审计记录类型改为 `AUDIT_INTEGRITY_USERSPACE`，区分“内核强制”与“用户态解释器自查”。
+
+### 5.2 写保护与算法白名单
+
+`ima_protect_xattr()`（`ima_appraise.c:662`）要求写 `security.ima` 必须 `CAP_SYS_ADMIN`；`ima_inode_setxattr()` 还会调用 `validate_hash_algo()`：
+
+- 若策略含 `SETXATTR_CHECK` 规则（`ima_setxattr_allowed_hash_algorithms` 原子变量非零），只允许白名单内算法，违者审计 `denied-hash-algorithm`；
+- 否则允许默认算法，或 `crypto_has_alg()` 确认内核内置实现的任意算法；违者审计 `unavailable-hash-algorithm`。
+
+这防止用户写入一个内核无法计算的算法的 `security.ima`，导致后续评估永远卡在 `UNKNOWN`。fix 模式下 `ima_fix_xattr()`（`ima_appraise.c:88`）拒绝在只读/immutable 文件上写入，按算法选择 `IMA_XATTR_DIGEST`（SHA1/MD5）或 `IMA_XATTR_DIGEST_NG`，且绝不覆盖已有签名。`ima_inode_post_setattr()` 在元数据变化（chmod/chown 等）时置 `IMA_CHANGE_ATTR`，使下一次 `process_measurement()` 清掉评估缓存重新评估。
 
 ## 6. IMA 策略
 
@@ -221,6 +355,39 @@ measure func=KEY_CHECK keyrings=.ima
 内置策略由 `ima_policy.c` 的 `dont_measure_rules[]`、`original_measurement_rules[]`、`default_measurement_rules[]`、`default_appraise_rules[]` 等数组组成，通过 `ima_tcb`、`ima_appraise_tcb`、`ima_policy=tcb|appraise_tcb|secure_boot|...` 选择（`__setup` 在 `ima_policy.c:279/308/315`）。策略一旦写入并 `ima_update_policy()` 即锁定，可用 `ima_delete_rules()` 在测试场景清除。
 
 审计由 `integrity_audit_msg()`（`integrity_audit.c`）输出 `audit: type=1800 ... cause=...` 形式记录，包含 pid、comm、name、dev、ino、res、cause 等字段。
+
+### 6.1 匹配算法：RCU + 动作掩码
+
+`ima_match_policy()`（`ima_policy.c:752`）在 RCU 读锁下遍历规则链表（策略读远多于写，是经典 RCU 场景）。核心是 `actmask` 技巧：
+
+```c
+int action = 0, actmask = flags | (flags << 1);
+...
+if (!(entry->action & actmask))
+	continue;
+...
+if (entry->action & IMA_DO_MASK)
+	actmask &= ~(entry->action | entry->action << 1);
+else
+	actmask &= ~(entry->action | entry->action >> 1);
+...
+if (!actmask)
+	break;
+```
+
+`actmask` 同时覆盖“要做”与“已做”位：一旦某条 `measure` 规则命中，MEASURE 与 MEASURED 一起从掩码中移除，后面的 `dont_measure` 规则就无法再推翻它——**首条匹配规则定案**，所有请求的动作都有结论后提前结束遍历。`dont_*` 规则则清除对应动作位。appraise 命中时 `get_subaction()` 再细分出 `IMA_FILE_APPRAISE`/`IMA_BPRM_APPRAISE` 等按 hook 的子动作，并清掉 `IMA_HASH`。
+
+`ima_update_policy_flags()`（`ima_policy.c:824`）在策略更新后把所有规则的动作汇总成全局 `ima_policy_flag`——这正是各 hook 入口“策略未启用零开销”快速路径的来源；`SETXATTR_CHECK` 规则不参与汇总，用 `atomic_cmpxchg` 写入以保证只有一条生效。
+
+### 6.2 策略加载协议
+
+`policy` 文件的 open/write/close 三部曲（`ima_fs.c`）实现了“单写者、关闭时提交”的协议：
+
+1. `ima_open_policy()`（`ima_fs.c:706`）：`test_and_set_bit(IMA_FS_BUSY)` 保证同一时刻只有一个写者，否则 `-EBUSY`；读需要 `CONFIG_IMA_READ_POLICY` 且 `CAP_SYS_ADMIN`；
+2. `ima_write_policy()`（`ima_fs.c:566`）：拒绝非零偏移（不允许部分写），单次写入上限 `PAGE_SIZE - 1`；内容以 `/` 开头则视为路径，走 `ima_read_policy()` 加载策略文件（该文件本身可被 IMA 评估）；若启用 `IMA_APPRAISE_POLICY`，直接写规则会被拒绝，必须使用签名策略文件；否则 `ima_parse_add_rule()` 逐条解析；
+3. `ima_release_policy()`（`ima_fs.c:731`）：关闭时 `ima_check_policy()` 校验，成功则 `ima_update_policy()` 切换 `ima_rules` 指针（RCU 发布）并更新 `ima_policy_flag`；失败则 `ima_delete_rules()` 回滚本次写入的规则。未启用 `CONFIG_IMA_WRITE_POLICY`/`CONFIG_IMA_READ_POLICY` 时，策略文件在成功加载后**被直接移除**——策略就此锁定一个启动周期。
+
+这解释了为什么部署时通常用一次 `cat policy > /sys/kernel/security/ima/policy` 写完所有规则再关闭文件：提交点是 `release` 而不是 `write`。
 
 ## 7. EVM
 
@@ -270,6 +437,37 @@ static enum integrity_status evm_verify_hmac(struct dentry *dentry,
 - `evm_inode_init_security()`（`evm_main.c:1064`）：新建 inode 时，若本次初始化会写入受保护 xattr，则用 `evm_init_hmac()` 计算 HMAC，并通过 `lsm_get_xattr_slot()` 在 `xattrs[]` 里追加一个名为 `XATTR_EVM_SUFFIX`（即 `security.evm`）的槽位，由 VFS 一并写入。
 - `evm_inode_setattr()` / `evm_inode_setxattr()` / `evm_inode_removexattr()` 是 LSM hook 实现；`evm_secfs.c` 提供密钥加载接口；`evm_posix_acl.c` 处理 POSIX ACL 相关 xattr。
 
+`evm_protect_xattr()`（`evm_main.c:520`）的判定顺序值得展开：写 `security.evm` 本身要求 `CAP_SYS_ADMIN` 且文件系统支持 HMAC；写其它受保护 xattr 前先 `evm_verify_current_integrity()` 校验现状，`NOXATTRS`（新文件）有 tmpfs/sysfs 与 `EVM_NEW_FILE` 豁免；`FAIL_IMMUTABLE` 的文件反而允许写其它 xattr（portable 签名永不更新，拦截无意义）；`PASS_IMMUTABLE` 则要求本次写入不改变受保护值（`evm_xattr_change()` 逐字节比较）。EVM 自己的 inode blob 是内嵌的 `struct evm_iint_cache`（`evm.h:40`，含 `evm_status:4` 与 `metadata_inode` 属性），与 IMA 的指针式 blob 不同，`evm_blob_sizes.lbs_xattr_count = 1` 为 `security.evm` 预留一个 xattr 槽位。
+
+### 7.5 HMAC 输入构成与密钥来源
+
+`evm_calc_hmac_or_hash()`（`evm_crypto.c:227`）是 HMAC 与签名摘要的共用实现：
+
+1. 不支持 xattr 或 `s_user_ns != init_user_ns` 的文件系统直接返回 `-EOPNOTSUPP`（fuse 等用户命名空间挂载不参与 EVM）；
+2. 遍历 `evm_config_xattrnames`，把每个受保护 xattr 的值按列表顺序喂入哈希；若调用者正在更新某个 xattr，直接用传入的**新值**而不是磁盘上的旧值——这就是“先算后写”的实现方式；
+3. 本地计算的 HMAC/签名跳过 `enabled=false` 的 xattr；portable 签名则包含全部项，且**必须**包含 IMA 哈希（否则 `-EPERM`）；
+4. 最后 `hmac_add_misc()` 混入 inode 元数据。
+
+`hmac_add_misc()`（`evm_crypto.c:143`）的输入结构决定了 HMAC 的“绑定范围”：
+
+```c
+struct h_misc {
+	unsigned long ino;      /* inode 号 */
+	__u32 generation;       /* inode generation */
+	uid_t uid;
+	gid_t gid;
+	umode_t mode;
+} hmac_misc;
+```
+
+- portable 签名不含 `ino`/`generation`（否则无法跨文件系统迁移），也不含 fs UUID；
+- uid/gid 按 **init user namespace** 编码而非文件系统自己的 user namespace——源码注释解释了防范的攻击：先在非特权 fuse 挂载里写好 xattr，再诱使系统下次启动正式挂载该文件系统并因“一切都签了名”而信任它；
+- `EVM_ATTR_FSUUID` 启用时额外混入 `s_uuid`，把 HMAC 绑定到具体文件系统实例，防止整盘克隆。
+
+**密钥来源**：HMAC 密钥是 128 字节静态缓冲 `evmkey`（`evm_crypto.c:27`）。`evm_init_key()`（`evm_crypto.c:439`）通过 `request_key(&key_type_encrypted, "evm-key", ...)` 取 encrypted 密钥，用其解密明文调用 `evm_set_key()`，随后**立即清零**密钥 payload 中的明文。encrypted 密钥本身由 TPM/trusted key 保护（见 [04-crypto-keyring.md](04-crypto-keyring.md)），用户态始终看不到 HMAC 密钥。`init_desc()` 惰性分配 `hmac(sha1)` tfm 并 `crypto_shash_setkey()`；密钥未加载时返回 `-ENOKEY` 并只打印一次 `HMAC key is not set`。
+
+**不可变保护**：`evm_update_evmxattr()` 先查 `evm_is_immutable()`——portable 签名一旦验证通过（`EVM_IMMUTABLE_DIGSIG`），任何重写 `security.evm` 的尝试都返回 `-EPERM`。
+
 ## 8. 数字签名与密钥环
 
 `security/integrity/digsig.c`：
@@ -303,6 +501,38 @@ case 3: return asymmetric_verify_v3(keyring, sig, siglen, digest, digestlen, alg
 `sig[1]` 是签名格式版本：v1 为裸 RSA 签名（xattr 类型字节已剥离），v2 为“文件数据哈希 + 签名”，v3 使用 `struct ima_file_id` 区分文件/缓冲区场景。`digsig_asymmetric.c` 通过 `asymmetric_verify()` 调用 `crypto/` 的 `public_key_verify_signature()`。
 
 密钥来源：`.platform` 通常来自固件（UEFI db / device tree `/etc/keys`），`.machine` 来自 `CONFIG_SYSTEM_TRUSTED_KEYS`，`.evm`/`.ima` 在 initramfs 阶段由用户态装载。没有对应密钥时验签返回 `-ENOKEY`，评估降级为 `INTEGRITY_UNKNOWN`。
+
+### 8.1 验签实现（`digsig_asymmetric.c`）
+
+`asymmetric_verify()`（`digsig_asymmetric.c:135`）按签名头里的 `hdr->keyid`（`integrity.h:97` 注释：IMA 密钥标识符，不绑定 X509/PGP 格式）在密钥环中查找非对称密钥（`request_asymmetric_key()`），再由 `asymmetric_verify_common()` 填写 `struct public_key_signature` 并调用 `verify_signature()`：
+
+```c
+pks.hash_algo = hash_algo_name[hdr->hash_algo];
+pks.pkey_algo = pk->pkey_algo;
+if (!strcmp(pk->pkey_algo, "rsa"))
+	pks.encoding = "pkcs1";
+else if (!strncmp(pk->pkey_algo, "ecdsa-", 6))
+	pks.encoding = "x962";
+else if (!strcmp(pk->pkey_algo, "ecrdsa"))
+	pks.encoding = "raw";
+...
+ret = verify_signature(key, &pks);
+```
+
+即 RSA 用 PKCS#1 v1.5 编码、ECDSA 用 X9.62、GOST ecrdsa 用 raw 编码；真正的密码学运算委托给 crypto API（见 [04-crypto-keyring.md](04-crypto-keyring.md)）。
+
+**sigv3 与后量子签名**。v3 不再直接对文件摘要签名，而是对 `struct ima_file_id`（类型 + 算法 + 文件摘要）的摘要签名（`calc_file_id_hash()`，`digsig_asymmetric.c:175`），消除“文件数据签名”与“缓冲区签名”之间的歧义。对 ML-DSA（`pkey_algo` 以 `mldsa` 开头），`asymmetric_verify_v3()` 走 `asymmetric_verify_v3_hashless()`：`pks.hash_algo = "none"`，以 pure 模式直接对 `ima_file_id` 结构验签——这是本树中已经存在的后量子签名路径。
+
+### 8.2 密钥环创建与链接限制
+
+`integrity_init_keyring()`（`digsig.c:127`）不是简单的 `keyring_alloc`：
+
+- `.platform` 与 `.machine`（未启用 `CONFIG_INTEGRITY_CA_MACHINE_KEYRING` 时）不设链接限制；
+- 启用 `CONFIG_INTEGRITY_TRUSTED_KEYRING` 时，`.ima` 使用 `restrict_link_by_digsig_builtin`（启用 `CONFIG_IMA_KEYRINGS_PERMIT_SIGNED_BY_BUILTIN_OR_SECONDARY` 时为 `_and_secondary`）——新密钥必须由内置可信密钥签名；`.machine` 使用 `restrict_link_by_ca`，只允许 CA 证书；
+- 除 `.machine` 外的密钥环带 `KEY_USR_WRITE`，允许用户态添加密钥；`.machine` 只能在启动期由 UEFI MOK 变量填充；
+- `.platform` 创建后调用 `set_platform_trusted_keys()` 标记为平台信任锚；`.ima` 创建后 `load_module_cert()` 载入模块签名证书。
+
+`integrity_load_x509()` 用 `kernel_read_file_from_path(..., READING_X509_CERTIFICATE)` 读证书文件，再 `key_create_or_update(..., "asymmetric", ...)` 加入指定密钥环——这条路径本身也受 IMA 的 `kernel_read_file` hook 度量，形成“完整性子系统度量自身输入”的自洽闭环。
 
 ## 9. 启动与调用链
 
@@ -344,12 +574,61 @@ execve → bprm_check_security()
 - 由于没有 IMA/EVM，`security.ima`、`security.evm` xattr 不会被内核读取或写入；用户态设置这些 xattr 只会作为普通 security xattr 存放（仍受 `CAP_SYS_ADMIN` 等限制），不具备完整性语义。
 - 启用顺序上注意：IMA/EVM 是 `LSM_ORDER_LAST`，不受 `CONFIG_LSM` 列表约束；但 EVM 的初始化依赖密钥环，实际部署通常在 initramfs 中用 `evm_utils`/`ima-evm-utils` 装载 `.evm`/`.ima` 密钥后再开启策略。
 
+## 11. 模块附加签名（modsig）与黑名单
+
+内核模块可以在文件末尾携带 PKCS#7 附加签名（modsig），IMA 无需 `security.ima` xattr 即可评估它——这对不支持 xattr 的文件系统尤其有用。实现在 `ima_modsig.c`：
+
+```
+模块文件布局：
+[ 模块本体 ][ PKCS#7 签名 ][ struct module_signature ][ "~Module signature appended~\n" ]
+```
+
+- `ima_read_modsig()`（`ima_modsig.c:40`）先比对缓冲区末尾的魔数（`MODULE_SIGNATURE_MARKER`，`include/uapi/linux/module_signature.h:15`），再 `mod_check_sig()` 校验头部，`pkcs7_parse_message()` 解析签名；
+- `ima_collect_modsig()` 用 `pkcs7_supply_detached_data()` 把**去掉附加签名**的模块本体喂给 PKCS#7 代码，`pkcs7_get_digest()` 算出验签用摘要——注意它与 IMA 对整个文件（含签名字节）算的哈希不同；
+- `ima_modsig_verify()` 调 `verify_pkcs7_message_sig(..., VERIFYING_MODULE_SIGNATURE, ...)`，复用模块签名验证路径与密钥环限制；
+- 模板 `ima-modsig`（`d-ng|n-ng|sig|d-modsig|modsig`，`ima_template.c:26`）同时记录两种摘要与原始 PKCS#7；`process_measurement()` 对已度量文件在模板含 modsig 字段时会强制追加一条测量条目。
+
+黑名单检查 `ima_check_blacklist()`（`ima_appraise.c:428`）在评估之前执行：对带 `appraise_flag=check_blacklist` 的规则，用 modsig 摘要或文件摘要查 `is_binary_blacklisted()`（`certs/blacklist.c:247`，黑名单来自 `.blacklist` 密钥环与 UEFI dbx）；命中返回 `-EPERM`，并按策略把 `blacklisted-hash` 作为缓冲区度量入日志。
+
+## 12. kexec 迁移、早期密钥与日志管理
+
+### 12.1 测量日志跨 kexec 携带
+
+`CONFIG_IMA_KEXEC` 启用测量日志迁移（`ima_kexec.c`）：
+
+```
+kexec 加载路径：
+  ima_add_kexec_buffer(image)          ima_kexec.c:156
+    ├─ 跳过 KEXEC_TYPE_CRASH（crash kernel 不携带）
+    ├─ 按 binary_runtime_size + 预留内存计算段大小
+    └─ kexec_add_buffer()              把日志挂进 kexec 镜像
+
+kexec 执行时：
+  ima_update_kexec_buffer()            reboot notifier，优先级 INT_MIN
+    └─ ima_dump_measurement_list()     重新序列化并 memcpy 进已映射的段
+
+新内核启动：
+  ima_load_kexec_buffer()              ima_kexec.c:292
+    └─ ima_restore_measurement_list()  逐条恢复（不 extend TPM）
+```
+
+序列化格式以 `struct ima_kexec_hdr`（版本/条数/总大小）开头，后接每条的 pcr、SHA1 模板摘要、模板名与字段数据。`binary_runtime_size[]` 在追加时增量维护序列化尺寸，避免 kexec 时全量遍历；段大小超过 `totalram_pages() / 2` 会拒绝携带。恢复的条目经 `ima_restore_measurement_entry()` 加入日志但**不**进 htable、**不** extend TPM——新内核的 PCR 从固件度量重新开始，验证者靠 `kexec_load`/`kexec_execute` 事件区分新旧日志。`ima_kexec_post_load()` 用 `kimage_map_segment()` 映射源页，使执行阶段还能更新缓冲。
+
+### 12.2 早期启动密钥的延后度量
+
+`CONFIG_IMA_QUEUE_EARLY_BOOT_KEYS` 解决“密钥加载早于 IMA 策略就绪”的时序问题：`ima_queue_key()`（`ima_queue_keys.c:104`）把 `key_post_create_or_update` hook 捕获的密钥 payload 暂存队列；`ima_init_key_queue()` 启动一个 delayed work（`ima_keys_handler`），超时仍未处理则直接释放；策略就绪后 `ima_process_queued_keys()` 逐条度量并取消定时器。这保证 `.ima`/`.evm` 等早期密钥不会漏测。
+
+### 12.3 securityfs 接口细节
+
+`ima_fs_init()`（`ima_fs.c:773`）按 **TPM bank 算法**各创建一对读文件：`ascii_runtime_measurements_<algo>` 与 `binary_runtime_measurements_<algo>`（未知算法命名为 `tpm_alg_<alg_id>`），并提供无后缀兼容符号链接指向 SHA1 版本；staged 列表有独立的 `_staged` 文件与符号链接。`runtime_measurements_count` 与 `violations` 输出原子计数器。ascii 格式为 `pcr 模板摘要 模板名 字段数据...`，其中模板摘要是对应 bank 的摘要，验证者据此重放 PCR extend 序列并与 TPM quote 比对。
+
 ## 关键文件清单
 
 | 路径 | 说明 |
 |------|------|
 | `security/integrity/integrity.h` | `evm_ima_xattr_type`、`evm_ima_xattr_data`、`integrity_status`（实际在 `include/linux/integrity.h`）、xattr 结构 |
 | `security/integrity/iint.c` | `integrity_inode_get/free` 通用 iint 缓存 |
+| `security/integrity/ima/ima_iint.c` | iint slab 分配/释放、`S_IMA` 标志、overlayfs lockdep 标注 |
 | `security/integrity/digsig.c` | `integrity_init_keyring()`、`integrity_digsig_verify()`、完整性密钥环定义 |
 | `security/integrity/digsig_asymmetric.c` | `digsig_verify()`、`asymmetric_verify()`、`asymmetric_verify_v3()` |
 | `security/integrity/integrity_audit.c` | `integrity_audit_msg()` 统一审计格式 |

@@ -2491,6 +2491,7 @@ struct vm_struct *__get_vm_area_node(unsigned long size,
     va = alloc_vmap_area(size, align, start, end, node, gfp_mask, 0, area);
     // alloc_vmap_area 在 vmap 地址空间红黑树中查找
 
+```
 ---
 
 ## 6. VMA 管理
@@ -3694,4 +3695,3 @@ dma_capable(dev, dma_addr, size, true)
 | **IOMMU 绕过** | 直接映射时跳过 IOMMU | 减少页表操作延迟 |
 | **缓存同步合并** | 批量刷 Cache 行 | 减少单次刷 Cache 的开销 |
 | **P2PDMA 绕过** | PCIe P2P 直接使用总线地址 | 减少主机内存的 DMA 映射开销 |
-```

@@ -97,6 +97,55 @@ SID 表 `struct sidtab`（`security/selinux/ss/sidtab.h`）是分层哈希表：
 
 `avc_has_perm_noaudit()` 未命中缓存时调用 `security_compute_av()`：查 `avtab` 得允许集合，再跑 `constraint`（TE 约束）、`conditional`（布尔表达式）和 MLS 级别检查，合并成 `av_decision`。策略变更（`avc_ss_reset()`）会递增 seqno，使以上缓存全部失效。
 
+与 open 路径的配合：`selinux_file_open()`（`hooks.c:4254`）在打开时保存 inode 标签与策略序列号，供后续 `selinux_file_permission` 判断是否需要重新验证：
+
+```c
+fsec = selinux_file(file);
+isec = inode_security(file_inode(file));
+fsec->isid = isec->sid;
+fsec->pseqno = avc_policy_seqno();
+/*
+ * Since the inode label or policy seqno may have changed
+ * between the selinux_inode_permission check and the saving
+ * of state above, recheck that access is still permitted.
+ * ...
+ * This check is not redundant - do not remove.
+ */
+return file_path_has_perm(file->f_cred, file, open_file_to_av(file));
+```
+
+注释特意强调这次复查“不是冗余的，不要删除”：`inode_permission` 检查与保存状态之间标签/策略可能已变化，若不复查，已打开的 fd 可能永远不再对新标签/新策略重新验证。这正是 [01-lsm.md](01-lsm.md) §11.1 中 `security_file_open` 职责的 SELinux 实现。
+
+`selinux_inode_permission()`（`hooks.c:3243`）中两级缓存的分支代码：
+
+```c
+tsec = selinux_task(current);
+if (task_avdcache_permnoaudit(tsec, sid))
+	return 0;
+
+isec = inode_security_rcu(inode, requested & MAY_NOT_BLOCK);
+if (IS_ERR(isec))
+	return PTR_ERR(isec);
+perms = file_mask_to_av(inode->i_mode, mask);
+
+rc = task_avdcache_search(tsec, isec, &avdc);
+if (likely(!rc)) {
+	/* Cache hit. */
+	avdp = &avdc->avd;
+	denied = perms & ~avdp->allowed;
+	if (unlikely(denied) && enforcing_enabled() &&
+		!(avdp->flags & AVD_FLAGS_PERMISSIVE))
+		rc = -EACCES;
+} else {
+	/* Cache miss. */
+	rc = avc_has_perm_noaudit(sid, isec->sid, isec->sclass,
+				  perms, 0, avdp);
+	task_avdcache_update(tsec, isec, avdp);
+}
+```
+
+任务级 avdcache 命中时完全绕过全局 AVC（连锁都不取）；未命中才走 `avc_has_perm_noaudit()` 并把结果回填任务缓存。`inode_security_rcu()` 按 `MAY_NOT_BLOCK` 决定走 RCU 快路径还是可睡眠的初始化路径，对应 VFS 路径遍历的 rcu-walk/ref-walk 两种模式。
+
 ### 2.4 策略加载与审计
 
 - 策略加载：`security_load_policy(void *data, size_t len, ...)`（`ss/services.c:2309`），先 `policydb_read()` 解析，再 `sidtab` 转换、`avtab` 替换，最后广播 `avc_ss_reset()`；`security/selinux/selinuxfs.c` 提供 `/sys/fs/selinux/` 接口（`load`、`enforce`、`context`、`class`、`bool`、`avc/cache_stats` 等）。
@@ -108,6 +157,91 @@ SID 表 `struct sidtab`（`security/selinux/ss/sidtab.h`）是分层哈希表：
 ### 2.5 初始化
 
 `DEFINE_LSM(selinux)` 带 `LSM_FLAG_LEGACY_MAJOR | LSM_FLAG_EXCLUSIVE` 与 `enabled = &selinux_enabled_boot`；`selinux_init()`（`hooks.c:7845`）调用 `security_add_hooks(selinux_hooks, ...)`，`enforcing_set(selinux_enforcing_boot)` 决定初始 enforcing；`initcall_device = selinux_initcall` 在设备初始化阶段完成策略相关的收尾。没有加载策略前 `selinux_initialized()` 为假，大多数 hook 直接放行（避免启动早期死锁）。
+
+### 2.6 AVC 缓存内部结构
+
+`security/selinux/avc.c:48-78` 的三层结构：
+
+```c
+struct avc_entry {
+	u32			ssid;
+	u32			tsid;
+	u16			tclass;
+	struct av_decision	avd;
+	struct avc_xperms_node	*xp_node;
+};
+
+struct avc_node {
+	struct avc_entry	ae;
+	struct hlist_node	list; /* anchored in avc_cache->slots[i] */
+	struct rcu_head		rhead;
+};
+
+struct avc_cache {
+	struct hlist_head	slots[AVC_CACHE_SLOTS];
+	spinlock_t		slots_lock[AVC_CACHE_SLOTS];
+	atomic_t		lru_hint;
+	atomic_t		active_nodes;
+	u32			latest_notif;
+};
+```
+
+- 槽位数 `AVC_CACHE_SLOTS = 1 << CONFIG_SECURITY_SELINUX_AVC_HASH_BITS`（`avc.c:38`），每槽独立自旋锁；读侧走 RCU（`hlist_for_each_entry_rcu`），写侧 `spin_lock_irqsave`；
+- 哈希函数 `avc_hash()`（`avc.c:126`）对 `(ssid, tsid, tclass)` 做 `av_hash`；
+- 节点从专用 slab `avc_node_cachep` 分配（`avc_init()`，`avc.c:136`，`SLAB_PANIC`），分配用 `GFP_NOWAIT`——判定路径可能处于原子上下文；
+- 容量控制：`avc_alloc_node()`（`avc.c:494`）发现 `active_nodes` 超过 `avc_cache_threshold`（默认等于槽位数，`AVC_DEF_CACHE_THRESHOLD`，可经 selinuxfs 调整）就调用 `avc_reclaim_node()`（`avc.c:459`）：从 `lru_hint` 原子递增选槽，`spin_trylock` 避免阻塞，每轮最多回收 `AVC_CACHE_RECLAIM=16` 个节点；
+- 扩展权限（ioctl 等）单独挂在 `avc_xperms_node` 上，其 decision 链表通常只有 1-5 项，直接线性查找（`avc.c:174-190` 注释）。
+
+`avc_has_perm_noaudit()`（`avc.c:1145`）的快路径：
+
+```c
+rcu_read_lock();
+node = avc_lookup(ssid, tsid, tclass);
+if (unlikely(!node)) {
+	rcu_read_unlock();
+	return avc_perm_nonode(ssid, tsid, tclass, requested, flags, avd);
+}
+denied = requested & ~node->ae.avd.allowed;
+memcpy(avd, &node->ae.avd, sizeof(*avd));
+rcu_read_unlock();
+if (unlikely(denied))
+	return avc_denied(ssid, tsid, tclass, requested, 0, 0, 0, flags, avd);
+return 0;
+```
+
+未命中时走 `avc_perm_nonode()`（`avc.c:1110`，特意 `noinline` 以节省快路径栈空间）：`avc_compute_av()` 调安全服务器计算并回填缓存。`avc_insert()`（`avc.c:606`）先检查 `avc_latest_notif_update()`（策略已变更则放弃插入），再在槽锁内查重——已有同键节点则 `avc_node_replace()` 原子替换，否则 `hlist_add_head_rcu()`。`avc_has_perm()`（`avc.c:1189`）= noaudit 判定 + `avc_audit()`；把判定与审计分开，是为了让调用者能在持锁时判定、放锁后审计。
+
+### 2.7 策略加载的完整流程
+
+`security_load_policy()`（`ss/services.c:2309`）按以下顺序构建新策略：
+
+1. `kzalloc` 新 `selinux_policy` 与新 `sidtab`；
+2. `policydb_read()` 解析二进制策略 blob；
+3. `selinux_set_mapping()` 建立内核安全类/权限位与策略符号的映射；
+4. `policydb_load_isids()` 加载初始 SID（内核对象使用的固定上下文）；
+5. **首次加载**（`!selinux_initialized()`）直接返回，不需要保留旧状态；
+6. 重载时：`security_preserve_bools()` 保留旧策略中已激活的布尔值；`sidtab_convert()`（`ss/sidtab.c:426`）把旧 SID 表中的上下文逐个转换到新策略的表示（类型/角色/级别可能重编号）；
+7. 成功后由调用者（selinuxfs `sel_write_load`）在 `policy_mutex` 下 RCU 替换 `state->policy`，并 `avc_ss_reset()`（`avc.c:954`）递增 seqno 使全部缓存失效。
+
+错误路径逐级回滚（`err_free_convert_data` → `err_free_isids` → `err_mapping` → `err_policydb` → `err_sidtab` → `err_policy`），任何一步失败都不会影响正在使用的旧策略——这是 SELinux 策略重载可以在线进行的原因。
+
+### 2.8 selinuxfs 接口一览
+
+`security/selinux/selinuxfs.c:1831` 起的 `selinux_files[]` 定义了 `/sys/fs/selinux/` 下的文件（摘录）：
+
+| 文件 | 权限 | 用途 |
+|------|------|------|
+| `load` | 0600 | 写入二进制策略（`sel_write_load`，538 行） |
+| `enforce` | 0644 | 读/写 enforcing 状态（`sel_write_enforce`，132 行） |
+| `context`/`access`/`create`/`relabel`/`member` | 0666 | 用户态事务式查询：上下文转换、权限判定、创建标签计算等 |
+| `policyvers` | 0444 | 内核支持的最高策略版本 |
+| `commit_pending_bools` | 0200 | 提交布尔值修改并使 AVC 失效 |
+| `checkreqprot` | 0644 | mmap/mprotect 是否按请求 prot 检查 |
+| `reject_unknown`/`deny_unknown` | 0444 | 未知类/权限的处理策略 |
+| `policy` | 0444 | 读回当前二进制策略 |
+| `validatetrans` | 0222 | 校验上下文转换合法性 |
+
+另有 `avc/` 子目录（`selinuxfs.c:1886`）提供缓存统计与阈值调整，`booleans/`（1863 行）、`class/`（1916 行）、`initial_contexts/`（1906 行）、`policy_capabilities/`（1923 行）等目录。用户态 `libselinux` 的 `security_load_policy`、`security_getenforce` 等 API 最终都落到这些文件。
 
 ---
 
@@ -190,6 +324,65 @@ struct aa_label {
 - **初始化**：`DEFINE_LSM(apparmor)` 为 `LSM_FLAG_LEGACY_MAJOR | LSM_FLAG_EXCLUSIVE`，`init = apparmor_init`、`initcall_fs = aa_create_aafs`（建立 `securityfs` 下的 apparmor 目录），可选 `initcall_late = init_profile_hash`。
 - **挂接范围**：80 个 hook，覆盖文件、挂载、网络、信号、ptrace、capability、`usr::`、`change_profile` 等。
 
+### 3.5 DFA 匹配与策略解包细节
+
+`aa_dfa_match()`（`match.c:515`）是压缩 DFA 的逐字符驱动：
+
+```c
+aa_state_t aa_dfa_match(struct aa_dfa *dfa, aa_state_t start, const char *str)
+{
+	u32 *def = DEFAULT_TABLE(dfa);
+	u32 *base = BASE_TABLE(dfa);
+	u32 *next = NEXT_TABLE(dfa);
+	u32 *check = CHECK_TABLE(dfa);
+	aa_state_t state = start;
+
+	if (state == DFA_NOMATCH)
+		return DFA_NOMATCH;
+	if (dfa->tables[YYTD_ID_EC]) {
+		u8 *equiv = EQUIV_TABLE(dfa);
+		while (*str) {
+			u8 c = equiv[(u8) *str];
+			match_char(state, def, base, next, check, c);
+			str++;
+		}
+	} else {
+		while (*str) {
+			match_char(state, def, base, next, check, (u8) *str);
+			str++;
+		}
+	}
+	return state;
+}
+```
+
+四张表（default/base/next/check）是双数组压缩 DFA 的变体：`base[state] + c` 给出候选位置，`check` 验证归属，失配时走 `def[state]` 默认转移。若存在等价类表（`YYTD_ID_EC`），先把输入字节映射到等价类再转移，大幅压缩表规模。返回的终止状态用于索引 `aa_perms` 表得到允许/拒绝/审计位。
+
+解包侧：`unpack_table()`（`match.c:34`）校验 `table_header` 魔数/版本/大小，`remap_data16_to_data32()`（`match.c:277`）把用户态 16 位数据重定位为内核 32 位，`verify_table_headers()`（`match.c:104`）交叉校验各表一致性。profile 级解包在 `policy_unpack.c`：`aa_unpack_array()`（348 行）、`aa_unpack_str()`（389 行）、`aa_unpack_strdup()`（413 行）等原语逐个读取带名字段，`unpack_profile()`（`policy_unpack.c:1114`）组装出 `aa_profile`。替换入口 `aa_replace_profiles()` 实际位于 `policy.c:1169`（由 `apparmorfs.c:505` 的写入路径调用；`.load`/`.replace`/`.remove` 接口在 `apparmorfs.c:2097-2111` 创建，权限 0640），负责命名空间定位、新旧 profile 原子替换与引用计数交接。
+
+### 3.6 label 合并与 profile 栈
+
+`aa_label_merge()`（`label.c:1211`）把两个 label 合并成一个（用于 stack 切换）：
+
+```c
+struct aa_label *aa_label_merge(struct aa_label *a, struct aa_label *b, gfp_t gfp)
+{
+	if (a == b)
+		return aa_get_newest_label(a);
+	...
+	a = aa_get_newest_label_condref(a, &a_needput);
+	b = aa_get_newest_label_condref(b, &b_needput);
+	new = aa_label_alloc(a->size + b->size, NULL, gfp);
+	if (!new)
+		goto out;
+	label = label_merge_insert(new, a, b);
+	label_free_or_put_new(label, new);
+	...
+}
+```
+
+要点：先取两侧最新版本（profile 可能被替换，旧 label 会 stale）；按 `a->size + b->size` 预分配；`label_merge_insert()` 归并去重后插入全局 label 索引，若已存在等价 label 则复用并释放新分配。遍历时 `fn_for_each_confined()`（`include/label.h:232`）通过 `aa_label_next_confined()`（`label.c:487`）跳过 unconfined profile，只对栈中真正受限的 profile 逐一判定，任一拒绝即整体拒绝。
+
 ---
 
 ## 4. Smack
@@ -236,6 +429,46 @@ blob 布局（`smack_blob_sizes`）：`lbs_cred = sizeof(struct task_smack)`、`
 ### 4.4 初始化
 
 `DEFINE_LSM(smack)`：`LSM_FLAG_LEGACY_MAJOR | LSM_FLAG_EXCLUSIVE`，`init = smack_init`、`initcall_device = smack_initcall`。`smack_init()` 初始化 `smack_known_list`、`smack_rule_cache`，并把当前任务标签设为 `smack_known_floor`（内核任务通常为 `^`），同时创建 `smackfs`。122 个 hook 覆盖 inode/file/sb/task/socket/ipc/xattr 全路径。
+
+### 4.5 `smk_access()` 源码逐段
+
+`smack_access.c:117` 的判定顺序与 §4.2 描述一一对应，关键片段：
+
+```c
+if (subject == &smack_known_star) {
+	rc = -EACCES;
+	goto out_audit;
+}
+if (object == &smack_known_web || subject == &smack_known_web)
+	goto out_audit;
+if (object == &smack_known_star)
+	goto out_audit;
+if (subject->smk_known == object->smk_known)
+	goto out_audit;
+if ((request & MAY_ANYREAD) == request ||
+    (request & MAY_LOCK) == request) {
+	if (object == &smack_known_floor)
+		goto out_audit;
+	if (subject == &smack_known_hat)
+		goto out_audit;
+}
+rcu_read_lock();
+may = smk_access_entry(subject->smk_known, object->smk_known,
+		       &subject->smk_rules);
+rcu_read_unlock();
+if (may <= 0 || (request & may) != request) {
+	rc = -EACCES;
+	goto out_audit;
+}
+```
+
+实现细节：
+
+1. 同标签比较用**指针相等**（`subject->smk_known == object->smk_known`）而非字符串比较——标签字符串全局驻留在 `smack_known_list`，同一标签只有一个 `smack_known` 实例，这使快路径极快；
+2. hat/floor 豁免只对“纯读类”（`(request & MAY_ANYREAD) == request`）或 `MAY_LOCK` 请求生效，写请求不享受；
+3. 规则查找在 RCU 读侧进行，`smk_access_entry()`（`smack_access.c:83`）遍历 `subject->smk_rules`；规则写入（smackfs `load2`）走互斥锁 + RCU 发布；
+4. `CONFIG_SECURITY_SMACK_BRINGUP` 下带 `MAY_BRINGUP` 的规则返回正值 `SMACK_BRINGUP_ALLOW`，让 hook 层识别“因 bringup 规则而放行”的访问并额外审计，用于策略调试；
+5. 所有分支统一汇到 `out_audit`：`CONFIG_AUDIT` 下经 `smack_log()` 输出 subject/object/request/rc，保证放行与拒绝都有审计出口。
 
 ---
 
@@ -300,6 +533,45 @@ network inet stream 0-65535 127.0.0.1 22
 
 `common.c` 负责语法解析、profile 管理（`/profile` 里的 `TOMOYO_CONFIG_*`）、组（`group`）、ACL 存储与 `/sys/kernel/security/tomoyo/stat` 统计。TOMOYO 只有 30 个 hook，是四者中最少的：它把大多数判定收敛到少量路径类 hook。
 
+### 5.5 `tomoyo_check_acl()` 源码与组回退
+
+`domain.c:161` 的完整逻辑：
+
+```c
+void tomoyo_check_acl(struct tomoyo_request_info *r,
+		      bool (*check_entry)(struct tomoyo_request_info *,
+					  const struct tomoyo_acl_info *))
+{
+	const struct tomoyo_domain_info *domain = r->domain;
+	struct tomoyo_acl_info *ptr;
+	const struct list_head *list = &domain->acl_info_list;
+	u16 i = 0;
+
+retry:
+	list_for_each_entry_rcu(ptr, list, list,
+				srcu_read_lock_held(&tomoyo_ss)) {
+		if (ptr->is_deleted || ptr->type != r->param_type)
+			continue;
+		if (!check_entry(r, ptr))
+			continue;
+		if (!tomoyo_condition(r, ptr->cond))
+			continue;
+		r->matched_acl = ptr;
+		r->granted = true;
+		return;
+	}
+	for (; i < TOMOYO_MAX_ACL_GROUPS; i++) {
+		if (!test_bit(i, domain->group))
+			continue;
+		list = &domain->ns->acl_group[i++];
+		goto retry;
+	}
+	r->granted = false;
+}
+```
+
+三层过滤：`is_deleted`/类型不匹配跳过 → `check_entry` 做路径/参数匹配 → `tomoyo_condition()` 求值附加条件。域自身 ACL 全部未命中后，按 `domain->group` 位图依次回退到命名空间的共享 `acl_group[i]`（`goto retry` 复用同一段遍历代码），全部失败才置 `granted = false`。遍历在 SRCU（`tomoyo_ss`）保护下进行，策略更新侧等待 SRCU 宽限期后再释放旧 ACL，这是 TOMOYO 能在线学习/修改策略而不阻塞访问判定的基础。命中时记录 `r->matched_acl`，供审计与 learning 模式引用。
+
 ---
 
 ## 6. 当前配置下的实际状态
@@ -308,6 +580,37 @@ network inet stream 0-65535 127.0.0.1 22
 - 传统 DAC 与 capability 检查仍然生效；`CONFIG_SECURITY_SELINUX_BOOTPARAM`、`selinux=0`、`apparmor=0` 等参数在未启用 `CONFIG_SECURITY` 时不存在。
 - 若需在本机构建启用，最小集合为 `CONFIG_SECURITY=y` + `CONFIG_SECURITY_SELINUX=y`（或其他模块）+ 对应的 `CONFIG_LSM`/`lsm=` 顺序；SELinux/AppArmor/Smack 之间因 `LSM_FLAG_EXCLUSIVE` 与 legacy major 语义而互斥，TOMOYO 可与其它模块堆叠但仍受 `CONFIG_LSM` 顺序约束。
 - 四个模块的策略路径分别是 `/sys/fs/selinux/`、`/sys/kernel/security/apparmor/`、`/sys/fs/smackfs/`、`/sys/kernel/security/tomoyo/`；当前构建下这些目录均不存在。
+
+## 7. 横向对比：判定路径与 exec 域切换
+
+### 7.1 一次文件访问的判定路径对比
+
+| 模块 | 入口 hook | 主体标识来源 | 客体标识来源 | 判定核心 | 缓存 |
+|------|-----------|--------------|--------------|----------|------|
+| SELinux | `selinux_inode_permission`（`hooks.c:3243`） | `current_sid()`（task blob） | `isec->sid`（inode blob，来自 xattr） | `avc_has_perm_noaudit` → `security_compute_av` | 任务级 avdcache + 全局 AVC |
+| AppArmor | `apparmor_inode_permission`/`aa_path_perm` | `cred_label()`（profile 栈） | 实时 `d_path` 规范化路径 | `aa_dfa_match` 在 file DFA 上运行 | per-cpu 路径缓冲，无判定缓存 |
+| Smack | `smack_inode_permission` → `smk_curacc` | `task_smack.smk_task` | `inode_smack`（xattr/挂载默认） | `smk_access` 硬编码规则 + 规则表 | 无（规则表本身小） |
+| TOMOYO | `tomoyo_path_perm`（`file.c:808`） | `tomoyo_domain_info` | `tomoyo_get_realpath` 规范化路径 | `tomoyo_check_acl` + condition | 无（ACL 链表遍历） |
+
+差异的本质：SELinux/Smack 是**标签模型**，客体标签持久化在 xattr，判定时只做标签对查表，开销与路径长度无关；AppArmor/TOMOYO 是**路径模型**，每次判定都要生成并匹配路径，开销与路径深度相关，但无需维护磁盘标签。SELinux 的两级缓存（任务 avdcache + 全局 AVC）正是为抵消 avtab 查表 + 约束求值的成本；路径模型则靠 DFA/前缀匹配把成本压到线性。四者的 hook 都经 [01-lsm.md](01-lsm.md) 的 static call 分发，短路语义意味着任一模块拒绝即整体拒绝。
+
+### 7.2 exec 域切换对比
+
+| 模块 | 切换依据 | 关键路径 | 无匹配时行为 |
+|------|----------|----------|--------------|
+| SELinux | 策略 `type_transition` + `dyntransition` | `selinux_bprm_creds_for_exec`（`hooks.c:2336`）→ `security_transition_sid` | 保持原域；`bprm_check_security` 最终裁决 |
+| AppArmor | profile `attach` 匹配（路径/xattr）+ `change_profile`/`onexec` | `apparmor_bprm_creds_for_exec` → `aa_change_profile` 路径 | unconfined 或继承当前 label |
+| Smack | `security.SMACK64EXEC` xattr / transmute | `smack_bprm_creds_for_exec` | 继承任务标签 |
+| TOMOYO | `transition_control`/`aggregator`/手动域规则 | `tomoyo_find_next_domain`（`domain.c:702`） | 按策略新建域 |
+
+四者都挂在 [01-lsm.md](01-lsm.md) §11.3 描述的 `bprm_*` hook 序列上；IMA 的 `BPRM_CHECK` 测量/评估（见 [03-ima-evm.md](03-ima-evm.md)）作为 `LSM_ORDER_LAST` 模块在域切换裁决之后执行。
+
+### 7.3 策略更新与失效机制对比
+
+- SELinux：整体策略替换 + seqno 递增，AVC/avdcache 按 seqno 惰性失效（§2.6/2.7）；
+- AppArmor：profile 级原子替换，label 通过 `aa_get_newest_label` 追踪最新版本，旧 profile 引用计数归零后释放（§3.6）；
+- Smack：规则逐条增删（`load2`/`change-rule2`），RCU 发布，无全局失效概念（§4.5）；
+- TOMOYO：ACL 逐条追加/删除 + SRCU 宽限期，learning 模式直接把新访问写入策略（§5.5）。
 
 ## 关键文件清单
 
@@ -342,3 +645,6 @@ network inet stream 0-65535 127.0.0.1 22
 | `security/tomoyo/condition.c` | ACL `condition` 表达式求值 |
 | `security/tomoyo/load_policy.c` | 策略加载入口 |
 | `include/uapi/linux/lsm.h` | `LSM_ID_SELINUX/APPARMOR/SMACK/TOMOYO` |
+| `security/apparmor/apparmorfs.c` | `.load`/`.replace`/`.remove` 接口（2097-2111 行）、写入路径调用 `aa_replace_profiles`（505 行） |
+| `security/apparmor/policy.c` | `aa_replace_profiles()`（1169 行）：profile 替换主逻辑 |
+| `security/selinux/ss/sidtab.c` | `sidtab_convert()`（426 行）：策略重载时的 SID 表转换 |

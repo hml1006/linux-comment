@@ -1,4 +1,4 @@
-# 页表
+# head.S 启动过程
 
 ## 页表概述
 
@@ -43,9 +43,9 @@ __pi_early_map_kernel → map_kernel（创建内核映射）:
   TTBR1_EL1 = swapper_pg_dir     (最终内核页表，通过 idmap_cpu_replace_ttbr1 切换)
 ```
 
-# head.S 启动过程
+## head.S 启动过程
 
-## 寄存器使用约定
+### 寄存器使用约定
 
 | 寄存器 | 作用域 | 用途 |
 |--------|--------|------|
@@ -53,7 +53,7 @@ __pi_early_map_kernel → map_kernel（创建内核映射）:
 | x20 | primary_entry() ~ __primary_switch() | CPU boot mode（EL1/EL2） |
 | x21 | primary_entry() ~ start_kernel() | FDT 设备树指针（来自 x0） |
 
-## 启动流程总览
+### 启动流程总览
 
 ```
 primary_entry                                                  [head.S]
@@ -265,9 +265,9 @@ primary_entry                                                  [head.S]
               正式启动内核（init/main.c）
 ```
 
-## 关键函数详解
+### 关键函数详解
 
-### record_mmu_state
+#### record_mmu_state
 
 ```asm
 SYM_CODE_START_LOCAL(record_mmu_state)
@@ -295,7 +295,7 @@ SYM_CODE_START_LOCAL(record_mmu_state)
 - `x19 ≠ 0` → 启动时 MMU 开启（EL2 透传，如 EFI 启动）
 - 大小端校正是为了处理代码定义大小端与 CPU 实际大小端不一致的情况
 
-### __pi_create_init_idmap
+#### __pi_create_init_idmap
 
 ```c
 asmlinkage phys_addr_t __init create_init_idmap(pgd_t *pg_dir, ptdesc_t clrmask)
@@ -327,7 +327,7 @@ asmlinkage phys_addr_t __init create_init_idmap(pgd_t *pg_dir, ptdesc_t clrmask)
 - 只映射 `.text` 和 `.init.data` 两个段，最小化 identity mapping 范围
 - MMU 关闭时执行，指针可直接当作物理地址使用
 
-### __enable_mmu
+#### __enable_mmu
 
 ```asm
 // x0 = SCTLR_EL1 value (MMU ON)
@@ -353,7 +353,7 @@ SYM_FUNC_START(__enable_mmu)
 - `ttbr1_el1` = reserved_pg_dir（空页表，防止 speculative walk 访问到错误地址）
 - `set_sctlr_el1` 写入 SCTLR 寄存器，其中 M bit=1 开启 MMU
 
-### early_map_kernel (__pi_early_map_kernel)
+#### early_map_kernel (__pi_early_map_kernel)
 
 ```c
 asmlinkage void __init early_map_kernel(u64 boot_status, phys_addr_t fdt)
@@ -375,7 +375,7 @@ asmlinkage void __init early_map_kernel(u64 boot_status, phys_addr_t fdt)
 }
 ```
 
-### map_kernel 内部映射的段
+#### map_kernel 内部映射的段
 
 | 段 | 虚拟地址范围 | 保护属性 | 说明 |
 |----|-------------|----------|------|
@@ -392,7 +392,7 @@ asmlinkage void __init early_map_kernel(u64 boot_status, phys_addr_t fdt)
 
 第一遍所有段映射为 RW，第二遍 relocate_kernel 后重新映射 text 段为 ROX。
 
-### init_cpu_task
+#### init_cpu_task
 
 ```asm
 .macro init_cpu_task tsk, tmp1, tmp2
@@ -409,7 +409,7 @@ asmlinkage void __init early_map_kernel(u64 boot_status, phys_addr_t fdt)
 .endm
 ```
 
-## 启动流程要点总结
+### 启动流程要点总结
 
 1. **入口点**: `primary_entry` 是内核启动入口，`b primary_entry` 位于 `.head.text` 段
 2. **MMU 关闭/开启检测**: 通过 `record_mmu_state` 区分两种启动场景，影响后续 cache 操作
