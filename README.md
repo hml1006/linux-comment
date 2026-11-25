@@ -9,7 +9,7 @@
 - [内核子系统地图](notes/00-overview/kernel-map.md) — 源码目录、分层视图、四条典型路径
 - [编译快照与文件统计](notes/00-overview/analysis_report.md) — 基于当前 Linux 7.2 树与裁剪配置的编译快照（含复现命令）
 - [文档状态矩阵](#附录-a文档状态矩阵) — 每个子系统的覆盖程度与配置状态
-- 文档规模：525 篇 Markdown，约 23.9 万行（含拆分篇与总篇）
+- 文档规模：526 篇 Markdown，约 23.9 万行（含拆分篇与总篇）
 
 ## 目录
 
@@ -37,7 +37,9 @@
 
 ```
 notes/
-├── 00-overview/        总览、内核子系统地图、编译快照
+├── book.toml           mdBook 配置（src = "."，构建产物输出到 notes/book/）
+├── SUMMARY.md          目录，由 00-overview/tools/gen_summary.py 从本 README 生成
+├── 00-overview/        总览、内核子系统地图、编译快照、完整度审计
 ├── 01-architecture/    ARMv8a、启动、中断
 │   ├── armv8a/
 │   ├── boot/
@@ -62,8 +64,9 @@ notes/
 │   ├── scsi-ufs/
 │   ├── dm-md/
 │   └── ssd/
-├── 05-filesystems/     VFS、特殊文件系统、真实文件系统
+├── 05-filesystems/     VFS、kernfs、特殊文件系统、真实文件系统
 │   ├── vfs/
+│   ├── kernfs/
 │   ├── special/
 │   └── real/
 ├── 06-networking/      网络核心、协议栈、高级网络
@@ -364,6 +367,7 @@ notes/
 
 ### 10.1 驱动模型
 
+- [kobject 对象模型：引用计数、uevent 与 sysfs 映射](notes/03-drivers/driver-model/00-kobject.md)
 - [driver core：device/driver/bus 与 probe](notes/03-drivers/driver-model/01-driver-model.md)
 - [platform bus 与 platform driver](notes/03-drivers/driver-model/02-platform-bus.md)
 
@@ -426,14 +430,18 @@ notes/
 
 - [VFS 核心流程分析](notes/05-filesystems/vfs/fs.md)
 
-### 12.2 特殊文件系统
+### 12.2 kernfs 框架
+
+- [kernfs 框架：节点、生命周期与 VFS 对接](notes/05-filesystems/kernfs/01-kernfs.md)
+
+### 12.3 特殊文件系统
 
 - [01-procfs](notes/05-filesystems/special/01-procfs.md) | [02-sysfs](notes/05-filesystems/special/02-sysfs.md) | [03-debugfs](notes/05-filesystems/special/03-debugfs.md) | [04-ramfs/tmpfs](notes/05-filesystems/special/04-ramfs-tmpfs.md)
 - [05-bdevfs](notes/05-filesystems/special/05-bdevfs.md) | [06-sockfs](notes/05-filesystems/special/06-sockfs.md) | [07-cgroup](notes/05-filesystems/special/07-cgroup.md) | [08-devtmpfs](notes/05-filesystems/special/08-devtmpfs.md)
 - [09-configfs](notes/05-filesystems/special/09-configfs.md) | [10-securityfs](notes/05-filesystems/special/10-securityfs.md) | [11-bpf](notes/05-filesystems/special/11-bpf.md) | [12-pipefs](notes/05-filesystems/special/12-pipefs.md)
 - [13-hugetlbfs](notes/05-filesystems/special/13-hugetlbfs.md) | [14-rpc_pipefs](notes/05-filesystems/special/14-rpc_pipefs.md) | [15-devpts](notes/05-filesystems/special/15-devpts.md)
 
-### 12.3 真实文件系统
+### 12.4 真实文件系统
 
 - [ext4](notes/05-filesystems/real/01-ext4.md)
 - [XFS 与 Btrfs](notes/05-filesystems/real/02-xfs-btrfs.md)
@@ -625,14 +633,14 @@ notes/
 | 并发与同步 | 完整 | 启用 | 原子、锁、RCU、seqlock、per-CPU、lockdep、屏障 |
 | 异步执行 | 完整 | 启用 | softirq、tasklet、workqueue、hrtimer、task_work、io_uring |
 | 数据结构 | 完整 | 不适用 | 链表、树、哈希、位图、XArray、kfifo、伙伴系统、kref |
-| 驱动模型/总线 | 新增 | 部分启用 | driver core、platform、I2C/SPI/GPIO/pinctrl/regmap/USB/MMC/UFS 概览；设备类全景覆盖 input/HID、DRM、ALSA、thermal、regulator、hwmon、IIO、V4L2 |
+| 驱动模型/总线 | 新增 | 部分启用 | kobject 对象模型（引用计数/uevent/命名空间/sysfs 映射）+ driver core、platform、I2C/SPI/GPIO/pinctrl/regmap/USB/MMC/UFS 概览；设备类全景覆盖 input/HID、DRM、ALSA、thermal、regulator、hwmon、IIO、V4L2 |
 | 电源管理 | 新增 | 部分启用 | CPU_FREQ=y；CPU_IDLE/PM/SUSPEND 未启用 |
 | PCIe | 部分 | 启用 | 总线初始化与结构体；设备树/ACPI 绑定见启动章节 |
 | 块层/NVMe | 完整 | 启用 | bio、blk-mq、I/O 调度、QoS、NVMe host |
 | SCSI/UFS/eMMC | 新增 | 部分启用 | SCSI=y；MMC/UFS 未启用 |
 | DM/MD | 新增 | 未启用 | 源码存在，当前配置未开启 |
 | FUSE/DAX | 新增 | 部分启用 | FUSE_FS=y；DAX 取决于具体 FS |
-| VFS/特殊 FS | 完整 | 启用 | VFS 核心 + 15 种特殊文件系统 |
+| VFS/kernfs/特殊 FS | 完整 | 启用 | VFS 核心 + kernfs 框架（节点生命周期、kernfs_ops、VFS 对接、sysfs/cgroup/resctrl 使用方）+ 15 种特殊文件系统 |
 | ext4/XFS/Btrfs/overlayfs | 部分 | 部分启用 | ext4=y；XFS/Btrfs/overlayfs 未启用；新增 F2FS/EROFS/SquashFS/UBIFS/FAT 概览 |
 | 网络核心 | 完整 | 启用 | socket、TCP/IP、netdevice、NAPI、网卡驱动 |
 | 高级网络 | 新增 | 部分启用 | netfilter/bridge/tc 启用；nftables/XDP/VLAN/TLS 未启用；新增 wireless/Bluetooth 概览 |

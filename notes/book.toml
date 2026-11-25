@@ -3,8 +3,9 @@ title = "Linux 7.2 内核源码分析笔记"
 authors = ["hml1006"]
 language = "zh-CN"
 description = "面向 ARM64 的 Linux 7.2 内核源码分析笔记"
-src = "notes"
-# 根目录 README.md 保持为 GitHub 入口，不参与 mdBook 源目录
+# book.toml 位于 notes/ 内，源目录即当前目录：
+# 整个 mdBook（配置、源文件、构建产物）都收敛在 notes/ 下，不污染内核源码树根目录
+src = "."
 
 [build]
 build-dir = "book"

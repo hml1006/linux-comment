@@ -200,5 +200,5 @@ sphinx_*/
 /*.img
 /rootfs/
 
-# mdBook build output
-/book/
+# mdBook build output（book.toml 位于 notes/，产物也在 notes/ 下）
+/notes/book/

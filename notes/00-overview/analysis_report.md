@@ -452,8 +452,8 @@ print(sum(1 for e in d if 'kernel/sched/' in e['file']))" # 4
 ### 14.5 文档侧校验
 
 ```bash
-mdbook build                                   # 产物写入 book/
+cd notes && mdbook build                       # 产物写入 notes/book/
 python3 notes/00-overview/tools/gen_summary.py # 由根 README.md 重新生成 notes/SUMMARY.md
 ```
 
-`book.toml` 中 `[output.html.search] enable = false`（仅本地阅读，不生成搜索索引），且未配置 `git-repository-url` / `edit-url-template`（不发布到 GitHub Pages）。维护约定见根 `README.md` 附录 C。
+`notes/book.toml` 中 `[output.html.search] enable = false`（仅本地阅读，不生成搜索索引），且未配置 `git-repository-url` / `edit-url-template`（不发布到 GitHub Pages）。`book.toml` 与构建产物均在 `notes/` 内，内核源码树根目录只保留 `README.md` 作为 GitHub 入口。维护约定见根 `README.md` 附录 C。

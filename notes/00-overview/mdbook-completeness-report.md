@@ -1,6 +1,6 @@
 # mdBook 内容完整度报告
 
-**对象**：《Linux 7.2 内核源码分析笔记》（`book.toml` → `src = "notes"`，19 个顶级章节）
+**对象**：《Linux 7.2 内核源码分析笔记》（`notes/book.toml` → `src = "."`，19 个顶级章节）
 **日期**：2026-11-25
 **方法**：SUMMARY 目录解析 + 全量文件扫描 + 链接/锚点校验（锚点对照 `mdbook build` 渲染产物逐一验证）+ 系统调用表比对（`include/uapi/asm-generic/unistd.h`）+ 实际构建验证。
 
@@ -30,14 +30,14 @@
 
 | 指标 | 数值 |
 |---|---|
-| Markdown 文件总数 | 527（SUMMARY 引用 525 + 主 SUMMARY.md + 简介页 kernel-map.md） |
+| Markdown 文件总数 | 530（SUMMARY 引用 528 + 主 SUMMARY.md + 简介页 kernel-map.md） |
 | 顶级章节 | 19（0 总览 ～ 18 构建模块与 Rust） |
-| 目录条目 | 600 个列表项 + 1 个简介链接；其中 67 个为空链接分组节点（mdBook 正常用法，非缺页） |
-| 总行数 | 239,151（整改前 222,495，净增 16,656 行） |
-| 汉字数（正文，不含代码块） | 474,979 |
-| 代码块 | 7,616 个 |
+| 目录条目 | 602 个列表项 + 1 个简介链接；其中 67 个为空链接分组节点（mdBook 正常用法，非缺页） |
+| 总行数 | 241,147（首次审计 222,495） |
+| 汉字数（正文，不含代码块） | 487,683 |
+| 代码块 | 7,680 个 |
 | 最大单篇 | mm/memory_management.md（13,784 行）、block/block_layer_analysis.md（12,588 行）、虚拟化 01-kvm-arm64.md（1,698 行） |
-| 标题规范 | 527 个文件全部有且仅有一个 H1（SUMMARY.md 除外） |
+| 标题规范 | 530 个文件全部有且仅有一个 H1（SUMMARY.md 除外） |
 
 系统调用章（第 3 章）占全书篇幅 42.3%（94,112 行）、汉字 39.3%，是绝对主体。
 
@@ -51,7 +51,7 @@
 
 | 章节 | 页数 | 行数 | 汉字 | 代码块 | stub/thin/medium/deep | 评估 |
 |---|---|---|---|---|---|---|
-| 0 总览 | 1 | 459 | 1,310 | 6 | 0/0/1/0 | 优 |
+| 0 总览 | 2 | 717 | 4,385 | 7 | 0/0/2/0 | 优 |
 | 1 ARM64 体系结构 | 12 | 7,080 | 20,159 | 202 | 0/0/7/5 | 优 |
 | 2 启动与中断 | 11 | 6,451 | 10,719 | 160 | 0/1/7/3 | 优（thin 为速查页 net-syscall.md，豁免） |
 | 3 系统调用 | 353 | 94,901 | 155,863 | 2,853 | 0/108/239/6 | 优（thin 均为单调用页且 ≥600，豁免） |
@@ -61,16 +61,16 @@
 | 7 并发与同步 | 18 | 7,791 | 15,739 | 295 | 0/0/16/2 | 优 |
 | 8 异步执行 | 16 | 3,908 | 11,887 | 155 | 0/0/16/0 | 优 |
 | 9 数据结构与算法 | 2 | 4,687 | 11,633 | 130 | 0/0/1/1 | 优 |
-| 10 驱动模型总线电源 | 7 | 5,572 | 9,474 | 129 | 0/0/5/2 | 优 |
+| 10 驱动模型总线电源 | 8 | 6,405 | 13,668 | 161 | 0/0/5/3 | 优（含 kobject 专章） |
 | 11 存储栈 | 21 | 30,609 | 69,392 | 1,007 | 0/0/14/7 | 优 |
-| 12 文件系统 | 20 | 9,804 | 12,072 | 279 | 0/0/19/1 | 优 |
+| 12 文件系统 | 21 | 10,650 | 16,742 | 310 | 0/0/19/2 | 优（含 kernfs 专章） |
 | 13 网络子系统 | 8 | 7,631 | 10,779 | 225 | 0/0/5/3 | 优 |
 | 14 安全子系统 | 5 | 3,527 | 20,123 | 122 | 0/0/1/4 | 优 |
 | 15 虚拟化 | 3 | 3,999 | 18,703 | 106 | 0/0/0/3 | 优 |
 | 16 容器与隔离 | 2 | 2,107 | 9,656 | 73 | 0/0/0/2 | 优 |
 | 17 调试与追踪 | 30 | 12,624 | 20,267 | 555 | 0/0/30/0 | 优 |
 | 18 构建模块与 Rust | 4 | 4,227 | 18,857 | 194 | 0/0/0/4 | 优 |
-| **合计** | **525** | **239,151** | **474,979** | **7,616** | **0/110/362/53** | **全部优** |
+| **合计** | **528** | **241,147** | **487,683** | **7,680** | **0/110/363/55** | **全部优** |
 
 ---
 
@@ -209,27 +209,107 @@
 | 检查项 | 结果 |
 |---|---|
 | `mdbook build` | 成功，无警告（搜索索引已关闭，无超大索引告警） |
-| SUMMARY 引用文件 | 525 个，缺失 **0** |
-| 孤儿 Markdown | **0**（527 个文件 = 525 章节 + 主 SUMMARY.md + 简介页 kernel-map.md） |
-| 相对链接 | 1,183 条全部有效，死链 **0** |
+| SUMMARY 引用文件 | 528 个，缺失 **0** |
+| 孤儿 Markdown | **0**（530 个文件 = 528 章节 + 主 SUMMARY.md + 简介页 kernel-map.md） |
+| 相对链接 | 1,204 条全部有效，死链 **0** |
 | 锚点链接 | 991 条全部命中渲染产物 heading id，失效 **0** |
 | `file://` 源码链接 | 833 条目标全部存在（本地阅读场景保留） |
-| H1 规范 | 527 个文件均有且仅有一个 H1 |
+| H1 规范 | 530 个文件均有且仅有一个 H1 |
 | 系统调用覆盖 | arm64 适用 327/327 = **100%** |
 
 ### 10.2 深度核算
 
-- 全库 525 页：**stub 0 / thin 110 / medium 362 / deep 53**。
+- 全库 528 页：**stub 0 / thin 110 / medium 363 / deep 55**。
 - 110 篇 thin 全部落在豁免类：系统调用单页（≥600）、速查页 `net-syscall.md`、总结页 `mm/06-summary.md`。
 - **19 个章节评级全部为「优」**（0 个 stub、0 个低于 medium 的实质页），明细见第 3 节。
-- 深度提升集中体现为：deep 篇数 36 → **53**，章节总行数 222,495 → **239,151**。
+- 深度提升集中体现为：deep 篇数 36 → **55**，章节总行数 222,495 → **241,147**。
 
 ### 10.3 复核方式
 
 ```bash
-mdbook build                                   # 构建 + 无警告
+cd notes && mdbook build                        # 构建 + 无警告，产物在 notes/book/
 python3 <核算脚本>                              # 按第 3 节口径重算 stub/thin/medium/deep
 python3 notes/00-overview/tools/gen_summary.py  # 目录与 README 一致性
 ```
 
 核算口径与豁免规则已在第 3 节显式给出，任何一节若新增低于该口径的实质页，评级会自动回落，便于后续维护时自查。
+
+---
+
+## 11. 第三轮整改：mdBook 收敛到 `notes/`（2026-11-25）
+
+**要求**：整个 mdBook 放入 `notes/`，避免污染 Linux 内核源码树根目录。
+
+| 项 | 变更前 | 变更后 |
+|---|---|---|
+| 配置文件 | `<repo>/book.toml` | `notes/book.toml` |
+| 源目录 | `src = "notes"` | `src = "."`（book.toml 所在目录） |
+| 构建产物 | `<repo>/book/` | `notes/book/` |
+| 审计报告 | `<repo>/mdbook-completeness-report.md` | `notes/00-overview/mdbook-completeness-report.md`，并登记为第 0 章页面 |
+| `.gitignore` | `/book/` | `/notes/book/` |
+| 构建命令 | `mdbook build`（仓库根） | `cd notes && mdbook build` |
+
+**关键点**：
+
+- `src = "."` 与 `build-dir = "book"` 同层时，mdBook 会**自动排除构建目录**，不会出现 `book/book/` 递归复制（已用最小样例连跑两次构建验证）。
+- 根目录 `README.md` 仍是 GitHub 入口与 `gen_summary.py` 的输入，位于 `notes/` 之外，因此不会进入书籍源目录。
+- 收敛后，内核源码树根目录不再出现任何 mdBook 相关文件；仅保留 `README.md`、`.gitignore` 与内核源码自身文件。
+
+**复验结果**（收敛后重新执行）：`cd notes && mdbook build` 成功无警告；SUMMARY 引用 526 个文件、缺失 0、孤儿 0；相对链接 1,184 条 0 死链；锚点 991 条 0 失效；19 章评级仍全部为「优」。
+
+---
+
+## 12. 第四轮补充：kernfs 专章（2026-11-25）
+
+**背景**：审计发现 kernfs 只作为"sysfs 的底层框架"在第 12 章 sysfs 篇中被概述（约 35 处提及、1 个结构体、4 条调用栈），没有独立的框架教程，`fs/kernfs/` 的内部拆分、完整 API、`kernfs_ops` 回调族与 VFS 对接均缺失。
+
+**新增**：`notes/05-filesystems/kernfs/01-kernfs.md`（846 行，加权体量 7,369，deep），共 11 节：
+
+1. 定位与设计（问题域、三个使用者、分层）
+2. 核心数据结构（`kernfs_node` 与三种 elem、`kernfs_root`、`kernfs_super_info`、`kernfs_iattrs`、`kernfs_open_file`、count/active 双计数）
+3. 节点生命周期（`kernfs_new_node` → `kernfs_add_one` → `kernfs_link_sibling` → `kernfs_activate`；remove/drain/put；rename）
+4. `kernfs_ops` 与文件 I/O（open、seq/裸读写、mmap、poll/notify、release/drain）
+5. VFS 对接（`kernfs_get_tree`/`fill_super`/`kill_sb`、super_operations、exportfs、inode 与 lookup/revalidate）
+6. 目录与查找（哈希/rb 排序、`kernfs_find_and_get_ns`、readdir 游标、symlink 路径）
+7. 并发与锁（`kernfs_rwsem`/`kernfs_iattr_rwsem`/`kernfs_supers_rwsem`/`kernfs_rename_lock`、`node_mutex[]`、RCU、active 保护）
+8. 使用方分析（sysfs、cgroup、resctrl）
+9. 配置与调试
+10. 关键文件清单
+11. 延伸阅读（链回 sysfs、cgroup、VFS、getdents64 等篇）
+
+**依据源码订正的事实**：本树 `fs/kernfs/` 无 `sysfs.c` 与 `kernfs_sysfs_*` 符号，`/sys/fs/kernfs` 不存在，超级块登记由 `kernfs_get_tree()`/`kernfs_kill_sb()` 承担；锁不是单一 `kernfs_mutex`，而是上述多把 rwsem 加全局哈希 mutex；`kernfs_drain()` 带 `drop_supers` 参数；`fs/resctrl/rdtgroup.c` 是 sysfs/cgroup 之外的第三个 `kernfs_create_root()` 使用者。
+
+**目录同步**：README 第 12 章新增 `12.2 kernfs 框架`，原「特殊文件系统」「真实文件系统」顺延为 12.3/12.4；目录结构树与附录 A 状态矩阵同步更新；`gen_summary.py` 重新生成 SUMMARY，新增条目位于 12.2。
+
+**维护提示（本轮发现）**：`book-dir` 位于 `src` 内时，构建偶发出现残缺产物（本轮两次遇到 322/467 个 HTML，而预期为 532）。该现象不可稳定复现（随后连续三次全量构建均正常），因此**校验前应核对 `find notes/book -name '*.html' | wc -l` 是否为 532**，若偏少则重新构建；否则锚点检查会出现大量假失效。
+
+**复验结果**：清空产物后全量构建成功；SUMMARY 引用 527 个文件、缺失 0、孤儿 0；相对链接 1,192 条 0 死链；锚点 991 条 0 失效；第 12 章 21 页 0/0/19/2，19 章评级仍全部为「优」。
+
+---
+
+## 13. 第五轮补充：kobject 专章（2026-11-25）
+
+**背景**：kobject 内容散落在 22 个文件、共 150 处提及，其中 sysfs 篇 67 处（偏"如何用 sysfs"）、驱动模型篇 15 处，没有从 kobject 自身语义出发的专篇。
+
+**新增**：`notes/03-drivers/driver-model/00-kobject.md`（833 行，加权体量 7,186，deep），12 节：
+
+1. 定位与设计（与 kset/kobj_type/sysfs/uevent 的关系）
+2. 核心数据结构（`struct kobject` 全字段、`kref`、`kset`、`kobj_type`、`kobj_attribute`/`sysfs_ops`、`kobj_uevent_env`/`kset_uevent_ops`、`kobj_ns_type_operations`）
+3. 引用计数与生命周期（get/put/get_unless_zero、release 与 cleanup 的区别、延迟清理、无 release 约束、状态机）
+4. 创建与注册（两段式 API、`kobject_add_varg`、`kobject_add_internal`、错误回滚不变量）
+5. 命名与路径（`kobject_set_name_vargs`、`kobject_get_path`、rename/move 约束）
+6. sysfs/kernfs 映射（`sd`、属性文件反查链、四类操作对照、与 kernfs 专章的分界）
+7. uevent（action 表、`kobject_uevent_env` 全流程、netlink 广播、helper、synth、suppress）
+8. 命名空间（`kobject_namespace`、ns 类型操作、netns 与 uevent 定向）
+9. 在 device 模型中的嵌入（`device_initialize/add/del` 与 kobject 生命周期对应、class/bus 的 kset 角色）
+10. 常见错误与调试
+11. 关键文件清单
+12. 延伸阅读
+
+**根据源码订正的事实**：本树无 `lib/kref.c`（kref 全为 `include/linux/kref.h` 内联）；无 `kref_replace_release()`，只有 `kref_put_mutex`/`kref_put_lock`；`kobject_create`/`kobject_add_varg`/`kobject_add_internal`/`kobject_cleanup`/`kobject_release` 等为 static；不存在 `kobject_synthetic_uevent()`，只有 `kobject_synth_uevent()`；`CONFIG_UEVENT_HELPER`、`CONFIG_DEBUG_KOBJECT` 未启用。
+
+**顺带修正**：`notes/05-filesystems/special/02-sysfs.md` §2.3 原 `struct kobj_type` 摘录含本树不存在的 `child_sysfs_direntry`、且 `namespace` 类型写成 `const void *`；已按 `include/linux/kobject.h` 实际定义更正为 `const struct ns_common *(*namespace)` 与 `get_ownership`，并加注历史差异与回链。
+
+**目录同步**：README 第 10.1 节首位新增该篇，附录 A「驱动模型/总线」行补充 kobject 说明；`gen_summary.py` 重新生成 SUMMARY。
+
+**复验结果**：全量构建 533 个 HTML；SUMMARY 引用 528 个文件、缺失 0、孤儿 0；相对链接 1,204 条 0 死链；锚点 991 条 0 失效；第 10 章 8 页 0/0/5/3，19 章评级仍全部为「优」。

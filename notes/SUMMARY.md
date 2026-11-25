@@ -6,6 +6,8 @@
 
 - [编译快照与文件统计](00-overview/analysis_report.md)
 
+- [mdBook 完整度审计报告](00-overview/mdbook-completeness-report.md)
+
 
 # 1. ARM64 体系结构
 
@@ -495,6 +497,7 @@
 # 10. 驱动模型、总线与电源
 
 - [10.1 驱动模型]()
+    - [kobject 对象模型：引用计数、uevent 与 sysfs 映射](03-drivers/driver-model/00-kobject.md)
     - [driver core：device/driver/bus 与 probe](03-drivers/driver-model/01-driver-model.md)
     - [platform bus 与 platform driver](03-drivers/driver-model/02-platform-bus.md)
 - [10.2 总线与外设]()
@@ -543,7 +546,9 @@
 
 - [12.1 VFS 核心]()
     - [VFS 核心流程分析](05-filesystems/vfs/fs.md)
-- [12.2 特殊文件系统]()
+- [12.2 kernfs 框架]()
+    - [kernfs 框架：节点、生命周期与 VFS 对接](05-filesystems/kernfs/01-kernfs.md)
+- [12.3 特殊文件系统]()
     - [01-procfs](05-filesystems/special/01-procfs.md)
     - [02-sysfs](05-filesystems/special/02-sysfs.md)
     - [03-debugfs](05-filesystems/special/03-debugfs.md)
@@ -559,7 +564,7 @@
     - [13-hugetlbfs](05-filesystems/special/13-hugetlbfs.md)
     - [14-rpc_pipefs](05-filesystems/special/14-rpc_pipefs.md)
     - [15-devpts](05-filesystems/special/15-devpts.md)
-- [12.3 真实文件系统]()
+- [12.4 真实文件系统]()
     - [ext4](05-filesystems/real/01-ext4.md)
     - [XFS 与 Btrfs](05-filesystems/real/02-xfs-btrfs.md)
     - [overlayfs 与网络文件系统 (netfs/NFS/9p/Ceph)](05-filesystems/real/03-overlayfs-netfs.md)

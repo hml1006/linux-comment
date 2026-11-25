@@ -43,8 +43,10 @@ lines = [
     '[简介](00-overview/kernel-map.md)', '',
     '# 0. 总览', '',
     '- [编译快照与文件统计](00-overview/analysis_report.md)', '',
+    '- [mdBook 完整度审计报告](00-overview/mdbook-completeness-report.md)', '',
 ]
-seen.update({'00-overview/kernel-map.md', '00-overview/analysis_report.md'})
+seen.update({'00-overview/kernel-map.md', '00-overview/analysis_report.md',
+             '00-overview/mdbook-completeness-report.md'})
 
 # 当前节（无页面章节）在 lines 中的下标；None 表示当前不在节内
 group_index = None

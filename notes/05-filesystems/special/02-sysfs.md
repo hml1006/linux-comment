@@ -83,16 +83,18 @@ struct kset {
 ### 2.3 kobj_type — kobject 类型
 
 ```c
-// 文件: include/linux/kobject.h
+// 文件: include/linux/kobject.h（本树 Linux 7.2 实际定义）
 struct kobj_type {
     void (*release)(struct kobject *kobj);  // 释放回调
     const struct sysfs_ops *sysfs_ops;      // sysfs 操作函数
     const struct attribute_group **default_groups; // 默认属性组
-    const struct kobj_ns_type_operations *(*child_ns_type)(struct kobject *kobj);
-    const void *(*namespace)(struct kobject *kobj);
-    void (*child_sysfs_direntry)(struct kobject *kobj, struct kernfs_node *kn);
+    const struct kobj_ns_type_operations *(*child_ns_type)(const struct kobject *kobj);
+    const struct ns_common *(*namespace)(const struct kobject *kobj);
+    void (*get_ownership)(const struct kobject *kobj, kuid_t *uid, kgid_t *gid);
 };
 ```
+
+> 早期版本曾有 `child_sysfs_direntry` 回调与 `const void *(*namespace)`，本树均已移除/改为 `ns_common`。kobject 自身的完整语义见 [kobject 对象模型](../../03-drivers/driver-model/00-kobject.md)。
 
 ### 2.4 attribute — 属性描述
 
