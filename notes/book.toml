@@ -26,3 +26,12 @@ enable = false
 enable = true
 # 0 = 折叠第一级带子项的章节（即各 N.x 节），使三级页面默认隐藏
 level = 0
+
+[preprocessor.plantuml]
+command = "mdbook-plantuml"
+# 本机 PlantUML jar；若已安装 plantuml 命令，可改为 plantuml-cmd = "plantuml"
+plantuml-cmd = "java -Djava.awt.headless=true -jar /home/louis/backup/plantuml-1.2025.10.jar"
+# 渲染结果以 data URI 内嵌到 HTML；缓存文件位于 notes/.mdbook-plantuml-cache
+use-data-uris = true
+fail-on-error = true
+

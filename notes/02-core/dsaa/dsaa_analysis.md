@@ -3,21 +3,32 @@
 ## 目录
 
 1. [概述](#1-概述)
+   - 1.1 [覆盖范围与图解约定](#11-覆盖范围与图解约定)
 2. [列表结构](#2-列表结构)
    - 2.1 [双向循环链表 (list_head)](#21-双向循环链表-list_head)
    - 2.2 [哈希链表 (hlist_head)](#22-哈希链表-hlist_head)
+   - 2.3 [无锁链表 (llist)](#23-无锁链表-llist)
+   - 2.4 [Nulls 哈希链表 (hlist_nulls)](#24-nulls-哈希链表-hlist_nulls)
+   - 2.5 [位锁哈希链表 (hlist_bl)](#25-位锁哈希链表-hlist_bl)
+   - 2.6 [优先级链表 (plist)](#26-优先级链表-plist)
+   - 2.7 [引用计数链表 (klist)](#27-引用计数链表-klist)
 3. [树结构](#3-树结构)
    - 3.1 [红黑树 (rb_node)](#31-红黑树-rb_node)
    - 3.2 [基数树 (Radix Tree)](#32-基数树-radix-tree)
    - 3.3 [Maple Tree](#33-maple-tree)
    - 3.4 [B树变体](#34-b树变体)
+   - 3.5 [区间树 (interval_tree)](#35-区间树-interval_tree)
 4. [哈希表](#4-哈希表)
+   - 4.6 [可扩容哈希表 (rhashtable)](#46-可扩容哈希表-rhashtable)
 5. [堆与优先队列](#5-堆与优先队列)
    - 5.1 [实时调度优先级队列](#51-实时调度优先级队列)
    - 5.2 [定时器时间轮](#52-定时器时间轮)
+   - 5.3 [二叉堆 (min_heap)](#53-二叉堆-min_heap)
 6. [查找与索引结构](#6-查找与索引结构)
    - 6.1 [位图 (bitmap)](#61-位图-bitmap)
+   - 6.2 [sbitmap（可扩展位图）](#62-sbitmap可扩展位图)
    - 6.3 [Trie树（前缀树）](#63-trie树前缀树)
+   - 6.4 [关联数组 (assoc_array)](#64-关联数组-assoc_array)
 7. [映射与关联结构](#7-映射与关联结构)
    - 7.1 [IDR](#71-idr)
    - 7.2 [XArray](#72-xarray)
@@ -27,6 +38,7 @@
    - 8.2 [工作队列](#82-工作队列)
 9. [伙伴系统 (Buddy System)](#9-伙伴系统-buddy-system)
 10. [引用计数 (kref)](#10-引用计数-kref)
+    - 10.7 [refcount_t](#107-refcount_t)
 11. [核心思想：权衡与优化](#11-核心思想权衡与优化)
 12. [附录：关键文件索引](#12-附录关键文件索引)
 
@@ -44,6 +56,26 @@ Linux 内核作为一个大型系统软件，在其各个子系统中广泛使�
 - **位图**：空间极小，适合表示大量"有/无"状态
 
 本文档按**算法类别**对内核中的核心数据结构和算法进行系统性分析，涵盖其实现原理、核心数据结构定义、关键操作函数以及在内核中的典型应用场景。
+
+### 1.1 覆盖范围与图解约定
+
+内核里的"数据结构"可以分为两层：一层是 `include/linux/` 与 `lib/` 中提供的**通用容器/索引结构**，可被任意子系统复用；另一层是各子系统私有的数据组织（如 `sk_buff`、`bio`、`dentry`、`folio` 等），它们通常与具体业务语义绑定，已在对应子系统章节分析。本章覆盖前者，并在本次修订中补齐了此前遗漏的通用结构：
+
+| 类别 | 覆盖的通用数据结构 | 章节 |
+|---|---|---|
+| 链表 | `list_head`、`hlist`、`llist`、`hlist_nulls`、`hlist_bl`、`plist`、`klist` | 2.1–2.7 |
+| 树 | 红黑树、基数树、Maple Tree、B 树变体、区间树 | 3.1–3.5 |
+| 哈希 | 静态哈希表（`hashtable.h`）、可扩容哈希表 `rhashtable` | 4.1–4.6 |
+| 堆/优先队列 | 实时调度优先级队列、定时器时间轮、`min_heap` | 5.1–5.3 |
+| 查找/索引 | `bitmap`、`sbitmap`、Trie/LC-Trie、`assoc_array` | 6.1–6.4 |
+| 映射 | IDR、XArray、eBPF Maps | 7.1–7.3 |
+| 队列/缓冲 | `kfifo`、工作队列 | 8.1–8.2 |
+| 页框分配 | 伙伴系统 | 9 |
+| 引用计数 | `kref`、`refcount_t` | 10.1–10.7 |
+
+本章所有结构体定义、函数签名与调用点均以当前 Linux 7.2 源码树为准。为便于理解操作过程，各节直接内嵌 `plantuml` 围栏代码块，由 `mdbook-plantuml` 预处理器在构建时渲染；`mdbook serve` 会在保存 Markdown 后自动重新渲染，无需手工生成图片。
+
+> 说明：`hashtable.h`、`list.h` 等提供的宏是**内联实现**；`rhashtable`、`maple_tree`、`xarray` 等则在 `lib/` 中有独立实现文件。图中只画关键指针/索引变化，省略了锁、RCU 赋值和内存屏障等细节。
 
 ---
 
@@ -76,6 +108,43 @@ struct list_head {
     struct list_head *next, *prev;
 };
 ```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `next` | `struct list_head *` | 指向后一个节点；在头节点中指向第一个元素；空链表时指向自身 |
+| `prev` | `struct list_head *` | 指向前一个节点；在头节点中指向最后一个元素；空链表时指向自身 |
+
+`list_head` 本身不带数据，通常作为成员嵌入宿主结构体，再用 `container_of()` 找回宿主。头节点是一个**哨兵**，不存业务数据，使插入/删除不需要特判空链表。
+
+**链接图**
+
+```plantuml
+@startdot
+digraph list {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="list_head：带哨兵头节点的双向循环链表", labelloc=t, fontsize=14];
+  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  head [label="head（哨兵）\nnext / prev", fillcolor="#FFF3E0"];
+  a [label="节点 A\nnext / prev"];
+  b [label="节点 B\nnext / prev"];
+
+  head -> a [label="next"];
+  a -> b [label="next"];
+  b -> head [label="next（回绕）"];
+  head -> b [label="prev"];
+  b -> a [label="prev"];
+  a -> head [label="prev（回绕）"];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="空链表：head.next = head.prev = &head\n节点通过 container_of() 找回宿主结构体\n插入/删除只改相邻节点的 next/prev"];
+  head -> note [style=invis];
+}
+@enddot
+```
+
+*结构图：`head` 是哨兵；`next` 正向成环，`prev` 反向成环。*
 
 #### 2.1.3 初始化
 
@@ -179,6 +248,36 @@ static inline void list_splice(struct list_head *list, struct list_head *head)
         __list_splice(list, head, head->next);
 }
 ```
+
+**图解：插入与删除的指针改写**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+skinparam roundcorner 8
+title list_head：插入与删除的指针改写
+start
+partition "__list_add(new, prev, next)" {
+  :next->prev = new;
+  :new->next = next;
+  :new->prev = prev;
+  :WRITE_ONCE(prev->next, new);
+}
+note right
+  插入前：prev ⇄ next
+  插入后：prev ⇄ new ⇄ next
+
+  删除：next->prev = prev;
+        WRITE_ONCE(prev->next, next);
+  list_del() 随后写入 LIST_POISON1/2
+end note
+stop
+@enduml
+```
+
+*图 2-1：`__list_add()` 先建立新节点的双向链接，最后用 `WRITE_ONCE(prev->next, new)` 发布；`list_del()` 则把前后节点直接对接。*
 
 #### 2.1.5 遍历宏
 
@@ -366,6 +465,42 @@ struct hlist_node {
 
 `pprev` 是指向上一个节点的 `next` 指针（或 `hlist_head.first`）的指针。这种设计使得删除节点时无需遍历链表来查找前驱节点。
 
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `hlist_head.first` | `struct hlist_node *` | 桶/链表的第一个节点；空链为 `NULL` |
+| `hlist_node.next` | `struct hlist_node *` | 指向下一个节点；链尾为 `NULL` |
+| `hlist_node.pprev` | `struct hlist_node **` | 指向"前驱的 `next` 字段"或 `head.first`；删除时直接改 `*pprev`，O(1) |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph hlist {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="hlist：头节点只存 first，节点用 pprev 反向定位", labelloc=t, fontsize=14];
+  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  head [label="hlist_head\nfirst", fillcolor="#FFF3E0"];
+  a [label="节点 A\nnext / pprev"];
+  b [label="节点 B\nnext / pprev"];
+  nul [shape=plaintext, label="NULL"];
+
+  head -> a [label="first"];
+  a -> b [label="next"];
+  b -> nul [label="next"];
+  a -> head [style=dashed, color="#2E7D32", label="pprev = &head.first"];
+  b -> a [style=dashed, color="#2E7D32", label="pprev = &A.next"];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="pprev 指向上一个节点的 next 字段\n（或 head.first），删除 O(1)\n头节点只占 1 个指针，适合哈希桶数组"];
+  b -> note [style=invis];
+}
+@enddot
+```
+
+*结构图：实线是 `next` 正向链，虚线是 `pprev` 反向定位；头节点只占 1 个指针。*
+
 #### 2.2.3 初始化
 
 ```c
@@ -421,6 +556,33 @@ static inline void __hlist_del(struct hlist_node *n)
         WRITE_ONCE(next->pprev, pprev);
 }
 ```
+
+**图解：`pprev` 如何实现 O(1) 删除**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title hlist：用 pprev 二级指针在 O(1) 内删除
+participant "h->first" as H
+participant "节点 A" as A
+participant "节点 B" as B
+note over H, B
+  A.next = B，A.pprev = &h->first
+  B.next = C，B.pprev = &A.next
+end note
+A -> H : *A.pprev = A.next\n（删除 A：h->first = B）
+H -> B : B.pprev = A.pprev
+note over H, B
+  删除 B：*B.pprev = B.next；
+  若 B.next 非空：B.next->pprev = B.pprev
+  不需要遍历找前驱，O(1)
+end note
+@enduml
+```
+
+*图 2-2：`pprev` 指向"指向前驱 next 的指针"（可能是 `h->first`，也可能是前驱的 `next` 字段），因此删除节点时不需要遍历找前驱。*
 
 #### 2.2.5 遍历宏
 
@@ -536,6 +698,656 @@ void cache_dump(void)
 
 ---
 
+### 2.3 无锁链表 (llist)
+
+#### 2.3.1 概述
+
+`llist`（lock-less list）是**单向**链表，只支持在头部压入、从头部弹出或一次性摘走整条链。它用 `cmpxchg` 原子地更新 `head->first`，因此多个 CPU 可以并发 `llist_add()`，不需要自旋锁，也不会睡眠。代价是：不支持在链表中间插入/删除，也不支持反向遍历。
+
+| 特性 | `llist` | `list_head` / `hlist` |
+|---|---|---|
+| 链接方向 | 单向 | 双向 / 单向 |
+| 插入 | 仅头部，`cmpxchg` 无锁 | 任意位置，需调用者加锁 |
+| 删除 | 仅头部或整链 | 任意节点 O(1) |
+| 并发 | 多生产者、多消费者均安全 | 需外部锁或 RCU |
+| 内存开销 | 每节点 1 指针 | 每节点 2 指针 |
+| 典型上下文 | NMI、硬中断、RCU 回调 | 进程上下文为主 |
+
+#### 2.3.2 核心数据结构
+
+```c
+// include/linux/llist.h
+struct llist_head {
+    struct llist_node *first;
+};
+
+struct llist_node {
+    struct llist_node *next;
+};
+
+#define LLIST_HEAD_INIT(name)   { NULL }
+#define LLIST_HEAD(name)        struct llist_head name = LLIST_HEAD_INIT(name)
+```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `llist_head.first` | `struct llist_node *` | 栈顶节点；`llist_add()` 用 `cmpxchg` 更新它 |
+| `llist_node.next` | `struct llist_node *` | 指向下一个节点；链尾为 `NULL`；`init_llist_node()` 会把它指向自身表示"不在链上" |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph llist {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="llist：单向无锁链表，只支持头部压栈/整链摘取", labelloc=t, fontsize=14];
+  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  head [label="llist_head\nfirst", fillcolor="#FFF3E0"];
+  a [label="节点 A\nnext"];
+  b [label="节点 B\nnext"];
+  c [label="节点 C\nnext"];
+  nul [shape=plaintext, label="NULL"];
+
+  head -> a [label="first"];
+  a -> b [label="next"];
+  b -> c [label="next"];
+  c -> nul [label="next"];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="llist_add() 用 cmpxchg 在头部压栈\nllist_del_all() 用 xchg 一次摘走整链\n没有 prev，不能反向遍历或中间删除"];
+  c -> note [style=invis];
+}
+@enddot
+```
+
+*结构图：只有 `next`，因此只能头部压栈、整链摘取或从头部弹出。*
+
+`init_llist_node()` 把 `node->next` 指向节点自身，用来表示"该节点不在任何链表中"，因此 `llist_on_list()` 可以据此判断节点状态：
+
+```c
+static inline void init_llist_node(struct llist_node *node)
+{
+    WRITE_ONCE(node->next, node);
+}
+
+static inline bool llist_on_list(const struct llist_node *node)
+{
+    return READ_ONCE(node->next) != node;
+}
+```
+
+#### 2.3.3 核心操作
+
+```c
+// 批量压栈：new_first..new_last 是已经串好的一条子链
+static inline bool llist_add_batch(struct llist_node *new_first,
+                                   struct llist_node *new_last,
+                                   struct llist_head *head)
+{
+    struct llist_node *first = READ_ONCE(head->first);
+
+    do {
+        new_last->next = first;
+    } while (!try_cmpxchg(&head->first, &first, new_first));
+
+    return !first;   /* 返回插入前链表是否为空 */
+}
+
+static inline bool llist_add(struct llist_node *new, struct llist_head *head)
+{
+    return llist_add_batch(new, new, head);
+}
+
+// 一次性摘走整条链，返回最新的节点（后进先出）
+static inline struct llist_node *llist_del_all(struct llist_head *head)
+{
+    return xchg(&head->first, NULL);
+}
+
+// 只弹出第一个节点，用 cmpxchg 与并发 add 竞争
+struct llist_node *llist_del_first(struct llist_head *head);
+```
+
+`llist_del_all()` 返回的顺序是**新→旧**；如果需要按加入顺序处理，可调用 `llist_reverse_order()` 反转。`llist_del_first()` 适合"多消费者各自取一个"的场景，但要求调用者处理好"取出后 `next` 仍指向旧链"的语义。
+
+**图解：无锁压栈**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title llist：无锁压栈与整链摘取
+start
+:new->next = NULL;
+repeat
+  :old = READ_ONCE(head->first);
+  :new->next = old;
+repeat while (try_cmpxchg(&head->first, &old, new) 失败?) is (是)
+:插入成功，返回 old == NULL;
+note right
+  llist_add() 只支持在头部压栈；
+  llist_del_all() 用 xchg(&head->first, NULL)
+  一次摘走整条链，顺序为新→旧；
+  需要旧→新时调用 llist_reverse_order()
+end note
+stop
+@enduml
+```
+
+*图 2-3：`llist_add()` 在 `cmpxchg` 失败时重新读取 `head->first` 并重试；`llist_del_all()` 用一次 `xchg` 摘走整条链。*
+
+#### 2.3.4 使用约束与应用
+
+- **NMI 安全**：`llist` 依赖 `cmpxchg`。在不支持 NMI-safe `cmpxchg` 的架构上，NMI 处理程序不能使用它（需要 `CONFIG_ARCH_HAVE_NMI_SAFE_CMPXCHG`）。
+- **节点生命周期**：`llist_del_all()` 之后，原链表节点仍由调用者持有；在 RCU 场景中通常配合 `kfree_rcu()` 延迟释放。
+- **典型用户**：
+  - `kernel/irq_work.c`：每个 CPU 的 `raised_list` / `lazy_list`，中断上下文压入，软中断或专用线程消费。
+  - `kernel/rcu/tree.c`： expedited grace period 的 `srs_next` 队列。
+  - `kernel/task_work.c`、`kernel/rcu/rcuscale.c` 等。
+
+---
+
+### 2.4 Nulls 哈希链表 (hlist_nulls)
+
+#### 2.4.1 概述
+
+`hlist_nulls` 是 `hlist` 的一个变体：链尾不是 `NULL`，而是一个**最低位为 1 的标记值** `NULLS_MARKER(value)`。这样做的核心目的是支持 **RCU 无锁遍历 + 哈希表扩容**：
+
+- 删除节点时，`hlist_nulls_del_rcu()` 不会把 `next` 改为 `NULL`，而是保留旧链指针，读路径仍可继续走完。
+- 扩容时，同一个桶的链可能被迁移到新表。链尾标记携带原桶号，读者走完整条链后发现 `get_nulls_value(pos) != 当前桶号`，就知道自己读到了被迁移的链，应重新计算桶并重试。
+
+#### 2.4.2 核心数据结构
+
+```c
+// include/linux/list_nulls.h
+struct hlist_nulls_head {
+    struct hlist_nulls_node *first;
+};
+
+struct hlist_nulls_node {
+    struct hlist_nulls_node *next, **pprev;
+};
+
+#define NULLS_MARKER(value) (1UL | (((long)value) << 1))
+
+static inline int is_a_nulls(const struct hlist_nulls_node *ptr)
+{
+    return ((unsigned long)ptr & 1);
+}
+
+static inline unsigned long get_nulls_value(const struct hlist_nulls_node *ptr)
+{
+    return ((unsigned long)ptr) >> 1;
+}
+
+static inline void hlist_nulls_add_head(struct hlist_nulls_node *n,
+                                        struct hlist_nulls_head *h)
+{
+    struct hlist_nulls_node *first = h->first;
+
+    n->next = first;
+    WRITE_ONCE(n->pprev, &h->first);
+    h->first = n;
+    if (!is_a_nulls(first))
+        WRITE_ONCE(first->pprev, &n->next);
+}
+```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `hlist_nulls_head.first` | `struct hlist_nulls_node *` | 链头；空链时是 `NULLS_MARKER(bucket)` 而不是 `NULL` |
+| `hlist_nulls_node.next` | `struct hlist_nulls_node *` | 指向下一个节点，或链尾的 nulls 标记；删除时保留旧值供 RCU 读者走完 |
+| `hlist_nulls_node.pprev` | `struct hlist_nulls_node **` | 指向前驱 `next` 或 `head.first`；删除 O(1) |
+| 低 bit 编码 | `unsigned long` | 最低位为 1 表示标记；高位右移一位得到桶号 `get_nulls_value()` |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph nulls {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="hlist_nulls：链尾是带桶号的 nulls 标记", labelloc=t, fontsize=14];
+  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  head [label="hlist_nulls_head\nfirst", fillcolor="#FFF3E0"];
+  a [label="节点 A\nnext / pprev"];
+  b [label="节点 B\nnext / pprev"];
+  marker [label="NULLS_MARKER(i)\n最低位 = 1", fillcolor="#FFEBEE"];
+
+  head -> a [label="first"];
+  a -> b [label="next"];
+  b -> marker [label="next"];
+  a -> head [style=dashed, color="#2E7D32", label="pprev"];
+  b -> a [style=dashed, color="#2E7D32", label="pprev"];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="标记值 = 1 | (bucket << 1)\n读者走完后取 get_nulls_value()\n与当前桶号比较，不一致则重试\n删除节点时 next 保留，便于 RCU 读"];
+  marker -> note [style=invis];
+}
+@enddot
+```
+
+*结构图：链尾不是 `NULL`，而是携带桶号的标记；读者据此判断是否走完了"当前桶"的链。*
+
+节点指针对齐到 4/8 字节，最低位天然为 0；`NULLS_MARKER` 把桶号左移一位后置最低位，因此不会与真实节点指针混淆。`hlist_nulls_del()` 只清 `pprev`，`next` 保留，正是为了 RCU 读者能走完旧链。
+
+#### 2.4.3 图解：查找与迁移检测
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title hlist_nulls：RCU 查找与桶迁移检测
+participant "读者" as R
+participant "bucket[i]" as B
+participant "sock A" as A
+participant "sock B" as B2
+participant "NULLS_MARKER(i)" as M
+R -> B : first
+B -> A : next
+A -> B2 : next
+B2 -> M : next（最低位为 1）
+R -> R : is_a_nulls(pos) 为真
+R -> R : get_nulls_value(pos) == i ?
+note right of R
+  相等：已走到本桶链尾，查找正常结束
+  不等：链表已在扩容/迁移中被搬走，
+        重新计算桶号后重试
+end note
+@enduml
+```
+
+*图 2-4：读路径用 `hlist_nulls_for_each_entry_rcu()` 遍历；遇到最低位为 1 的标记即到达链尾。若标记中的桶号与当前桶不一致，说明链表已被扩容迁移，需要重试。*
+
+#### 2.4.4 典型应用：UDP 哈希表
+
+本树 `include/net/udp.h` 中每个 `udp_hslot` 都使用 `hlist_nulls_head`：
+
+```c
+INIT_HLIST_NULLS_HEAD(&table->hash4[i].nulls_head, i);
+```
+
+`net/ipv4/udp.c` 的 `udp4_lib_lookup2()` 在遍历完后检查：
+
+```c
+udp_lrpa_for_each_entry_rcu(up, node, &hslot4->nulls_head) {
+    ...
+}
+
+/* 链尾标记与桶号不一致：说明查找期间发生了 rehash，重试 */
+if (get_nulls_value(node) != slot)
+    goto begin;
+```
+
+同样的模式也用于 `inet_hashinfo`、netfilter 连接跟踪等"RCU 读 + 可扩容哈希"的场景。
+
+---
+
+### 2.5 位锁哈希链表 (hlist_bl)
+
+#### 2.5.1 概述
+
+`hlist_bl` 在 `hlist` 的基础上，把**桶锁**编码进 `hlist_bl_head.first` 的最低 bit。这样一个桶只需要一个指针的空间，不需要额外的 `spinlock_t`，非常适合 dentry 这类桶数量很大的哈希表。
+
+#### 2.5.2 核心数据结构
+
+```c
+// include/linux/list_bl.h
+struct hlist_bl_head {
+    struct hlist_bl_node *first;   /* 最低位为 1 表示已加锁 */
+};
+
+struct hlist_bl_node {
+    struct hlist_bl_node *next, **pprev;
+};
+
+#if defined(CONFIG_SMP) || defined(CONFIG_DEBUG_SPINLOCK)
+#define LIST_BL_LOCKMASK   1UL
+#else
+#define LIST_BL_LOCKMASK   0UL
+#endif
+
+static inline struct hlist_bl_node *hlist_bl_first(struct hlist_bl_head *h)
+{
+    return (struct hlist_bl_node *)
+        ((unsigned long)h->first & ~LIST_BL_LOCKMASK);
+}
+
+static inline void hlist_bl_set_first(struct hlist_bl_head *h,
+                                      struct hlist_bl_node *n)
+{
+    LIST_BL_BUG_ON((unsigned long)n & LIST_BL_LOCKMASK);
+    h->first = (struct hlist_bl_node *)
+        ((unsigned long)n | LIST_BL_LOCKMASK);
+}
+```
+
+`hlist_bl_lock()` / `hlist_bl_unlock()` 通过 `bit_spin_lock(0, &h->first)` 操作这个低位；所有修改链表的操作都必须在持锁状态下进行。
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `hlist_bl_head.first` | `struct hlist_bl_node *` | 首节点指针；最低位是桶锁标志（`LIST_BL_LOCKMASK`） |
+| `hlist_bl_node.next` | `struct hlist_bl_node *` | 指向下一个节点；链尾为 `NULL` |
+| `hlist_bl_node.pprev` | `struct hlist_bl_node **` | 指向前驱 `next` 或 `head.first`；删除 O(1) |
+| 锁位 | `unsigned long` 最低位 | `hlist_bl_lock()` 用 `bit_spin_lock` 置位；取节点时用 `first & ~1` 屏蔽 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph hlistbl {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="hlist_bl：首指针最低位兼作桶锁", labelloc=t, fontsize=14];
+  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  head [label="hlist_bl_head\nfirst | LOCK", fillcolor="#FFF3E0"];
+  a [label="节点 A\nnext / pprev"];
+  b [label="节点 B\nnext / pprev"];
+  nul [shape=plaintext, label="NULL"];
+
+  head -> a [label="first（去掉锁位）"];
+  a -> b [label="next"];
+  b -> nul [label="next"];
+  a -> head [style=dashed, color="#2E7D32", label="pprev"];
+  b -> a [style=dashed, color="#2E7D32", label="pprev"];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="修改链表前：first |= LOCK（bit 0）\n取节点：first & ~LOCK\n读取/写入节点本身仍用 pprev，O(1)"];
+  b -> note [style=invis];
+}
+@enddot
+```
+
+*结构图：`first` 同时承担"首节点指针"和"桶锁"两个角色，省掉每桶一个 `spinlock_t`。*
+
+#### 2.5.3 图解与典型应用
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title hlist_bl：首指针最低位兼作桶锁
+state "未加锁\nfirst = node0" as U
+state "已加锁\nfirst = (node0 | 1)" as L
+[*] --> U
+U --> L : hlist_bl_lock()\nbit_spin_lock(0, &first)
+L --> U : hlist_bl_unlock()
+note bottom of L
+  LIST_BL_LOCKMASK = 1（SMP/DEBUG_SPINLOCK）
+  取首节点：first & ~LIST_BL_LOCKMASK
+  修改链表前必须置位锁标志；
+  删除仍需 pprev，O(1)
+end note
+@enduml
+```
+
+*图 2-5：未加锁时 `first` 直接指向首节点；加锁后最低位置 1。取节点时必须用 `first & ~LIST_BL_LOCKMASK` 屏蔽锁位。*
+
+本树 `fs/dcache.c` 的 dentry 哈希表就是该结构：
+
+```c
+static struct hlist_bl_head *dentry_hashtable __ro_after_init __used;
+
+static inline struct hlist_bl_head *d_hash(unsigned long hashlen)
+{
+    return runtime_const_ptr(dentry_hashtable) +
+        ((hashlen) % (dentry_hashtable_size >> 1));
+}
+
+/* __d_lookup_rcu() 等读路径 */
+struct hlist_bl_head *b = d_hash(dentry->d_name.hash);
+hlist_bl_lock(b);
+...
+hlist_bl_unlock(b);
+```
+
+---
+
+### 2.6 优先级链表 (plist)
+
+#### 2.6.1 概述
+
+`plist` 是"按优先级排序的双向链表"，同时维护两条链：
+
+- `prio_list`：每个优先级只保留一个代表节点，按 `prio` 升序，**不含重复优先级**。
+- `node_list`：包含所有节点，按 `prio` 升序；同一优先级内部保持 **FIFO**。
+
+`INT_MIN` 表示最高优先级，`INT_MAX` 表示最低优先级。插入时先在 `prio_list` 中定位，再到 `node_list` 中插入；删除时若删掉的是该优先级的代表节点，需要让同优先级的后继节点接替它在 `prio_list` 中的位置。
+
+#### 2.6.2 核心数据结构
+
+```c
+// include/linux/plist_types.h
+struct plist_head {
+    struct list_head node_list;
+};
+
+struct plist_node {
+    int                 prio;
+    struct list_head    prio_list;
+    struct list_head    node_list;
+};
+```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `plist_head.node_list` | `struct list_head` | 所有节点的有序链（按 `prio` 升序，同优先级 FIFO） |
+| `plist_node.prio` | `int` | 优先级；`INT_MIN` 最高，`INT_MAX` 最低 |
+| `plist_node.prio_list` | `struct list_head` | 只挂"每个优先级的代表节点"，用于快速定位插入点 |
+| `plist_node.node_list` | `struct list_head` | 挂到 `plist_head.node_list` 的节点 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph plist {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="plist：prio_list 管优先级，node_list 管全部节点", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  head [label="{plist_head|node_list}", fillcolor="#FFF3E0"];
+  n10 [label="{prio=10|{<pl>prio_list|<nl>node_list}}"];
+  n21a [label="{prio=21|{<pl>prio_list|<nl>node_list}}"];
+  n21b [label="{prio=21|{<pl>—|<nl>node_list}}"];
+  n40 [label="{prio=40|{<pl>prio_list|<nl>node_list}}"];
+
+  head -> n10:nl [label="node_list"];
+  n10:nl -> n21a:nl [label="node_list"];
+  n21a:nl -> n21b:nl [label="node_list（同 prio FIFO）"];
+  n21b:nl -> n40:nl [label="node_list"];
+
+  n10:pl -> n21a:pl [color="#2E7D32", style=dashed, label="prio_list"];
+  n21a:pl -> n40:pl [color="#2E7D32", style=dashed, label="prio_list"];
+}
+@enddot
+```
+
+*结构图：`prio_list` 只保留每个优先级的一个代表（绿色虚线）；`node_list` 包含全部节点，同优先级按 FIFO 排列。*
+
+#### 2.6.3 图解：插入过程
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title plist：按优先级插入（同优先级 FIFO）
+start
+:从 plist_first() 开始沿 prio_list 查找;
+if (找到第一个 prio > new->prio 的节点 iter?) then (是)
+  if (iter 之前已有相同 prio?) then (是)
+    :只插入 node_list，\n排在同优先级最后一个之后;
+  else (否)
+    :把 new 插入 prio_list（iter 之前）;
+    :把 new 插入 node_list（iter->node_list 之前）;
+  endif
+else (否)
+  :插入两个链表的尾部;
+endif
+note right
+  prio_list：每个优先级只保留一个代表节点，按 prio 升序
+  node_list：所有节点，按 prio 升序；同 prio 保持 FIFO
+  INT_MIN 优先级最高，INT_MAX 最低
+end note
+stop
+@enduml
+```
+
+*图 2-6：`plist_add()` 在 `prio_list` 中找到第一个 `prio` 更大的节点；若同优先级已存在，只插入 `node_list` 尾部，从而保持 FIFO；否则同时插入两条链。*
+
+#### 2.6.4 核心 API 与应用
+
+```c
+void plist_add(struct plist_node *node, struct plist_head *head);
+void plist_del(struct plist_node *node, struct plist_head *head);
+void plist_requeue(struct plist_node *node, struct plist_head *head);
+
+static inline struct plist_node *plist_first(const struct plist_head *head);
+static inline struct plist_node *plist_last(const struct plist_head *head);
+```
+
+典型用户：
+
+- **PM QoS**：`kernel/power/qos.c` 用 `plist` 按延迟/吞吐量约束排序，`plist_first()` 取最严格约束。
+- **实时调度 pushable tasks**：`kernel/sched/rt.c` 的 `rt_rq->pushable_tasks` 用优先级链维护可推送任务。
+- **Futex PI 等待队列**：`kernel/futex/core.c` 的 `futex_hash_bucket.chain` 用 `plist` 按优先级挂等待者。
+
+---
+
+### 2.7 引用计数链表 (klist)
+
+#### 2.7.1 概述
+
+`klist` 是"带引用计数的链表"，解决的是**遍历期间节点被删除**的问题：迭代器在取节点时增加引用；节点被 `klist_del()` 后只是标记为 dead 并丢掉初始引用，真正从链表摘除要等最后一个引用 `put`（`klist_release()`）。设备模型的 `device`、`driver`、`class` 等对象就使用它。
+
+#### 2.7.2 核心数据结构
+
+```c
+// include/linux/klist.h
+struct klist {
+    spinlock_t          k_lock;
+    struct list_head    k_list;
+    void                (*get)(struct klist_node *);
+    void                (*put)(struct klist_node *);
+} __attribute__ ((aligned (sizeof(void *))));
+
+struct klist_node {
+    void                *n_klist;   /* 最低位 KNODE_DEAD */
+    struct list_head    n_node;
+    struct kref         n_ref;
+};
+
+struct klist_iter {
+    struct klist        *i_klist;
+    struct klist_node   *i_cur;
+};
+```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `klist.k_lock` | `spinlock_t` | 保护 `k_list` 的链表锁 |
+| `klist.k_list` | `struct list_head` | 节点链 |
+| `klist.get/put` | 函数指针 | 迭代器取/放节点时对宿主对象加/减引用 |
+| `klist_node.n_klist` | `void *` | 指向所属 `klist`；最低位 `KNODE_DEAD` 表示已删除 |
+| `klist_node.n_node` | `struct list_head` | 挂到 `k_list` 的链表节点 |
+| `klist_node.n_ref` | `struct kref` | 节点引用计数；归零时 `klist_release()` 才真正 `list_del()` |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph klist {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="klist：链表节点自带 kref，迭代安全", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  k [label="{klist|k_lock|k_list|get()|put()}", fillcolor="#FFF3E0"];
+  n1 [label="{klist_node|n_klist|n_node|n_ref}"];
+  n2 [label="{klist_node|n_klist|n_node|n_ref}"];
+  obj1 [label="宿主对象\ndevice / driver"];
+  obj2 [label="宿主对象\ndevice / driver"];
+
+  k -> n1 [label="k_list"];
+  n1 -> n2 [label="n_node"];
+  n1 -> obj1 [style=dashed, label="container_of"];
+  n2 -> obj2 [style=dashed, label="container_of"];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="n_klist 最低位 = KNODE_DEAD\n迭代器 klist_next() 对节点 get()\n删除时先置 dead；引用归零才 list_del()"];
+  n2 -> note [style=invis];
+}
+@enddot
+```
+
+*结构图：`klist_node` 内嵌 `kref`；迭代器持有引用期间，即使节点被 `klist_del()` 也不会立即释放。*
+
+`n_klist` 的最低 bit 是 `KNODE_DEAD` 标志，迭代器通过 `knode_dead()` 跳过已删除节点。
+
+#### 2.7.3 图解：生命周期
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title klist：可安全删除的引用计数链表
+state "已加入链表\nn_ref = 1" as A
+state "迭代中\nn_ref > 1" as I
+state "已标记删除\nKNODE_DEAD" as D
+state "等待最后一个引用" as W
+[*] --> A : klist_add_head/tail()\nkref_init() + get()
+A --> I : klist_next()\nklist_node_get()
+I --> A : klist_iter_exit()\nput()
+A --> D : klist_del()\nknode_kill() + put()
+D --> W : klist_remove()\n等待 n_ref 归零
+W --> [*] : 最后一个 put() → klist_release()\nlist_del() + 释放宿主对象
+note right of D
+  n_klist 最低位是 KNODE_DEAD；
+  节点在引用归零前仍留在链表中，
+  迭代器跳过 dead 节点
+end note
+@enduml
+```
+
+*图 2-7：`klist_add_*()` 初始化 `kref=1` 并调用 `get`；迭代器 `klist_next()` 增加引用；`klist_del()` 置 dead 并 `put`，最后一个引用释放时 `klist_release()` 才真正 `list_del()`；`klist_remove()` 等待引用归零。*
+
+#### 2.7.4 核心 API
+
+```c
+void klist_init(struct klist *k, void (*get)(struct klist_node *),
+                void (*put)(struct klist_node *));
+void klist_add_head(struct klist_node *n, struct klist *k);
+void klist_add_tail(struct klist_node *n, struct klist *k);
+void klist_add_before(struct klist_node *n, struct klist_node *pos);
+void klist_add_behind(struct klist_node *n, struct klist_node *pos);
+
+void klist_del(struct klist_node *n);     /* 标记删除，异步释放 */
+void klist_remove(struct klist_node *n);  /* 等待所有引用释放 */
+
+int klist_node_attached(struct klist_node *n);
+
+void klist_iter_init(struct klist *k, struct klist_iter *i);
+void klist_iter_init_node(struct klist *k, struct klist_iter *i,
+                          struct klist_node *n);
+void klist_iter_exit(struct klist_iter *i);
+struct klist_node *klist_next(struct klist_iter *i);
+struct klist_node *klist_prev(struct klist_iter *i);
+```
+
+典型用户：`drivers/base/core.c` 的 `klist_children`、`drivers/base/class.c` 的 `klist_class_dev_get/put`、`drivers/base/attribute_container.c` 等。
+
+---
+
 ## 3. 树结构
 
 ### 3.1 红黑树 (rb_node)
@@ -579,6 +1391,44 @@ struct rb_root {
     struct rb_node *rb_node;
 };
 ```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `__rb_parent_color` | `unsigned long` | 父节点指针（高位）+ 颜色（最低位）；`rb_parent()` 屏蔽低位取父指针 |
+| `rb_left` | `struct rb_node *` | 左子节点 |
+| `rb_right` | `struct rb_node *` | 右子节点 |
+| `rb_root.rb_node` | `struct rb_node *` | 根节点指针；空树为 `NULL` |
+| `rb_root_cached.rb_leftmost` | `struct rb_node *` | 缓存最左节点，使 `rb_first()` 为 O(1) |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph rb {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="rb_node：父指针与颜色合并在 __rb_parent_color 中", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  root [label="{rb_root|rb_node}", fillcolor="#FFF3E0"];
+  g [label="{G|__rb_parent_color = NULL | BLACK|rb_left|rb_right}", fillcolor="#EEEEEE"];
+  p [label="{P|__rb_parent_color = G | RED|rb_left|rb_right}", fillcolor="#FFEBEE"];
+  u [label="{U|__rb_parent_color = G | RED|rb_left|rb_right}", fillcolor="#FFEBEE"];
+  n [label="{N|__rb_parent_color = P | RED|rb_left = NULL|rb_right = NULL}", fillcolor="#FFEBEE"];
+
+  root -> g [label="rb_node"];
+  g -> p [label="rb_left"];
+  g -> u [label="rb_right"];
+  p -> n [label="rb_left"];
+  p -> g [style=dashed, color="#2E7D32", label="rb_parent"];
+  u -> g [style=dashed, color="#2E7D32", label="rb_parent"];
+  n -> p [style=dashed, color="#2E7D32", label="rb_parent"];
+}
+@enddot
+```
+
+*结构图：红黑树节点通过 `rb_left`/`rb_right` 组织成二叉搜索树，虚线是编码在 `__rb_parent_color` 中的父指针；节点颜色也放在该字段最低位。*
 
 **关键设计**：`__rb_parent_color` 字段将父节点指针和颜色标志位编码在一个 `unsigned long` 中。由于 `rb_node` 按 `sizeof(long)` 对齐，地址的低 2 位始终为 0，可用于存储颜色信息（红/黑）。
 
@@ -711,6 +1561,88 @@ Case 4: 兄弟节点是黑色，兄弟的右子是红色
         → 将兄弟设为父的颜色，父变黑，兄弟右子变黑，左旋父节点
         → 修复完成
 ```
+
+**图解：插入修复的循环与旋转**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title 红黑树插入修复（rb_insert_color）
+start
+repeat
+  if (父节点 P 是黑色?) then (是)
+    :无需修复;
+    stop
+  elseif (叔节点 U 是红色?) then (是)
+    :P、U 变黑，祖父 G 变红;
+    :N = G，继续向上检查;
+    note right: Case 1：颜色翻转
+  else (否)
+    if (P 是 G 的左子?) then (是)
+      if (N 是 P 的右子?) then (是)
+        :以 P 为轴左旋，转为 LL;
+        note right: Case 2：LR
+      endif
+      :以 G 为轴右旋;
+      :P 变黑，G 变红;
+      note right: Case 3：LL
+    else (否)
+      if (N 是 P 的左子?) then (是)
+        :以 P 为轴右旋，转为 RR;
+        note right: Case 2：RL
+      endif
+      :以 G 为轴左旋;
+      :P 变黑，G 变红;
+      note right: Case 3：RR
+    endif
+    stop
+  endif
+repeat while (N 不是根 且 N 的父节点为红色?) is (是)
+stop
+@enduml
+```
+
+*图 3-1：Case 1 颜色翻转后把 `N` 上移到祖父继续检查；Case 2/3 通过一次或两次旋转结束修复。*
+
+**图解：删除修复的四种情形**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title 红黑树删除修复（rb_erase）
+start
+:删除黑节点后，x 为替代节点（可能为 NULL）;
+while (x 非根 且 x 为黑色?) is (是)
+  if (兄弟 w 是红色?) then (是)
+    :w 变黑，父变红，旋转父;
+    :w = 新的兄弟;
+    note right: Case 1
+  endif
+  if (w 的两个子节点都为黑色?) then (是)
+    :w 变红;
+    :x = 父，问题上移;
+    note right: Case 2
+  else (否)
+    if (w 的远子为黑色?) then (是)
+      :近子变黑，w 变红，旋转 w;
+      :w = 新的兄弟;
+      note right: Case 3
+    endif
+    :w 取父色，父变黑，远子变黑;
+    :旋转父，x = 根;
+    note right: Case 4
+  endif
+endwhile
+:x 变黑（吸收额外黑高）;
+stop
+@enduml
+```
+
+*图 3-2：删除黑节点后，`x` 带有"额外一重黑高"；Case 1 转化为兄弟为黑，Case 2 上移，Case 3 转化为 Case 4，Case 4 结束。*
 
 #### 3.1.8 完整 API 参考
 
@@ -888,11 +1820,69 @@ struct radix_tree_node {
 };
 ```
 
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `shift` | `unsigned char` | 当前节点对应的索引位偏移；根节点最大，叶节点为 0 |
+| `offset` | `unsigned char` | 本节点在父节点 `slots[]` 中的下标 |
+| `count` | `unsigned int` | 非空子项计数，用于判断节点是否为空 |
+| `slots[64]` | `void __rcu *` | 64 个槽位：内部节点指针或条目指针；低位编码内部节点 |
+| `tags[3][1]` | `unsigned long` | 每个 slot 的标记位（脏、回写等），用于快速查找带标记条目 |
+| `radix_tree_root.rnode` | `struct radix_tree_node *` | 根节点；空树为 `NULL` |
+| `radix_tree_root.gfp_mask` | `gfp_t` | 节点分配标志 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph radix {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="radix_tree_node：每层 6 位、64 个 slot、每节点 3 组 tag", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  root [label="{radix_tree_root|xa_lock|gfp_mask|rnode}", fillcolor="#FFF3E0"];
+  nd [label="{radix_tree_node|shift = 6|offset = 父 slot 下标|count = 非空子项数|slots[0..63]|tags[0..2]}"];
+  child [label="子节点 / 条目"];
+  empty [label="NULL slot", style="rounded,dashed", fillcolor="white"];
+
+  root -> nd [label="rnode"];
+  nd -> child [label="slots[10]（bits[11:6]）"];
+  nd -> empty [style=dashed, label="其余 slot"];
+}
+@enddot
+```
+
+*结构图：`radix_tree_root` 指向根节点；每个节点有 64 个 slot，按索引的 6 位一段向下；`tags` 与 `slots` 平行，记录每个槽位的标记。*
+
 #### 3.2.3 关键设计
 
 - **层级结构**：每层处理 6 位（`RADIX_TREE_MAP_SHIFT = 6`），即每个节点有 64 个 slot
 - **标记系统**：每个节点维护 tags 位图，用于标记页面的脏、回写等状态
 - **RCU 安全**：支持 RCU 无锁读取
+
+**图解：按索引位逐层下降**
+
+```plantuml
+@startdot
+digraph radix {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="radix tree：每个节点 64 个 slot，每层消耗 6 位索引", labelloc=t, fontsize=14];
+  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  root [label="root\nshift = 12"];
+  n1 [label="内部节点\nshift = 6\nslot[10]"];
+  leaf [label="条目\nindex = 0x0A001"];
+  empty [label="未用 slot = NULL", style="rounded,dashed", fillcolor="white"];
+
+  root -> n1 [label=" bits[11:6] = 10"];
+  n1 -> leaf [label=" bits[5:0] = 1"];
+  root -> empty [style=dashed, label="其余 63 个 slot"];
+}
+@enddot
+```
+
+*图 3-3：插入索引 `0x0A001` 时，按每 6 位一段从根向下创建内部节点，最后把条目放到叶 slot；未使用的 slot 保持 `NULL`，因此稀疏索引不会浪费整棵子树。*
 
 #### 3.2.4 历史地位
 
@@ -951,6 +1941,46 @@ struct maple_node {
     };
 };
 ```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `maple_tree.ma_lock` | `spinlock_t` | 保护写操作 |
+| `maple_tree.ma_flags` | `unsigned int` | 树标志（如分配范围模式） |
+| `maple_tree.ma_root` | `void __rcu *` | 根节点；低位编码节点类型 |
+| `ma_state.index` / `last` | `unsigned long` | 当前操作区间的起点/终点 |
+| `ma_state.node` | `struct maple_enode *` | 当前节点（编码指针） |
+| `ma_state.min` / `max` | `unsigned long` | 当前节点覆盖的最小/最大索引 |
+| `ma_state.depth` / `offset` | `unsigned char` | 下降深度 / 节点内槽位 |
+| 内部节点 `pivots[]` | `unsigned long` | 区间分割点 |
+| 内部节点 `slots[]` | `void *` | 子节点或区间条目 |
+| 叶节点 `[start, last]` | `unsigned long` | 该条目覆盖的区间 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph maple {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="Maple Tree 节点概念布局：内部节点看 pivots/slots，叶节点存 [start,last]", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  tree [label="{maple_tree|ma_lock|ma_flags|ma_root}", fillcolor="#FFF3E0"];
+  state [label="{ma_state|tree|index|last|node|min|max|depth|offset|status}"];
+  internal [label="{内部节点|type|parent|pivots[0..n]|slots[0..n]}"];
+  leaf1 [label="{叶节点|type|parent|[start, last]|entry}", fillcolor="#E8F5E9"];
+  leaf2 [label="{叶节点|type|parent|[start, last]|entry}", fillcolor="#E8F5E9"];
+
+  tree -> internal [label="ma_root"];
+  state -> internal [style=dashed, label="mas.node"];
+  internal -> leaf1 [label="slot[i]"];
+  internal -> leaf2 [label="slot[i+1]"];
+}
+@enddot
+```
+
+*结构图：内部节点用 `pivots[]` 划分范围、`slots[]` 指向子节点/条目；叶条目直接保存 `[start, last]`。`ma_state` 是遍历/写入时的游标。*
 
 #### 3.3.3 核心操作
 
@@ -1028,6 +2058,32 @@ Maple Tree:  range [0x1000, 0x1FFF] → VMA1
 - 写操作通过 COW（Copy-on-Write）方式更新节点
 - 读操作在 RCU 临界区内可以直接访问旧版本或新版本
 - 节点回收通过 RCU 回调延迟释放
+
+**图解：区间查找与 pivots**
+
+```plantuml
+@startdot
+digraph maple {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="Maple Tree：pivots 划分区间，叶子直接保存 [start, last] 条目", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  root [label="{根节点|pivots: 10 | 30 | MAX|slots: 0 | 1 | 2}"];
+  v0 [label="[0, 9]\nVMA1"];
+  v1 [label="[10, 29]\nVMA2"];
+  v2 [label="[30, MAX]\nVMA3"];
+
+  root -> v0 [label="addr < 10"];
+  root -> v1 [label="10 ≤ addr < 30"];
+  root -> v2 [label="addr ≥ 30"];
+
+  q [shape=note, style=filled, fillcolor="#FFF8E1", label="查找 addr=25：\n25 落在 pivot[1]=30 之前、pivot[0]=10 之后\n→ 进入 slot[1]，返回 VMA2\n\n插入/删除导致区间变化时，\n分裂或合并叶子并更新 pivots"];
+  v1 -> q [style=invis];
+}
+@enddot
+```
+
+*图 3-4：内部节点的 `pivots[]` 划分地址范围，`slots[]` 指向子节点或区间条目；查找 `addr=25` 时只需在 pivots 中定位到 `slot[1]`。区间变化时分裂/合并叶子并更新 pivots。*
 
 #### 3.3.5 完整使用示例
 
@@ -1173,6 +2229,18 @@ extern struct btree_geo btree_geo64;   // 64 位键
 extern struct btree_geo btree_geo128;  // 128 位键（2 × u64）
 ```
 
+| 结构体/字段 | 作用 |
+|---|---|
+| `btree_head.node` | 根节点指针；节点本身是一段 `unsigned long` 数组，不额外包结构体 |
+| `btree_head.mempool` | 节点内存池；分裂/插入时从这里取新节点，避免在内存紧张时分配失败 |
+| `btree_head.height` | 树高；结合几何结构可算出从根到叶要下降多少层 |
+| `btree_geo.keylen` | 键长（以 `unsigned long` 为单位），32/64/128 位键分别为 1/1/2 |
+| `btree_geo.no_pairs` | 每个节点最多容纳的键值对数，决定扇出 |
+| `btree_geo.no_longs` | 每个节点占用的 `unsigned long` 总数，用于计算节点边界 |
+| `btree_geo32/64/128` | 预定义几何结构，按键宽选择不同的节点布局 |
+
+节点内部布局见下一小节内嵌的 PlantUML 结构图。
+
 ##### 3.4.3.3 节点布局
 
 ```c
@@ -1190,6 +2258,40 @@ extern struct btree_geo btree_geo128;  // 128 位键（2 × u64）
 // 约定：最小键值在最右侧，未使用的槽填 NULL
 // 查找时顺序遍历，遇到第一个 NULL 键终止
 ```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `btree_head.node` | `unsigned long *` | 根节点；空树为 `NULL` |
+| `btree_head.mempool` | `mempool_t *` | 节点内存池，保证内存压力下仍可分配 |
+| `btree_head.height` | `int` | 树高；叶节点层为 0 |
+| `btree_geo.keylen` | `int` | 键长（以 `unsigned long` 为单位） |
+| `btree_geo.no_pairs` | `int` | 每个节点最多容纳的键值对数 |
+| `btree_geo.no_longs` | `int` | 节点中 key 区占用的 long 数 |
+| 节点 `key[]` | `unsigned long` | 节点前半部分：排序键 |
+| 节点 `val[]` | `void *` | 节点后半部分：键对应的值/子节点指针 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph btree {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="lib/btree 节点布局：一个节点内先存 keys，再存 vals", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  head [label="{btree_head|node|mempool|height}", fillcolor="#FFF3E0"];
+  geo [label="{btree_geo|keylen|no_pairs|no_longs}"];
+  nd [label="{节点（128 字节）|key[0]|key[1]|…|key[no_pairs-1]|val[0]|val[1]|…|val[no_pairs-1]}"];
+
+  head -> nd [label="node"];
+  geo -> nd [style=dashed, label="决定槽位数"];
+}
+@enddot
+```
+
+*结构图：`btree_head` 只有根指针、内存池和高度；节点是 `key[] + val[]` 的连续布局，没有父指针，分裂时由上层路径维护。*
 
 ##### 3.4.3.4 核心 API
 
@@ -1270,6 +2372,39 @@ static void *bval(struct btree_geo *geo, unsigned long *node, int n)
 - **无二分查找**：节点内使用线性扫描（`longcmp` 逐个比较），而非二分查找。文档注释明确说明 "we currently do not use binary search"，这是因为节点尺寸小（128 字节），线性扫描的缓存局部性更好
 - **NULL 值不可存储**：lookup 返回 NULL 表示未找到，因此不能存储 NULL 指针
 - **内存池**：节点通过 mempool 分配，保证在内存压力下仍能分配节点（可能阻塞等待）
+
+**图解：B+Tree 叶节点分裂**
+
+```plantuml
+@startdot
+digraph btree {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="B+Tree 叶节点分裂：中间键提升到父节点", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  subgraph cluster_before {
+    label="分裂前：叶节点已满（8 个键）";
+    fontname="WenQuanYi Zen Hei";
+    pb [label="{叶节点|k1|k2|k3|k4|k5|k6|k7|k8|next}"];
+  }
+
+  subgraph cluster_after {
+    label="插入 k9 后：分裂为两个叶节点，k5 提升";
+    fontname="WenQuanYi Zen Hei";
+    pa [label="{父节点|…|k5|…}"];
+    la [label="{左叶|k1|k2|k3|k4|next}"];
+    lb [label="{右叶|k5|k6|k7|k8|k9|next}"];
+    pa -> la [label="< k5"];
+    pa -> lb [label="≥ k5"];
+    la -> lb [style=dashed, label="叶链"];
+  }
+
+  pb -> pa [style=invis];
+}
+@enddot
+```
+
+*图 3-5：叶节点满后分裂为左右两半，中间键提升到父节点；叶节点之间仍用链表相连，范围扫描不穿越父节点。`lib/btree.c` 的分裂逻辑在此基础上递归向上。*
 
 #### 3.4.4 Btrfs COW B-Tree
 
@@ -1353,6 +2488,15 @@ struct btrfs_path {
     // ... 其他标志位
 };
 ```
+
+| 结构体/字段 | 作用 |
+|---|---|
+| `btrfs_header.csum` / `fsid` | 块校验和与文件系统 UUID，用于识别和校验树块 |
+| `btrfs_header.bytenr` / `generation` | 本块物理地址与事务世代号；COW 时新块获得新地址和世代 |
+| `btrfs_header.owner` / `level` / `nritems` | 所属树根、层级（0 为叶）、条目数 |
+| `btrfs_key_ptr.key` / `blockptr` | 内部节点中：子节点最小键与子节点块地址 |
+| `btrfs_item.key` / `offset` / `size` | 叶节点中：条目键、数据区偏移、数据长度；item 区从头部增长，数据区从尾部增长 |
+| `btrfs_path.nodes[]` / `slots[]` | 缓存根到叶的路径和各层槽位，`btrfs_search_slot()` 沿路径下降并加锁 |
 
 ##### 3.4.4.3 树结构
 
@@ -1531,6 +2675,15 @@ struct dx_hash_info {
 };
 ```
 
+| 结构体/字段 | 作用 |
+|---|---|
+| `dx_root.info.indirect_levels` | 索引层数；0 表示根块直接指向叶块，1 表示还有一层内部节点 |
+| `dx_root.info.hash_version` | 文件名哈希算法版本（TEA、SIPHASH 等），查找时按它重算哈希 |
+| `dx_entry.hash` / `block` | 哈希键与目标块号；条目数组按 `hash` 升序，支持二分查找 |
+| `dx_node` | 非根内部节点，布局与根块类似，但没有 `dx_root_info` 和伪装目录项 |
+| `dx_frame.bh` / `entries` / `at` | 搜索路径的一层：索引块缓冲、条目数组起点、当前命中条目 |
+| `dx_tail.dt_checksum` | 索引块末尾的 CRC32C 校验和（启用 metadata_csum 时） |
+
 ##### 3.4.5.3 树结构
 
 ```
@@ -1648,6 +2801,15 @@ struct xfs_iext_rec {
 // 叶节点：  [rec1][rec2]...[recN][prev_ptr][next_ptr]
 // 内部节点：[key1][key2]...[keyN][ptr1][ptr2]...[ptrN]
 ```
+
+| 结构体/字段 | 作用 |
+|---|---|
+| `xfs_iext_leaf.recs[]` | 叶节点中的 extent 记录数组，按文件逻辑偏移排序 |
+| `xfs_iext_leaf.prev` / `next` | 叶节点双向链表；范围扫描时沿 `next` 前进，不必回到父节点 |
+| `xfs_iext_node.keys[]` | 内部节点的分隔键，用于二分/线性定位子节点 |
+| `xfs_iext_node.ptrs[]` | 与 `keys[]` 平行的子节点指针，指向下一层 node 或 leaf |
+| `xfs_iext_rec.lo` | 低 54 位保存 `startoff`，高 10 位保存 `startblock` 的低 10 位 |
+| `xfs_iext_rec.hi` | 低 21 位保存 `length`，bit 21 为 `unwritten`，其余高位保存 `startblock` 高位 |
 
 **查找过程**：
 
@@ -2091,6 +3253,170 @@ xfs_alloc_fix_freelist() → xfs_alloc_ag_vextent()
 
 ---
 
+### 3.5 区间树 (interval_tree)
+
+#### 3.5.1 概述
+
+区间树解决的是"**哪些区间与查询区间 [start, last] 重叠**"的问题。内核的 `interval_tree` 建立在红黑树之上，是一种**增强红黑树（augmented rbtree）**：每个节点除了 `start`/`last`，还维护 `__subtree_last`，表示**整棵子树中最大的 `last`**。
+
+有了这个增强字段，查询可以在 `O(log n + k)` 内完成（k 为命中数）：
+
+- 若左子树的 `__subtree_last < 查询 start`，则左子树所有区间都在查询区间左侧，整棵剪掉；
+- 若当前节点的 `start > 查询 last`，则当前节点及其右子树都不可能重叠，直接返回；
+- 否则检查当前节点是否满足 `start <= node->last && node->start <= last`。
+
+#### 3.5.2 核心数据结构
+
+```c
+// include/linux/interval_tree.h
+struct interval_tree_node {
+    struct rb_node  rb;
+    unsigned long   start;          /* 区间起点（含） */
+    unsigned long   last;           /* 区间终点（含） */
+    unsigned long   __subtree_last; /* 子树中最大的 last */
+};
+
+void interval_tree_insert(struct interval_tree_node *node,
+                          struct rb_root_cached *root);
+void interval_tree_remove(struct interval_tree_node *node,
+                          struct rb_root_cached *root);
+
+struct interval_tree_node *
+interval_tree_iter_first(struct rb_root_cached *root,
+                         unsigned long start, unsigned long last);
+struct interval_tree_node *
+interval_tree_iter_next(struct interval_tree_node *node,
+                        unsigned long start, unsigned long last);
+```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `rb` | `struct rb_node` | 挂入红黑树的链接（父/左/右/颜色） |
+| `start` | `unsigned long` | 区间起点（含） |
+| `last` | `unsigned long` | 区间终点（含） |
+| `__subtree_last` | `unsigned long` | 整棵子树中最大的 `last`，用于剪枝 |
+| `rb_root_cached.rb_root` | `struct rb_root` | 红黑树根 |
+| `rb_root_cached.rb_leftmost` | `struct rb_node *` | 最左节点，加速区间查询起点 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph itree {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="interval_tree_node：红黑树节点 + start/last + 子树最大 last", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  root [label="{rb_root_cached|rb_root|rb_leftmost}", fillcolor="#FFF3E0"];
+  n8 [label="{节点|[8, 15]|__subtree_last = 40|rb_left/rb_right}", fillcolor="#E8F5E9"];
+  n1 [label="{节点|[1, 6]|__subtree_last = 10|rb_left/rb_right}"];
+  n20 [label="{节点|[20, 40]|__subtree_last = 40|rb_left/rb_right}"];
+
+  root -> n8 [label="rb_root"];
+  n8 -> n1 [label="left"];
+  n8 -> n20 [label="right"];
+  n1 -> n8 [style=dashed, color="#2E7D32", label="rb parent"];
+  n20 -> n8 [style=dashed, color="#2E7D32", label="rb parent"];
+}
+@enddot
+```
+
+*结构图：每个节点是增强红黑树节点，`__subtree_last` 记录子树最大终点；查询时先看这个值决定能否整棵剪掉。*
+
+#### 3.5.3 插入/删除时维护 `__subtree_last`
+
+`lib/interval_tree.c` 通过 `INTERVAL_TREE_DEFINE()` 生成具体函数，插入路径上的每个祖先都会更新：
+
+```c
+/* include/linux/interval_tree_generic.h（宏展开后的核心逻辑） */
+while (*link) {
+    rb_parent = *link;
+    parent = rb_entry(rb_parent, ITSTRUCT, ITRB);
+    if (parent->ITSUBTREE < last)
+        parent->ITSUBTREE = last;      /* 维护子树最大 last */
+    if (start < ITSTART(parent))
+        link = &parent->ITRB.rb_left;
+    else
+        link = &parent->ITRB.rb_right;
+}
+
+node->ITSUBTREE = last;
+rb_link_node(&node->ITRB, rb_parent, link);
+rb_insert_augmented_cached(&node->ITRB, root, leftmost,
+                           &interval_tree_augment);
+```
+
+删除时 `rb_erase_augmented_cached()` 会回调 `RB_DECLARE_CALLBACKS_MAX` 生成的 augment 函数，自底向上重算 `__subtree_last`。
+
+#### 3.5.4 图解：重叠查询与剪枝
+
+```plantuml
+@startdot
+digraph itree {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="区间树：用子树最大 last 剪枝，查询 [12, 18]", labelloc=t, fontsize=14];
+  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  root [label="[8, 15]\nmax = 40", fillcolor="#E8F5E9"];
+  left [label="[1, 6]\nmax = 10", fillcolor="#EEEEEE"];
+  right [label="[20, 40]\nmax = 40", fillcolor="#FFEBEE"];
+  ll [label="[3, 10]\nmax = 10", fillcolor="#E3F2FD"];
+  lr [label="[9, 12]\nmax = 12", fillcolor="#E3F2FD"];
+
+  root -> left [label="start < 8"];
+  root -> right [label="start ≥ 8"];
+  left -> ll;
+  left -> lr;
+
+  q [shape=note, style=filled, fillcolor="#FFF8E1", label="查询 [12,18]：\n[1,6] 的 max=10 < 12 → 整棵左子树剪掉\n[20,40] 的 start=20 > 18 → 右子树剪掉\n[9,12] 与 [8,15] 命中\n复杂度 O(log n + k)"];
+  right -> q [style=invis];
+}
+@enddot
+```
+
+*图 3-6：查询 [12, 18] 时，[1, 6] 子树的 `max=10 < 12`，整棵剪掉；[20, 40] 的 `start=20 > 18`，右子树剪掉；最终命中 [8, 15] 与 [9, 12]。*
+
+#### 3.5.5 区间空隙迭代
+
+除了"找重叠区间"，内核还提供 `interval_tree_span_iter`，用于把一段范围切分为"已使用区间"和"空洞区间"：
+
+```c
+struct interval_tree_span_iter {
+    struct interval_tree_node *nodes[2];
+    unsigned long first_index;
+    unsigned long last_index;
+    union {
+        unsigned long start_hole;
+        unsigned long start_used;
+    };
+    union {
+        unsigned long last_hole;
+        unsigned long last_used;
+    };
+    int is_hole;
+};
+
+void interval_tree_span_iter_first(struct interval_tree_span_iter *state,
+                                   struct rb_root_cached *itree,
+                                   unsigned long first_index,
+                                   unsigned long last_index);
+void interval_tree_span_iter_next(struct interval_tree_span_iter *state);
+bool interval_tree_span_iter_done(struct interval_tree_span_iter *state);
+```
+
+它按地址顺序交替返回 `is_hole=1`（空洞）和 `is_hole=0`（被区间覆盖），并把连续相邻的节点合并成一个 span，适合"在地址空间中找可用空洞"的场景。
+
+#### 3.5.6 典型应用
+
+- **KVM 内存槽**：`virt/kvm/kvm_main.c` 的 `kvm_memory_slot` 用 `hva_tree` 按 HVA 区间查找内存槽。
+- **内存错误恢复**：`mm/memory-failure.c` 用 `pfn_space_itree` 管理 PFN 地址空间。
+- **VMA 的区间索引**：虽然进程主 VMA 树已迁移到 Maple Tree，`mm/vma.c` 中 `mapping->i_mmap` 和 `anon_vma` 仍使用区间树按地址区间查找 VMA。
+- **IOMMU 地址空间**：`drivers/iommu/virtio-iommu.c`、`drivers/iommu/iommufd/` 的 `io_pagetable` 用区间树管理 IOVA 映射。
+
+---
+
 ## 4. 哈希表
 
 ### 4.1 概述
@@ -2107,6 +3433,18 @@ xfs_alloc_fix_freelist() → xfs_alloc_ag_vextent()
 | 扩容 | 通常不自动扩容（桶大小在编译时确定） | 负载因子达到阈值时自动扩容 |
 | 缓存局部性 | 差（链表节点分散在内存中） | 好（连续存储，遍历桶时缓存命中率高） |
 | 缺点 | 链表节点分散，缓存不友好，需要额外内存分配 | 删除复杂，扩容开销大，负载因子过高时性能急剧下降 |
+
+**节点结构与关键字段**
+
+静态哈希表本身不是独立结构体，而是 `struct hlist_head` 的数组；节点是嵌入宿主的 `struct hlist_node`：
+
+| 组成 | 类型 | 作用 |
+|---|---|---|
+| 桶数组 | `struct hlist_head ht[1 << bits]` | 每个桶只存一个首指针，节省内存 |
+| 桶首指针 | `hlist_head.first` | 指向该桶第一条冲突链节点 |
+| 链节点 | `hlist_node.next` / `pprev` | 正向链 + 反向定位；字段语义见 2.2 节 |
+
+**链接图**见 4.5 节的“拉链法”图：桶数组 → 冲突链 → `NULL`。
 
 ### 4.2 哈希函数
 
@@ -2220,6 +3558,219 @@ void ht_dump(void)
 - **内存管理页缓存**：通过文件索引的哈希值快速定位缓存页
 - **设备号管理**：`dev_name_hash` 用于设备查找
 
+**图解：拉链法的插入与查找**
+
+```plantuml
+@startdot
+digraph hash {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="拉链法哈希表：桶数组 + hlist", labelloc=t, fontsize=14];
+  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  b0 [label="bucket[0]"];
+  b1 [label="bucket[1]"];
+  b2 [label="bucket[2]"];
+  b3 [label="bucket[3]"];
+  n17 [label="key=17\nh=1"];
+  n33 [label="key=33\nh=1"];
+  n58 [label="key=58\nh=2"];
+  null0 [shape=plaintext, label="NULL"];
+  null1 [shape=plaintext, label="NULL"];
+  null2 [shape=plaintext, label="NULL"];
+
+  b0 -> null0;
+  b1 -> n17;
+  n17 -> n33;
+  n33 -> null1 [label="插入在头部"];
+  b2 -> n58;
+  n58 -> null2;
+  b3 -> null2 [style=invis];
+}
+@enddot
+```
+
+*图 4-1：`hash_add()` 把节点插入对应桶的 `hlist` 头部；查找时先算桶号，再在桶内逐个比较键。删除通过 `hlist_del()` 的 `pprev` 在 O(1) 完成。*
+
+### 4.6 可扩容哈希表 (rhashtable)
+
+#### 4.6.1 概述
+
+`hashtable.h` 的桶数组大小在编译期固定，不能扩容。`rhashtable` 解决的是**运行期动态扩容/缩容**的问题，同时保证 RCU 读者在扩容过程中仍可无锁查找。它被 netfilter（nft set）、netlink、连接跟踪等需要承载大量动态条目的子系统使用。
+
+| 特性 | `rhashtable` | 静态 `hashtable.h` |
+|---|---|---|
+| 桶数组 | 运行期分配，可增长/收缩 | 编译期固定 |
+| 读并发 | RCU 无锁 | 需外部锁/RCU |
+| 写并发 | 每桶锁 + 扩容互斥锁 | 调用者自行加锁 |
+| 扩容 | 负载 > 75% 自动扩容，逐桶 rehash | 不支持 |
+| 元素定位 | `rht_obj()` 由 `head_offset` 反推宿主 | 调用者用 `container_of` |
+| 典型场景 | nft set、netlink、conntrack | PID 表、dentry 小表 |
+
+#### 4.6.2 核心数据结构
+
+```c
+// include/linux/rhashtable-types.h
+struct rhash_head {
+    struct rhash_head __rcu *next;
+};
+
+struct bucket_table {
+    unsigned int    size;        /* 桶数量，2 的幂 */
+    unsigned int    nest;        /* 一级嵌套表位数 */
+    u32             hash_rnd;
+    struct list_head walkers;
+    struct rcu_head rcu;
+    struct bucket_table __rcu *future_tbl;  /* 扩容中的新表 */
+    struct rhash_lock_head __rcu *buckets[] ____cacheline_aligned_in_smp;
+};
+
+struct rhashtable {
+    struct bucket_table __rcu *tbl;
+    unsigned int        key_len;
+    unsigned int        max_elems;
+    struct rhashtable_params p;
+    bool                rhlist;
+    struct work_struct  run_work;   /* 延迟扩容/缩容 */
+    struct mutex        mutex;      /* 保护表切换 */
+    spinlock_t          lock;       /* 保护 walker 链表 */
+    atomic_t            nelems;
+};
+
+struct rhashtable_params {
+    u16     nelem_hint;
+    u16     key_len;
+    u16     key_offset;
+    u16     head_offset;
+    unsigned int max_size;
+    u16     min_size;
+    bool    insecure_elasticity;
+    bool    automatic_shrinking;
+    rht_hashfn_t      hashfn;
+    rht_obj_hashfn_t  obj_hashfn;
+    rht_obj_cmpfn_t   obj_cmpfn;
+};
+```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `rhash_head.next` | `struct rhash_head __rcu *` | 桶内冲突链指针；嵌入宿主对象 |
+| `bucket_table.size` | `unsigned int` | 桶数量，必须是 2 的幂 |
+| `bucket_table.hash_rnd` | `u32` | 哈希随机种子，防止哈希碰撞攻击 |
+| `bucket_table.future_tbl` | `struct bucket_table __rcu *` | 扩容中的新表；读者见到它会重试 |
+| `bucket_table.buckets[]` | `rhash_lock_head __rcu *` | 桶数组；每个桶含锁位/链头 |
+| `rhashtable.tbl` | `struct bucket_table __rcu *` | 当前表 |
+| `rhashtable.key_len` | `unsigned int` | 键长度 |
+| `rhashtable.p` | `struct rhashtable_params` | `key_offset`/`head_offset`/`hashfn`/`obj_cmpfn` 等 |
+| `rhashtable.nelems` | `atomic_t` | 元素计数，决定扩容/缩容 |
+| `rhashtable.mutex` | `struct mutex` | 保护表切换 |
+| `rhashtable.run_work` | `struct work_struct` | 异步扩容/缩容 worker |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph rht {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="rhashtable：bucket_table 的桶数组 + rhash_head 链", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  ht [label="{rhashtable|tbl|key_len|p|nelems|mutex|run_work}", fillcolor="#FFF3E0"];
+  tbl [label="{bucket_table|size|hash_rnd|future_tbl|buckets[]}"];
+  b [label="bucket[i]\nrhash_lock_head"];
+  e [label="{宿主对象|rhash_head.next|key|value}"];
+  e2 [label="{宿主对象|rhash_head.next|key|value}"];
+
+  ht -> tbl [label="tbl"];
+  tbl -> b [label="buckets[i]"];
+  b -> e [label="链头"];
+  e -> e2 [label="next"];
+}
+@enddot
+```
+
+*结构图：`rhashtable.tbl` 指向 `bucket_table`；`buckets[i]` 是桶链头，冲突元素通过嵌入的 `rhash_head.next` 串起来；`future_tbl` 在扩容期间指向新表。*
+
+#### 4.6.3 扩容与缩容
+
+`rhashtable_insert_fast()` 在元素数超过桶数 75% 时排队 `run_work`；worker 在持有 `ht->mutex` 的情况下分配新表，把 `future_tbl` 挂到旧表上，然后**逐桶**迁移：锁住旧桶，摘下整条链，按新掩码重新插入新表。
+
+```c
+/* lib/rhashtable.c：worker 的判定逻辑 */
+if (rht_grow_above_75(ht, tbl))
+    err = rhashtable_rehash_alloc(ht, tbl, tbl->size * 2);
+else if (ht->p.automatic_shrinking && rht_shrink_below_30(ht, tbl))
+    err = rhashtable_shrink(ht);
+else if (tbl->nest)
+    err = rhashtable_rehash_alloc(ht, tbl, tbl->size);
+```
+
+缩容条件是元素数低于桶数 30%，且开启 `automatic_shrinking`；新大小取 `roundup_pow_of_two(nelems * 3 / 2)`，不低于 `min_size`。
+
+**图解：扩容期间的读写并发**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title rhashtable：扩容时逐桶 rehash，RCU 读不阻塞
+participant "写者" as W
+participant "old_tbl" as O
+participant "new_tbl" as N
+participant "RCU 读者" as R
+W -> O : 分配 new_tbl（通常 2 倍）
+W -> O : 发布 future_tbl
+loop 每个旧桶
+  W -> O : 加桶锁，摘下整条链
+  W -> N : 按新掩码重新插入
+end
+W -> O : 全部迁移完成，切换 ht->tbl
+R -> O : 读旧表仍可完成
+note right of R
+  查找时若发现链尾 nulls 标记与桶号不符，
+  或遇到 future_tbl，则重新计算桶并重试；
+  因此扩容期间读路径无需停止
+end note
+note over W
+  阈值：元素数 > 75% 扩容；
+  automatic_shrinking 且 < 30% 收缩
+end note
+@enduml
+```
+
+*图 4-2：写者逐桶迁移并最终切换 `ht->tbl`；RCU 读者可能仍在旧表上遍历，发现链尾标记/`future_tbl` 后重新计算桶并重试，因此读路径无需停止。*
+
+#### 4.6.4 核心 API
+
+```c
+int rhashtable_init(struct rhashtable *ht,
+                    const struct rhashtable_params *params);
+
+void *rhashtable_lookup(struct rhashtable *ht, const void *key,
+                        const struct rhashtable_params params);
+void *rhashtable_lookup_get_insert_key(struct rhashtable *ht,
+                        const void *key, struct rhash_head *obj,
+                        const struct rhashtable_params params);
+
+int rhashtable_insert_fast(struct rhashtable *ht, struct rhash_head *obj,
+                           const struct rhashtable_params params);
+int rhashtable_remove_fast(struct rhashtable *ht, struct rhash_head *obj,
+                           const struct rhashtable_params params);
+void rhashtable_walk_enter(struct rhashtable *ht, struct rhashtable_iter *iter);
+void rhashtable_walk_exit(struct rhashtable_iter *iter);
+void *rhashtable_walk_next(struct rhashtable_iter *iter);
+```
+
+`rhashtable_lookup()` 返回宿主对象指针（内部用 `rht_obj()` 从 `rhash_head` 反推）；`key_offset` / `head_offset` 就是为这种"嵌入节点"布局服务的。
+
+#### 4.6.5 典型应用
+
+- **nftables set**：`net/netfilter/nft_set_hash.c` 的 `nft_rhash_params`，用 `rhashtable_lookup()` / `rhashtable_remove_fast()` 管理集合元素。
+- **netlink**：部分协议族用 `rhashtable` 管理端口 ID / socket 映射。
+- **连接跟踪**：需要按五元组快速查找且条目数动态变化。
+
 ---
 
 ## 5. 堆与优先队列
@@ -2240,6 +3791,40 @@ struct rt_prio_array {
 };
 ```
 
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `bitmap[MAX_RT_PRIO+1]` | `DECLARE_BITMAP` | 第 `prio` 位为 1 表示 `queue[prio]` 非空 |
+| `queue[MAX_RT_PRIO]` | `struct list_head` | 每个优先级一条任务链；链头是 `task_struct.run_list` 的锚点 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph rt {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="rt_prio_array：位图索引 + 每优先级一条链表", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  arr [label="{rt_prio_array|bitmap[MAX_RT_PRIO+1]|queue[MAX_RT_PRIO]|...}", fillcolor="#FFF3E0"];
+  q99 [label="queue[99]\nlist_head"];
+  q98 [label="queue[98]\nlist_head"];
+  q0 [label="queue[0]\nlist_head"];
+  t1 [label="task_struct\nrun_list"];
+  t2 [label="task_struct\nrun_list"];
+
+  arr -> q99 [label="bit 99 = 1"];
+  arr -> q98 [label="bit 98 = 0"];
+  arr -> q0 [label="bit 0 = 1"];
+  q99 -> t1 [label="链表头"];
+  t1 -> t2 [label="run_list"];
+}
+@enddot
+```
+
+*结构图：`rt_prio_array` 把位图和 100 条优先级链表放在一起；位图负责 O(1) 选最高优先级，链表负责同优先级 FIFO。*
+
 #### 5.1.3 操作流程
 
 ```
@@ -2248,6 +3833,34 @@ struct rt_prio_array {
   2. 对应 queue[prio] 链表头部即为下一个要运行的进程
   3. 时间复杂度：O(1)（位图扫描由硬件指令加速）
 ```
+
+**图解：位图索引 + 每优先级链表**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title 实时调度：位图 + 每优先级链表
+start
+:rt_prio_array.bitmap 标记非空队列;
+:prio = sched_find_first_bit(bitmap);
+:rq->curr = list_first_entry(&queue[prio]);
+:list_del_init(&next->run_list);
+if (queue[prio] 已空?) then (是)
+  :clear_bit(prio, bitmap);
+endif
+note right
+  bitmap：MAX_RT_PRIO+1 位，位号即优先级
+  queue[prio]：同优先级任务的链表
+  选择最高优先级 O(1)（硬件 ctz/位扫描）
+  同一优先级内 FIFO（SCHED_FIFO）
+end note
+stop
+@enduml
+```
+
+*图 5-1：`bitmap` 的第 `prio` 位表示 `queue[prio]` 非空；选择任务就是 `sched_find_first_bit()` 找到最高非空优先级，再从链表头取任务。*
 
 #### 5.1.4 应用场景
 
@@ -2271,7 +3884,7 @@ struct rt_prio_array {
 | 插入复杂度 | O(1) | O(1) |
 | 到期处理 | 每个 tick O(1)（摊销），级联偶尔 O(n) | 每个 tick O(1) |
 | 精度 | 恒定（1 tick） | 随超时时间增加而降低（除非增加桶大小） |
-| 内存占用 | 固定大小（4 × 64 个桶），不随定时器数量增加 | 需要大量桶来支持长超时时间 |
+| 内存占用 | 固定大小（`LVL_DEPTH × 64` 个桶，通常 8/9 级） | 需要大量桶来支持长超时时间 |
 | 支持超时范围 | 任意大（通过级联上级桶） | 受限于桶数组大小（如 64 个桶只能支持 64 ticks） |
 | 优点 | 内存占用固定，可支持任意超时时间，精度恒定 | 实现简单，无级联开销 |
 | 缺点 | 实现复杂，级联操作有瞬时开销（摊销 O(1)） | 范围受限，内存和精度不可兼得 |
@@ -2279,24 +3892,84 @@ struct rt_prio_array {
 #### 5.2.2 核心数据结构
 
 ```c
-// kernel/time/timer.c
+// kernel/time/timer.c（Linux 7.2 实际定义）
 struct timer_base {
-    spinlock_t      lock;
-    struct list_head pending_map[WHEEL_SIZE];  // 每个桶是一个链表
-    unsigned long   clk;                        // 当前时钟节拍
-    int             pending_idx;                // 当前处理位置
-    ...
+    raw_spinlock_t      lock;
+    struct timer_list   *running_timer;
+#ifdef CONFIG_PREEMPT_RT
+    spinlock_t          expiry_lock;
+    atomic_t            timer_waiters;
+#endif
+    unsigned long       clk;              // 入队基准时钟
+    unsigned long       next_expiry;      // 下一个到期时间
+    unsigned int        cpu;
+    bool                next_expiry_recalc;
+    bool                is_idle;
+    bool                timers_pending;
+    DECLARE_BITMAP(pending_map, WHEEL_SIZE); // 每个桶一个 bit
+    struct hlist_head   vectors[WHEEL_SIZE]; // 所有层级的桶被拍平成一个数组
+} ____cacheline_aligned;
+
+struct timer_list {
+    struct hlist_node   entry;            // 挂到 vectors[idx] 的 hlist
+    unsigned long       expires;          // 到期 jiffies
+    void                (*function)(struct timer_list *);
+    u32                 flags;            // 状态位 + CPU + 桶索引
+#ifdef CONFIG_LOCKDEP
+    struct lockdep_map  lockdep_map;
+#endif
 };
 
-// 时间轮层级（旧版实现，现代的层级数可能不同）
-#define LVL_DEPTH 4          // 4 级时间轮
-#define LVL_BITS  6          // 每级 6 位（64 个桶）
-#define WHEEL_SIZE (1 << LVL_BITS)  // 64
+// 每个层级 64 个桶，层级粒度逐级 ×8
+#define LVL_BITS        6
+#define LVL_SIZE        (1UL << LVL_BITS)        // 64
+#define LVL_CLK_SHIFT   3                        // 粒度 ×8
+#define LVL_DEPTH                                                     \
+    (HZ > 100 ? 9 : 8)                           // 通常 9 级
+#define WHEEL_SIZE      (LVL_SIZE * LVL_DEPTH)   // 576（HZ>100）或 512
 ```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `timer_base.lock` | `raw_spinlock_t` | 保护本 CPU 的 `vectors` / `pending_map` |
+| `timer_base.running_timer` | `struct timer_list *` | 正在执行回调的定时器；删除它时需要特殊同步 |
+| `timer_base.clk` | `unsigned long` | 入队时使用的基准时钟（到期处理时比 `jiffies` 略超前） |
+| `timer_base.next_expiry` | `unsigned long` | 最早到期时间，供 idle/nohz 判断 |
+| `timer_base.pending_map` | `DECLARE_BITMAP` | `WHEEL_SIZE` 个 bit，标记哪个桶非空 |
+| `timer_base.vectors[]` | `struct hlist_head` | `WHEEL_SIZE` 个桶，按 `level * 64 + idx` 拍平存放 |
+| `timer_list.entry` | `struct hlist_node` | 挂到 `vectors[idx]` 的链节点 |
+| `timer_list.expires` | `unsigned long` | 到期 jiffies |
+| `timer_list.function` | 函数指针 | 到期回调 |
+| `timer_list.flags` | `u32` | `TIMER_MIGRATING`/`TIMER_DEFERRABLE`/`TIMER_PINNED` 等状态，以及 CPU 号与桶索引 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph timer {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="timer_base / timer_list：分层时间轮的节点组织", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  base [label="{timer_base|lock|running_timer|clk|next_expiry|cpu|pending_map[WHEEL_SIZE]|vectors[WHEEL_SIZE]}", fillcolor="#FFF3E0"];
+  vec [label="vectors[level*64 + idx]\nstruct hlist_head"];
+  t1 [label="{timer_list|entry: hlist_node|expires|function|flags}"];
+  t2 [label="{timer_list|entry: hlist_node|expires|function|flags}"];
+
+  base -> vec [label="vectors[]"];
+  vec -> t1 [label="hlist 链头"];
+  t1 -> t2 [label="entry.next"];
+}
+@enddot
+```
+
+*结构图：`timer_base.vectors[]` 是所有层级的桶数组（`level * 64 + idx`），每个桶是 `hlist_head`；`timer_list.entry` 把定时器挂进对应桶。*
 
 #### 5.2.3 原理细节：级联（Cascade）机制
 
-时间轮的核心思想是通过**分级+级联**在 O(1) 时间内完成定时器的插入和到期处理：
+时间轮的核心思想是通过**分级 + 级联**在 O(1) 时间内完成定时器的插入和到期处理。当前内核每级 64 个桶，但**粒度逐级 ×8**（`LVL_CLK_SHIFT = 3`），层级数为 8 或 9（取决于 HZ）。
 
 **插入算法**
 
@@ -2304,30 +3977,75 @@ struct timer_base {
 定时器超时时间 = expires，当前时间 = clk
 delta = expires - clk
 
-if delta < 64:        → 插入 Level 0，桶索引 = delta
-if delta < 4096:      → 插入 Level 1，桶索引 = delta >> 6
-if delta < 262144:    → 插入 Level 2，桶索引 = delta >> 12
-else:                 → 插入 Level 3，桶索引 = delta >> 18
+if delta < LVL_START(1)       → Level 0（delta < 63）
+else if delta < LVL_START(2)  → Level 1（< 504）
+else if delta < LVL_START(3)  → Level 2（< 4032）
+else if delta < LVL_START(4)  → Level 3（< 32256）
+...
+else                          → Level LVL_DEPTH-1
+                                 （超大超时截到 WHEEL_TIMEOUT_MAX）
+
+idx = LVL_OFFS(level) + (((expires >> (level * 3)) + 1) & 63)
+    = level * 64 + bucket_in_level
 ```
+
+`calc_index()` 会向上取整到该层粒度，保证定时器不会提前触发；`timer->flags` 中会记录 `idx`，后续 `mod_timer()` 可据此快速定位旧桶。
 
 **级联过程**
 
 ```
-每个 tick 处理 Level 0 的当前桶：
-  1. 遍历该桶中的所有定时器，执行回调
-  2. 如果 Level 0 的一个桶处理完（即指针绕了一圈）
-     → 从 Level 1 取出对应桶的定时器
-     → 根据各定时器的剩余时间重新插入到 Level 0-2 的合适位置
-  3. 如果 Level 1 的一个桶也处理完 → 级联 Level 2，以此类推
+每个 tick 处理当前到期桶：
+  1. 从 pending_map 中找到到期桶，遍历其 vectors[idx] 链表
+  2. 对每个定时器：若 expires 已到 → 执行回调
+                    否则 → 按剩余 delta 重新插入低层
+  3. 处理完一个桶后清 pending_map 对应 bit；
+     若该桶属于高层（level > 0），其定时器会被级联到低层
+  4. 下一次从 pending_map 找最近的非空桶
 ```
 
 **复杂度分析**
 
 | 操作 | 时间复杂度 | 说明 |
 |---|---|---|
-| 插入定时器 | O(1) | 直接计算桶索引，插入链表头部 |
-| 到期处理（每个 tick） | O(1) avg | 多数情况只需处理 Level 0 的一个桶 |
-| 级联（偶尔发生） | O(n) amortized | 每次级联将 N 个定时器重新分发，但分摊到每个 tick 为 O(1) |
+| 插入定时器 | O(1) | 计算层级与桶号，插入 `vectors[idx]` 头部 |
+| 到期处理（每个 tick） | O(1) avg | 通常只处理 `pending_map` 中最近的桶 |
+| 级联（偶尔发生） | O(n) amortized | 高层桶中的定时器重新分发到低层，分摊到每个 tick 为 O(1) |
+
+**图解：按超时距离选择层级**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title 定时器时间轮：按 delta 选层级，桶号按层内索引计算
+start
+:delta = expires - clk;
+if (delta < LVL_START(1) = 63?) then (是)
+  :Level 0（1 jiffy 粒度）;
+elseif (delta < LVL_START(2) = 504?) then (是)
+  :Level 1（8 jiffy 粒度）;
+elseif (delta < LVL_START(3) = 4032?) then (是)
+  :Level 2（64 jiffy 粒度）;
+elseif (delta < LVL_START(4)?) then (是)
+  :Level 3（512 jiffy 粒度）;
+else (否)
+  :…继续向上，最多到 Level LVL_DEPTH-1;
+  :超大超时截到 WHEEL_TIMEOUT_MAX;
+endif
+:idx = level * 64 + ((expires >> (level * 3)) + 1) & 63;
+:插入 timer_base.vectors[idx];
+note right
+  每级 64 个桶；
+  层级粒度逐级 ×8（LVL_CLK_SHIFT = 3）；
+  pending_map 每个桶 1 bit，标记非空；
+  到期时从最近的非空桶开始处理
+end note
+stop
+@enduml
+```
+
+*图 5-2：`delta` 决定定时器进入哪一级；每级 64 个桶，粒度逐级 ×8。每个 tick 从 `pending_map` 找到最近的非空桶，高层桶到期后把定时器级联到低层。*
 
 #### 5.2.4 核心 API
 
@@ -2417,6 +4135,184 @@ void stop_my_timer(void)
 
 ---
 
+### 5.3 二叉堆 (min_heap)
+
+#### 5.3.1 概述
+
+前两节是"优先级队列"的两种内核实现：位图+链表用于 RT 调度，时间轮用于定时器。内核还提供了一个**通用二叉堆** `min_heap`（`include/linux/min_heap.h`、`lib/min_heap.c`），用于需要反复取最小值的场景。它本质上是数组实现的完全二叉树：
+
+- 根节点 `data[0]` 是最小元素；
+- 索引 `i` 的父节点是 `(i - 1) / 2`，左/右子节点是 `2i + 1`、`2i + 2`；
+- `push` 从末尾上滤，`pop` 把末元素放到根后下滤，复杂度均为 O(log n)；
+- `min_heapify_all()` 用 Floyd 算法在 O(n) 内建堆。
+
+#### 5.3.2 核心数据结构
+
+```c
+// include/linux/min_heap.h
+#define MIN_HEAP_PREALLOCATED(_type, _name, _nr)    \
+struct _name {                                      \
+    size_t  nr;                                     \
+    size_t  size;                                   \
+    _type   *data;                                  \
+    _type   preallocated[_nr];                      \
+}
+
+#define DEFINE_MIN_HEAP(_type, _name) MIN_HEAP_PREALLOCATED(_type, _name, 0)
+
+/* 以字节为单位操作堆的内部类型，便于宏对任意元素类型复用 */
+typedef DEFINE_MIN_HEAP(char, min_heap_char) min_heap_char;
+
+struct min_heap_callbacks {
+    bool (*less)(const void *lhs, const void *rhs, void *args);
+    void (*swp)(void *lhs, void *rhs, void *args);
+};
+```
+
+`DEFINE_MIN_HEAP(struct task_struct *, run_heap)` 会生成一个 `struct run_heap`，其中 `data` 指向 `struct task_struct *` 数组；`preallocated` 可用于静态数组，避免额外分配。
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `nr` | `size_t` | 当前堆中元素个数；`nr == 0` 为空 |
+| `size` | `size_t` | `data` 指向数组的容量（元素个数） |
+| `data` | `element_type *` | 堆元素数组；下标即完全二叉树编号 |
+| `preallocated[]` | `element_type[]` | 静态预分配数组；`data == preallocated` 时无需额外内存 |
+
+`min_heap_callbacks`：
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `less` | 函数指针 | 比较两个元素，决定最小堆偏序 |
+| `swp` | 函数指针 | 交换两个元素；为 `NULL` 时按元素大小自动选择 8/4/1 字节交换 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph heap {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="min_heap：结构体头 + 连续数组，数组下标即完全二叉树编号", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+
+  head [label="{min_heap|nr|size|data|preallocated[]}", fillcolor="#FFF3E0"];
+  a0 [shape=circle, label="0\n最小"];
+  a1 [shape=circle, label="1"];
+  a2 [shape=circle, label="2"];
+  a3 [shape=circle, label="3"];
+  a4 [shape=circle, label="4"];
+  a5 [shape=circle, label="5"];
+  a6 [shape=circle, label="6"];
+
+  head -> a0 [label="data"];
+  a0 -> a1;
+  a0 -> a2;
+  a1 -> a3;
+  a1 -> a4;
+  a2 -> a5;
+  a2 -> a6;
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="父：parent = (i - 1) / 2\n左子：2i + 1，右子：2i + 2\nnr = 当前元素数，size = 容量"];
+  a2 -> note [style=invis];
+}
+@enddot
+```
+
+*结构图：`min_heap` 头 + 连续数组；数组下标 0 是根，`2i+1`/`2i+2` 是左右子。*
+
+#### 5.3.3 核心操作
+
+```c
+// 初始化：data 为 NULL 时使用 preallocated
+min_heap_init(&heap, data, size);
+
+// 取最小值（不删除）
+void *min_heap_peek(&heap);
+
+// 插入 + 上滤
+bool min_heap_push(&heap, &element, &callbacks, args);
+
+// 删除根 + 末元素下滤
+bool min_heap_pop(&heap, &callbacks, args);
+
+// 删除指定位置：先用末元素填补，再视情况上滤/下滤
+bool min_heap_del(&heap, idx, &callbacks, args);
+
+// 弹出根并压入新元素（比 pop + push 少一次上滤）
+bool min_heap_pop_push(&heap, &element, &callbacks, args);
+
+// O(n) 建堆
+void min_heapify_all(&heap, &callbacks, args);
+```
+
+上滤/下滤的实现都使用**字节偏移**而不是元素索引，这样同一套宏可以处理任意 `sizeof(element)`：
+
+```c
+/* 上滤：与父节点比较，父节点更大则交换 */
+while (a) {
+    b = parent(a, lsbit, elem_size);
+    if (func->less(data + b, data + a, args))
+        break;
+    do_swap(data + a, data + b, elem_size, swp, args);
+    a = b;
+}
+```
+
+**图解：push 上滤与 pop 下滤**
+
+```plantuml
+@startdot
+digraph heap {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="min_heap：数组即完全二叉树，push 上滤 / pop 下滤", labelloc=t, fontsize=14];
+  node [shape=circle, style="filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  subgraph cluster_push {
+    label="push(3)：从末尾上滤";
+    fontname="WenQuanYi Zen Hei";
+    p0 [label="5"];
+    p1 [label="8", fillcolor="#FFEBEE"];
+    p2 [label="9"];
+    p3 [label="12"];
+    p4 [label="3", fillcolor="#E8F5E9"];
+    p0 -> p1;
+    p0 -> p2;
+    p1 -> p3;
+    p1 -> p4 [style=dashed, label="swap"];
+    p4 -> p1 [style=dashed, color="#2E7D32", label="上滤"];
+    pn [shape=note, style=filled, fillcolor="#FFF8E1", label="3 与 8 交换后：\n3 成为左子，3 > 5，停止"];
+    p2 -> pn [style=invis];
+  }
+
+  subgraph cluster_pop {
+    label="pop()：5 出堆，末元素 12 移到根后下滤";
+    fontname="WenQuanYi Zen Hei";
+    q0 [label="8"];
+    q1 [label="12"];
+    q2 [label="9"];
+    q5 [label="5\n已出堆", style="dashed,filled", fillcolor="#FFEBEE"];
+    q0 -> q1 [label="与较小 child 交换"];
+    q0 -> q2;
+    q5 -> q0 [style=dashed, color="#C62828", label="pop"];
+    qn [shape=note, style=filled, fillcolor="#FFF8E1", label="12 从末尾移到根；\n子节点 8 < 9，12 与 8 交换；\n8 成为新根"];
+    q2 -> qn [style=invis];
+  }
+
+  p0 -> q0 [style=invis];
+}
+@enddot
+```
+
+*图 5-3：`push(3)` 把 3 放到数组末尾，然后与父节点 8 比较并交换；`pop()` 把末元素 12 放到根，再与较小的子节点 8 交换，恢复堆序。*
+
+#### 5.3.4 应用场景
+
+- **perf 事件调度**：`kernel/events/core.c` 用 `DEFINE_MIN_HEAP(struct perf_event *, perf_event_min_heap)` 管理待调度事件。
+- **dm-vdo**：`drivers/md/dm-vdo/` 用 `min_heap` 维护 slab depot 与修复队列。
+- **测试**：`lib/tests/min_heap_kunit.c` 覆盖 push/pop/del/heapify 等路径。
+
+---
+
 ## 6. 查找与索引结构
 
 ### 6.1 位图 (bitmap)
@@ -2459,6 +4355,60 @@ void bitmap_or(unsigned long *dst, const unsigned long *src1,
 void bitmap_xor(unsigned long *dst, const unsigned long *src1,
                 const unsigned long *src2, unsigned int nbits);
 ```
+
+**节点结构与关键字段**
+
+位图没有“节点”，其组织是连续的 `unsigned long` 数组：
+
+| 组成 | 类型 | 作用 |
+|---|---|---|
+| `word[]` | `unsigned long[]` | 每个 word 保存 `BITS_PER_LONG` 个 bit |
+| `DECLARE_BITMAP(name, bits)` | 宏 | 展开为 `unsigned long name[BITS_TO_LONGS(bits)]` |
+| 位号 `nr` | 整数 | `word[nr / BITS_PER_LONG]` 的第 `nr % BITS_PER_LONG` 位 |
+| 范围操作 | `bitmap_set/clear` | 对起始位和长度做跨 word 的掩码处理 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph bitmap {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="bitmap：以 unsigned long 为单位的连续位数组", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+
+  bm [label="{DECLARE_BITMAP(name, bits)|word[0]：bit 0..63|word[1]：bit 64..127|word[2]：bit 128..191|…}", fillcolor="#FFF3E0"];
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="bit 编号 n：\n所在 word = n / BITS_PER_LONG\nword 内位号 = n % BITS_PER_LONG\n容器：cpumask、nodemask、页标志、ID 分配位图"];
+  bm -> note [style=invis];
+}
+@enddot
+```
+
+*结构图：bitmap 是一段连续 word；位号决定 word 下标和 word 内偏移，没有指针链接。*
+
+**图解：置位、清位与位扫描**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title 位图：置位、清位与扫描
+start
+:set_bit(nr, addr)\nword = addr[nr / BITS_PER_LONG]\n把 word 的第 (nr 对 BITS_PER_LONG 取模) 位置 1;
+:clear_bit(nr, addr)\n把 word 的对应位清 0;
+:find_first_bit(addr, size)\n从低地址 word 开始，第一个非零 word 用 ctz 定位;
+:find_next_bit(addr, size, offset)\n从 offset 所在 word 开始，掩掉低位后继续扫描;
+note right
+  示例：bitmap = 0010 0100 1000 0001
+  置位 0、7、10、14 后：
+  find_first_bit() = 0
+  find_next_bit(..., 1) = 7
+  原子版本 test_and_set_bit() 返回旧值
+end note
+stop
+@enduml
+```
+
+*图 6-1：`set_bit()`/`clear_bit()` 只修改目标 word 的某一位；`find_first_bit()`/`find_next_bit()` 从低地址 word 开始扫描，再用 `ctz`/`clz` 定位 word 内的位。*
 
 #### 6.1.3 完整 API 参考
 
@@ -2627,6 +4577,46 @@ struct sbitmap_queue {
 };
 ```
 
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `sbitmap.depth` | `unsigned int` | 总位数 |
+| `sbitmap.shift` | `unsigned int` | 每个 word 的位数 = `2^shift` |
+| `sbitmap.map_nr` | `unsigned int` | word 数量 |
+| `sbitmap.map` | `struct sbitmap_word *` | word 数组；每个 word 独占缓存行 |
+| `sbitmap.alloc_hint` | `unsigned int __percpu *` | 每个 CPU 的搜索起点，分散竞争 |
+| `sbitmap_word.word` | `unsigned long` | 已分配位图（1 = 已用） |
+| `sbitmap_word.cleared` | `unsigned long` | 延迟清除位图（1 = 已释放待清） |
+| `sbitmap_word.swap_lock` | `raw_spinlock_t` | 保护 `word`/`cleared` 的批量交换 |
+| `sbitmap_queue.ws` | `struct sbq_wait_state *` | 多个等待队列，分散唤醒锁竞争 |
+| `sbitmap_queue.wake_batch` | `unsigned int` | 每次唤醒的批大小 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph sbitmap {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="sbitmap：每个 sbitmap_word 独占缓存行，alloc_hint 按 CPU 分散", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  sb [label="{sbitmap|depth|shift|map_nr|map|alloc_hint}", fillcolor="#FFF3E0"];
+  w0 [label="{sbitmap_word|word|cleared|swap_lock|Cache Line 0}"];
+  w1 [label="{sbitmap_word|word|cleared|swap_lock|Cache Line 1}"];
+  w2 [label="{sbitmap_word|word|cleared|swap_lock|Cache Line 2}"];
+  hint [label="Per-CPU alloc_hint\nCPU0 / CPU1 / …"];
+
+  sb -> w0 [label="map[0]"];
+  sb -> w1 [label="map[1]"];
+  sb -> w2 [label="map[2]"];
+  sb -> hint [style=dashed, label="alloc_hint"];
+}
+@enddot
+```
+
+*结构图：`sbitmap.map[]` 的每个 `sbitmap_word` 独立占一条缓存行，避免伪共享；`alloc_hint` 是 Per-CPU 的搜索提示。*
+
 #### 6.2.3 原理细节：缓存行伪共享与延迟清除
 
 **问题：伪共享（False Sharing）**
@@ -2668,6 +4658,42 @@ sbitmap 布局（每个 word 独占缓存行）：
 1. **释放操作（`sbitmap_put`）是轻量级的**：只需一个 `set_bit` 到 `cleared`，无需 CAS 循环
 2. **批量清除减少原子操作**：多个释放累积后，一次 `xchg` + `atomic_long_andnot` 完成批量清除
 3. **分配时顺带清除**：`sbitmap_find_bit_in_word` 在发现 word 满时自动调用 `sbitmap_deferred_clear`
+
+**图解：分配路径与延迟清除**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title sbitmap：Per-CPU 提示与延迟清除
+start
+:hint = this_cpu_read(*sb->alloc_hint);
+:index = SB_NR_TO_INDEX(sb, hint);
+repeat
+  :free = ~word & ~cleared;
+  if (free 非零?) then (是)
+    :bit = ctz(free);
+    :test_and_set_bit_lock(bit, &word);
+    :返回全局位号;
+    stop
+  else (否)
+    :sbitmap_deferred_clear():
+      cleared 与 word 批量交换并清除;
+  endif
+  :切换到下一个 word（必要时回绕）;
+repeat while (还有 word 可试?) is (是)
+:所有 word 均满，返回 -1;
+stop
+note right
+  释放路径 sbitmap_put() 只 set_bit(cleared)，
+  不直接清 word，避免与分配者争用同一位；
+  每个 sbitmap_word 独占缓存行，减少伪共享
+end note
+@enduml
+```
+
+*图 6-2：分配时从 Per-CPU `alloc_hint` 指定的 word 开始找空闲位；若当前 word 已满，先执行 `sbitmap_deferred_clear()` 把 `cleared` 中的释放位批量清掉，再重试。*
 
 #### 6.2.4 完整 API 参考
 
@@ -3073,18 +5099,59 @@ Trie 树（又称前缀树）是一种按字符串前缀组织的树结构，用
 ```c
 // net/ipv4/fib_trie.c (IPv4 路由表)
 struct trie {
-    struct key_vector *kv;      // 键向量（节点）
-    ...
+    struct key_vector kv[1];    // 根节点（柔性数组，按需扩展）
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+    struct trie_use_stats __percpu *stats;
+#endif
 };
 
+typedef unsigned int t_key;
+
 struct key_vector {
-    t_key key;                  // 键值
+    t_key key;                  // 该节点覆盖的键前缀
     unsigned char pos;          // 当前位位置
-    unsigned char bits;         // 处理的位数
-    struct key_vector *tnode;   // 子节点
-    struct list_head *leaf;     // 叶节点（路由条目）
+    unsigned char bits;         // 本层处理的位数（0 表示叶节点）
+    unsigned char slen;         // 前缀长度（用于最长前缀匹配）
+    union {
+        struct hlist_head leaf; // bits == 0 时：路由条目链
+        DECLARE_FLEX_ARRAY(struct key_vector __rcu *, tnode); // bits > 0：子节点数组
+    };
 };
 ```
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `key` | `t_key` | 该节点覆盖的键前缀（IP 地址的网络字节序片段） |
+| `pos` | `unsigned char` | 当前节点从第几位开始比较 |
+| `bits` | `unsigned char` | 本层消耗的位数；`0` 表示叶节点，`>0` 表示内部节点 |
+| `slen` | `unsigned char` | 前缀长度，用于最长前缀匹配 |
+| `leaf` | `struct hlist_head` | `bits == 0` 时有效：挂 `fib_alias` 路由条目 |
+| `tnode[]` | `struct key_vector __rcu *[]` | `bits > 0` 时有效：`2^bits` 个子节点指针 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph trie {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="key_vector：叶子看 leaf 链表，内部节点看 tnode 数组", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  root [label="{key_vector|key|pos|bits|slen|{leaf: hlist_head | tnode: key_vector[]}}", fillcolor="#FFF3E0"];
+  child [label="{key_vector|key|pos|bits|slen|…}"];
+  leaf [label="fib_alias\nhlist_node", fillcolor="#E8F5E9"];
+  leaf2 [label="fib_alias\nhlist_node", fillcolor="#E8F5E9"];
+
+  root -> child [label="tnode[i]"];
+  child -> leaf [label="leaf.first"];
+  leaf -> leaf2 [label="next"];
+}
+@enddot
+```
+
+*结构图：`trie.kv` 是根 `key_vector`；内部节点通过柔性数组 `tnode[]` 指向子节点，叶节点通过 `leaf` 链表挂路由条目。*
 
 #### 6.3.3 原理细节：最长前缀匹配（LPM）
 
@@ -3127,11 +5194,207 @@ struct trie *fib_trie_unmerge(struct fib_table *main_tb);
 void fib_trie_seq_show(struct seq_file *seq, struct trie *trie);
 ```
 
+**图解：最长前缀匹配**
+
+```plantuml
+@startdot
+digraph trie {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="LC-Trie 最长前缀匹配：192.168.1.55", labelloc=t, fontsize=14];
+  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  root [label="根\nbits 0..7"];
+  a [label="192\nbits 8..15"];
+  b [label="168\nbits 16..23"];
+  c [label="1\nbits 24..31"];
+  leaf24 [label="路由 192.168.1.0/24", fillcolor="#E8F5E9"];
+  leaf32 [label="路由 192.168.1.55/32", fillcolor="#E3F2FD"];
+
+  root -> a;
+  a -> b;
+  b -> c;
+  c -> leaf24 [label="先命中 /24"];
+  c -> leaf32 [label="继续匹配到 /32"];
+  leaf24 -> leaf32 [style=dashed, label="更长前缀优先"];
+}
+@enddot
+```
+
+*图 6-3：路由查找沿前缀逐层下降；如果 `/24` 和 `/32` 同时存在，先命中较短前缀，但继续下降可得到更长前缀，最终返回最长匹配。*
+
 #### 6.3.5 应用场景
 
 - **路由表查找**：IPv4/IPv6 路由表，实现最长前缀匹配（LPM）
 - **设备命名空间管理**：设备路径的前缀匹配
 - **网络过滤**：iptables/nftables 规则匹配
+
+---
+
+### 6.4 关联数组 (assoc_array)
+
+#### 6.4.1 概述
+
+`assoc_array` 是"用任意长度索引键查找对象"的关联数组，结构上是一棵 **16 路 Trie**：每个内部节点有 16 个 slot，每层消耗 `ilog2(16) = 4` 位键；如果某段键没有分叉，则用 **shortcut 节点**跳过若干层，避免为长公共前缀创建空节点。
+
+它和哈希表的区别是：不计算哈希、不处理冲突，查找路径完全由键的位决定，最坏复杂度为 O(键长/4)；和普通 Trie 的区别是：节点扇出固定为 16，且用 shortcut 压缩单分支路径。
+
+#### 6.4.2 核心数据结构
+
+```c
+// include/linux/assoc_array.h
+struct assoc_array {
+    struct assoc_array_ptr *root;
+    unsigned long           nr_leaves_on_tree;
+};
+
+struct assoc_array_ops {
+    unsigned long (*get_key_chunk)(const void *index_key, int level);
+    unsigned long (*get_object_key_chunk)(const void *object, int level);
+    bool (*compare_object)(const void *object, const void *index_key);
+    int  (*diff_objects)(const void *object, const void *index_key);
+    void (*free_object)(void *object);
+};
+```
+
+内部节点与 shortcut 的定义在 `include/linux/assoc_array_priv.h`：
+
+```c
+#define ASSOC_ARRAY_FAN_OUT     16
+#define ASSOC_ARRAY_LEVEL_STEP  (ilog2(ASSOC_ARRAY_FAN_OUT))   /* 4 */
+
+struct assoc_array_node {
+    struct assoc_array_ptr  *back_pointer;
+    u8                      parent_slot;
+    struct assoc_array_ptr  *slots[ASSOC_ARRAY_FAN_OUT];
+    unsigned long           nr_leaves_on_branch;
+};
+
+struct assoc_array_shortcut {
+    struct assoc_array_ptr  *back_pointer;
+    int                     parent_slot;
+    int                     skip_to_level;
+    struct assoc_array_ptr  *next_node;
+    unsigned long           index_key[];
+};
+```
+
+指针最低位编码类型：`0` 表示叶对象，`1` 表示元数据（节点或 shortcut）；第二位再区分节点与 shortcut。
+
+**节点结构与关键字段**
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `assoc_array.root` | `struct assoc_array_ptr *` | 根指针；低 2 位编码叶/节点/shortcut |
+| `assoc_array.nr_leaves_on_tree` | `unsigned long` | 叶对象总数 |
+| `assoc_array_node.back_pointer` | `struct assoc_array_ptr *` | 指回父节点/shortcut |
+| `assoc_array_node.parent_slot` | `u8` | 本节点在父节点中的 slot 下标 |
+| `assoc_array_node.slots[16]` | `struct assoc_array_ptr *` | 16 个子项：空、叶、节点或 shortcut |
+| `assoc_array_node.nr_leaves_on_branch` | `unsigned long` | 本子树叶子数，用于 GC/统计 |
+| `assoc_array_shortcut.skip_to_level` | `int` | 跳过多少层；压缩公共前缀 |
+| `assoc_array_shortcut.next_node` | `struct assoc_array_ptr *` | shortcut 指向的下一节点 |
+| `assoc_array_shortcut.index_key[]` | `unsigned long[]` | 被跳过的键片段，查找时校验 |
+
+**链接图**
+
+```plantuml
+@startdot
+digraph assoc {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="assoc_array 节点：16 路 node、shortcut、leaf 三类指针", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  array [label="{assoc_array|root|nr_leaves_on_tree}", fillcolor="#FFF3E0"];
+  nd [label="{assoc_array_node|back_pointer|parent_slot|slots[16]|nr_leaves_on_branch}"];
+  sc [label="{assoc_array_shortcut|back_pointer|parent_slot|skip_to_level|next_node|index_key[]}", fillcolor="#FFF3E0"];
+  leaf [label="leaf 对象\n（keyring 中为 struct key）", fillcolor="#E8F5E9"];
+
+  array -> nd [label="root（低 2 位编码类型）"];
+  nd -> leaf [label="slot[i]（类型 0）"];
+  nd -> sc [label="slot[j]（类型 1，subtype 1）"];
+  sc -> nd [label="next_node"];
+}
+@enddot
+```
+
+*结构图：`assoc_array` 根指针低 2 位区分类型；16 路 node 的 slot 可指向叶对象、下一层 node 或 shortcut；shortcut 用 `skip_to_level` 跳过无分叉的层。*
+
+#### 6.4.3 插入：先构造 edit，再原子发布
+
+`assoc_array_insert()` 不会直接改树，而是返回一个 `struct assoc_array_edit`，其中记录了需要替换的指针、需要新增的节点、需要摘除的子树等。调用者在持有写锁时执行 `assoc_array_apply_edit()`，通过 `rcu_assign_pointer()` 一次性发布；如果中途放弃，则调用 `assoc_array_cancel_edit()` 释放预分配节点。
+
+```c
+struct assoc_array_edit *assoc_array_insert(struct assoc_array *array,
+                                            const struct assoc_array_ops *ops,
+                                            const void *index_key,
+                                            void *object);
+void assoc_array_insert_set_object(struct assoc_array_edit *edit, void *object);
+void assoc_array_apply_edit(struct assoc_array_edit *edit);
+void assoc_array_cancel_edit(struct assoc_array_edit *edit);
+```
+
+这种"预构造 + 发布"的模式把复杂的节点分裂/合并逻辑放在编辑阶段，发布阶段只做少量指针替换，便于 RCU 读者无锁遍历。
+
+**图解：插入导致节点分裂与 shortcut 生成**
+
+```plantuml
+@startdot
+digraph assoc {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="assoc_array：16 路节点、shortcut 压缩公共前缀", labelloc=t, fontsize=14];
+  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  subgraph cluster_before {
+    label="插入前：两个 key 共享前缀，只有叶节点";
+    fontname="WenQuanYi Zen Hei";
+    r1 [label="root"];
+    l1 [label="叶：key 0x1234…"];
+    l2 [label="叶：key 0x1235…"];
+    r1 -> l1;
+    r1 -> l2;
+  }
+
+  subgraph cluster_after {
+    label="插入第三个 key 后：公共前缀用 shortcut 跳过";
+    fontname="WenQuanYi Zen Hei";
+    r2 [label="root"];
+    sc [label="shortcut\nskip_to_level = 3", fillcolor="#FFF3E0"];
+    nd [label="{节点|slot 0..15}"];
+    a1 [label="叶 0x1234…"];
+    a2 [label="叶 0x1235…"];
+    a3 [label="叶 0x1236…"];
+    r2 -> sc;
+    sc -> nd;
+    nd -> a1;
+    nd -> a2;
+    nd -> a3;
+  }
+
+  r1 -> r2 [style=invis];
+}
+@enddot
+```
+
+*图 6-4：两个 key 共享长前缀时，先由叶节点直接挂在根上；插入第三个 key 后，公共前缀用 shortcut 跳过，分叉层创建 16 路节点，三个叶对象落到不同 slot。*
+
+#### 6.4.4 典型应用：keyring
+
+`security/keys/keyring.c` 用 `assoc_array` 保存 keyring 中的密钥。keyring 本身也是 `struct key`，其 union 中嵌入 `assoc_array`：
+
+```c
+// include/linux/key.h（keyring 专用字段）
+struct key {
+    ...
+    union {
+        union key_payload payload;
+        struct {
+            struct list_head name_link;
+            struct assoc_array keys;   /* keyring：key 指针的关联数组 */
+        };
+    };
+};
+```
+
+keyring 的索引键包含类型、描述等字段，`keyring_assoc_array_ops` 提供 `get_key_chunk()`、`compare_object()`、`diff_objects()` 等回调。由于 keyring 读多写少，且需要在 RCU 读侧无锁遍历，`assoc_array` 的"编辑-发布"模型非常合适。
 
 ---
 
@@ -3141,17 +5404,43 @@ void fib_trie_seq_show(struct seq_file *seq, struct trie *trie);
 
 #### 7.1.1 概述
 
-IDR（ID Radix Tree）是将整数 ID 映射到指针的结构。它曾基于基数树实现，用于管理设备号、PID 等 ID 分配。在现代内核中，IDR 已迁移到基于 XArray 的实现。
+IDR（ID Radix Tree）是将整数 ID 映射到指针的结构。它曾直接基于基数树实现，用于管理设备号、PID 等 ID 分配。在当前内核中，`struct idr` 通过兼容别名 `radix_tree_root` 内嵌 `struct xarray`，由 XArray 的多级树完成实际存储。
 
 #### 7.1.2 核心数据结构
 
 ```c
 // include/linux/idr.h
 struct idr {
-    struct xarray xa;     // 基于 XArray 实现
-    unsigned int idr_next;  // 下一次分配的位置
+    struct radix_tree_root idr_rt;   // 兼容别名，实际类型为 struct xarray
+    unsigned int           idr_base; // ID 空间的起始偏移
+    unsigned int           idr_next; // cyclic 分配的下一个候选 ID
 };
 ```
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `idr_rt` | `struct radix_tree_root`（即 `struct xarray`） | 保存 `ID → 指针` 的多级树；树的 `IDR_FREE` 标记记录某棵子树是否还有空 slot，加速 ID 分配 |
+| `idr_base` | `unsigned int` | ID 偏移；内部索引为 `id - idr_base`，使 ID 可以从非 0 的编号开始 |
+| `idr_next` | `unsigned int` | `idr_alloc_cyclic()` 的游标；每次成功后指向下一个 ID，回绕后从 `idr_base` 继续扫描 |
+
+```plantuml
+@startdot
+digraph idr {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="IDR：在 XArray 的整数索引空间上分配 ID", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  idr [label="{idr|idr_rt|idr_base|idr_next}", fillcolor="#FFF3E0"];
+  xa [label="{xarray|xa_lock|xa_flags|xa_head}"];
+  entry [label="内部索引 = id - idr_base\n→ 对象指针", fillcolor="#E8F5E9"];
+
+  idr -> xa [label="idr_rt（radix_tree_root\n是 xarray 的兼容别名）"];
+  xa -> entry [label="xa_store(index, ptr)"];
+}
+@enddot
+```
+
+*结构图：`idr` 内嵌 `xarray`（旧名 `radix_tree_root`）；`xa_head` 指向多级 `xa_node` 树，叶 slot 中存放对象指针。*
 
 #### 7.1.3 完整 API 参考
 
@@ -3228,6 +5517,38 @@ void my_idr_dump(void)
 }
 ```
 
+**图解：IDR 分配与 XArray 存储**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title IDR：在 XArray 中分配最小空闲 ID
+start
+:idr_preload(GFP_KERNEL)（原子上下文需要）;
+:从 idr_next 或 start 开始扫描;
+:xa_alloc() 在 [start, end) 中寻找空槽;
+if (找到空槽?) then (是)
+  :xa_store(index, ptr);
+  :idr_next = index + 1（循环模式取模）;
+  :返回 id;
+else (否)
+  :扩展 XArray 层级;
+  :重新扫描;
+endif
+:idr_preload_end();
+stop
+note right
+  IDR 只是 XArray 之上的一层 ID 分配策略：
+  XArray 负责 index → pointer 的存储，
+  IDR 负责寻找空闲 index、循环分配与批量遍历
+end note
+@enduml
+```
+
+*图 7-1：`idr_alloc()` 在 XArray 的索引空间中寻找空闲 slot；找到后把对象指针 `xa_store()` 进去，并更新 `idr_next`。`idr_remove()` 只是把该索引清空。*
+
 #### 7.1.5 应用场景
 
 - **设备号管理**：`MKDEV(ma, mi)` 到设备对象的映射
@@ -3266,6 +5587,64 @@ struct xarray {
     void __rcu *xa_head;      // 头节点指针（RCU 保护）
 };
 ```
+
+| 字段 | 类型 | 作用 |
+|---|---|---|
+| `xa_lock` | `spinlock_t` | 写路径锁；读路径可只持 RCU 读锁，实现无锁查找 |
+| `xa_flags` | `gfp_t` | 节点分配标志，同时携带根标记（如 `XA_FLAGS_ALLOC`、`ROOT_IS_IDR`） |
+| `xa_head` | `void __rcu *` | 根条目：`NULL` 表示空树；低位非 0 时表示直接存放的条目或特殊条目；否则指向根 `xa_node` |
+
+树节点 `xa_node` 的定义（同上文件）：
+
+```c
+struct xa_node {
+    unsigned char shift;      // 本节点下面还剩多少位索引（每层 -XA_CHUNK_SHIFT）
+    unsigned char offset;     // 本节点在父节点 slots[] 中的下标
+    unsigned char count;      // 子树中的条目总数
+    unsigned char nr_values;  // 子树中的非 NULL 条目数
+    struct xa_node __rcu *parent;  // 父节点，根节点为 NULL
+    struct xarray *array;          // 所属的 XArray
+    union {
+        struct list_head private_list;  // 树使用者可用
+        struct rcu_head  rcu_head;      // 释放节点时使用
+    };
+    void __rcu *slots[XA_CHUNK_SIZE];   // 64（或 16）个子节点/条目
+    union {
+        unsigned long tags[XA_MAX_MARKS][XA_MARK_LONGS];  // 每个 slot 的标记位
+        unsigned long marks[XA_MAX_MARKS][XA_MARK_LONGS];
+    };
+};
+```
+
+| 字段 | 作用 |
+|---|---|
+| `shift` | 当前节点覆盖的索引位宽；查找时用 `(index >> shift) & (XA_CHUNK_SIZE - 1)` 选 slot |
+| `offset` | 本节点在父节点 `slots[]` 中的位置，用于回溯和标记向上传播 |
+| `count` / `nr_values` | 子树条目总数 / 实际值条目数；为 0 时可回收节点，也用于快速判断空子树 |
+| `parent` / `array` | 父节点指针和所属 XArray，支持从叶向根传播标记、以及 RCU 替换时定位根 |
+| `slots[]` | 子节点指针或条目；低位编码区分内部节点、普通指针、`XA_ZERO_ENTRY`、`XA_RETRY_ENTRY` |
+| `tags[][]` | 每个 slot 的标记位图，`xa_set_mark()` 会沿 `parent` 链向上置位，`xa_find()` 据此整棵跳过 |
+
+```plantuml
+@startdot
+digraph xarray {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="xa_node：多级节点，slots 存条目，tags 存标记", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  xa [label="{xarray|xa_lock|xa_flags|xa_head}", fillcolor="#FFF3E0"];
+  nd [label="{xa_node|shift|offset|count|nr_values|parent|array|slots[64]|tags[3][1]}"];
+  entry [label="条目指针\n（低位编码类型）", fillcolor="#E8F5E9"];
+  child [label="下一级 xa_node"];
+
+  xa -> nd [label="xa_head"];
+  nd -> child [label="slots[i]"];
+  nd -> entry [label="slots[j]"];
+}
+@enddot
+```
+
+*结构图：`xa_head` 指向根 `xa_node`；每层 `slots[]` 按 6 位索引下降，叶 slot 直接存条目；`tags` 与 `slots` 平行，标记沿 `parent` 向上汇总。*
 
 #### 7.2.3 初始化
 
@@ -3368,6 +5747,36 @@ XArray 内部使用多级树结构：
 - **节点编码**：指针的低位用于标记条目类型
 - **RCU 安全**：读操作可无锁并发
 
+**图解：索引路径与内部条目**
+
+```plantuml
+@startdot
+digraph xarray {
+  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="XArray：多级节点 + 内部条目编码", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  root [label="{xa_head|shift = 12}"];
+  mid [label="{内部节点|shift = 6|slots[0..63]}"];
+  leaf [label="{内部节点|shift = 0|slots[0..63]}"];
+  e1 [label="index 0x123\n→ 指针", fillcolor="#E8F5E9"];
+  e2 [label="index 0x124\n→ XA_ZERO_ENTRY", fillcolor="#FFF3E0"];
+  e3 [label="空槽\nNULL", style="rounded,dashed", fillcolor="white"];
+
+  root -> mid [label="bits[17:12]"];
+  mid -> leaf [label="bits[11:6]"];
+  leaf -> e1 [label="bits[5:0] = 0x23"];
+  leaf -> e2 [label="0x24"];
+  leaf -> e3 [style=dashed];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="条目低位编码类型：\n00 普通指针\n10 内部条目（如 ZERO/NULL/RETRY）\n读路径 RCU 无锁；\n标记位随路径逐级传播"];
+  leaf -> note [style=invis];
+}
+@enddot
+```
+
+*图 7-2：XArray 按每 6 位一层下降；叶/内部节点中的条目低位编码类型（普通指针、`XA_ZERO_ENTRY`、`XA_RETRY_ENTRY` 等）。标记位（marks）随路径逐级向上传播，`xa_find()` 可据此快速跳过整棵子树。*
+
 #### 7.2.9 完整使用示例
 
 ```c
@@ -3466,7 +5875,91 @@ eBPF Maps 是内核提供的通用键值存储结构，允许用户空间和 eBP
 | `BPF_MAP_TYPE_QUEUE` | FIFO 队列 | 先进先出 |
 | `BPF_MAP_TYPE_RINGBUF` | 环形缓冲区 | 高性能数据传递 |
 
-#### 7.3.3 核心 API（用户空间）
+#### 7.3.3 内核侧核心数据结构
+
+所有 Map 类型都以内嵌的 `struct bpf_map` 作为公共头，`ops` 指向该类型的操作表；具体实现再在公共头之后追加自己的字段和元素布局。
+
+```c
+// include/linux/bpf.h
+struct bpf_map {
+    const struct bpf_map_ops *ops;      // 类型特定操作表（lookup/update/delete...）
+    enum bpf_map_type map_type;         // BPF_MAP_TYPE_HASH / ARRAY / ...
+    u32 key_size;                       // 键大小（字节）
+    u32 value_size;                     // 值大小（字节）
+    u32 max_entries;                    // 最大条目数
+    atomic64_t refcnt;                  // Map 引用计数
+    atomic64_t usercnt;                 // 用户空间引用计数
+    ...
+};
+
+// kernel/bpf/hashtab.c
+struct bpf_htab {
+    struct bpf_map map;                 // 公共头，必须位于起始位置
+    struct bucket *buckets;             // 桶数组，每个 bucket 是 hlist_nulls + 锁
+    void *elems;                        // 预分配元素区
+    ...
+    u32 n_buckets;                      // 桶数量
+    u32 elem_size;                      // 每个元素的字节数
+    u32 hashrnd;                        // 哈希随机种子
+};
+
+struct htab_elem {
+    struct hlist_nulls_node hash_node;  // 桶链节点
+    ...
+    u32 hash;                           // 缓存的哈希值
+    char key[] __aligned(8);            // 键；value 紧跟在 key 之后
+};
+
+// include/linux/bpf.h
+struct bpf_array {
+    struct bpf_map map;
+    u32 elem_size;                      // 每个 value 的大小
+    u32 index_mask;                     // max_entries - 1，用于快速取模
+    struct bpf_array_aux *aux;
+    union {
+        DECLARE_FLEX_ARRAY(char, value) __aligned(8);          // 普通数组
+        DECLARE_FLEX_ARRAY(void *, ptrs) __aligned(8);         // 指针数组
+        DECLARE_FLEX_ARRAY(void __percpu *, pptrs) __aligned(8); // Per-CPU 数组
+    };
+};
+```
+
+| 结构体 | 关键字段 | 作用 |
+|---|---|---|
+| `bpf_map` | `ops` | 把不同 Map 类型的操作统一到函数表，`bpf_map_lookup_elem()` 等 helper 最终调用它 |
+| `bpf_map` | `key_size` / `value_size` / `max_entries` | 在创建时固定元素布局和容量，HASH 用它计算 `elem_size`，ARRAY 用它划分 value 区 |
+| `bpf_map` | `refcnt` / `usercnt` | 分别跟踪内核对象引用和用户 fd 引用，最后一个引用释放时才销毁 Map |
+| `bpf_htab` | `buckets` / `n_buckets` | 哈希桶数组；桶内用 `hlist_nulls_head` 串元素，桶锁保护并发更新 |
+| `bpf_htab` | `elems` / `elem_size` | 预分配元素池；非预分配模式下元素来自 `bpf_mem_alloc` |
+| `htab_elem` | `hash_node` / `hash` | `hash_node` 把元素挂进桶链，`hash` 避免查找时重复计算 |
+| `htab_elem` | `key[]` | 键和值连续存放（`value = key + key_size`），一次分配即可存放整个元素 |
+| `bpf_array` | `index_mask` | 下标 `key & index_mask` 直接定位 value，省去取模 |
+| `bpf_array` | `value` / `ptrs` / `pptrs` | 柔性数组：普通数组、指针数组、Per-CPU 指针数组三种布局复用同一结构 |
+
+```plantuml
+@startdot
+digraph bpf {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="eBPF Map：bpf_map 是公共头，HASH/ARRAY 各有自己的节点布局", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  map [label="{bpf_map|ops|map_type|key_size|value_size|max_entries|refcnt}", fillcolor="#FFF3E0"];
+  htab [label="{bpf_htab|map|buckets|n_buckets|elem_size|count}"];
+  bucket [label="bucket\nhlist_nulls_head + rqspinlock_t"];
+  elem [label="{htab_elem|hash_node|hash|key[]|value[]}"];
+  array [label="{bpf_array|map|elem_size|index_mask|value[] / ptrs[]}"];
+
+  map -> htab [label="HASH"];
+  htab -> bucket [label="buckets[]"];
+  bucket -> elem [label="链头"];
+  map -> array [label="ARRAY"];
+}
+@enddot
+```
+
+*结构图：`bpf_map` 是公共头；HASH Map 通过 `bpf_htab.buckets[]` 指向桶链，`htab_elem.hash_node` 串成 `hlist_nulls`；ARRAY Map 则把 value 直接放在 `bpf_array` 后面的柔性数组中。*
+
+#### 7.3.4 核心 API（用户空间）
 
 ```c
 #include <bpf/bpf.h>
@@ -3500,7 +5993,7 @@ int bpf_map_delete_batch(int fd, void *keys, __u32 *count,
                          struct bpf_map_batch_opts *opts);
 ```
 
-#### 7.3.4 核心 API（eBPF 程序内部）
+#### 7.3.5 核心 API（eBPF 程序内部）
 
 ```c
 // 在 eBPF 程序中访问 Map
@@ -3525,7 +6018,41 @@ static __always_inline long bpf_for_each_map_elem(struct bpf_map *map,
                                                    __u64 flags);
 ```
 
-#### 7.3.5 完整使用示例
+**图解：HASH Map 的查找/更新**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title eBPF Map（HASH）：查找与更新
+start
+:h = hash(key);
+:bucket = htab->buckets[h & (n_buckets - 1)];
+:在 bucket 的 hlist 中比较 key;
+if (找到元素?) then (是)
+  :返回 value 指针;
+  note right
+    eBPF 程序内调用 bpf_map_lookup_elem()；
+    返回的指针有效期仅限于当前程序执行
+  end note
+else (否)
+  :lookup 返回 NULL;
+endif
+if (update 且 key 不存在?) then (是)
+  :分配新元素并插入桶头;
+  note right
+    BPF_ANY / BPF_NOEXIST / BPF_EXIST
+    决定覆盖与插入语义
+  end note
+endif
+stop
+@enduml
+```
+
+*图 7-3：`bpf_map_lookup_elem()` 先算哈希、定位桶，再在桶内比较键；`bpf_map_update_elem()` 在键不存在且允许插入时分配新元素并插入桶头。*
+
+#### 7.3.6 完整使用示例
 
 **eBPF 内核侧程序**
 
@@ -3604,7 +6131,7 @@ cleanup:
 }
 ```
 
-#### 7.3.6 应用场景
+#### 7.3.7 应用场景
 
 - **跟踪和性能分析**：存储统计数据和事件
 - **网络过滤**：存储过滤规则和连接状态
@@ -3634,15 +6161,59 @@ kfifo 是内核中实现的无锁环形缓冲区（Ring Buffer），用于单生
 
 #### 8.1.2 核心数据结构
 
+kfifo 的公共头是 `struct __kfifo`；`DEFINE_KFIFO()` / `DECLARE_KFIFO()` 再把它与类型化的 `buf[]` 包成一个结构：
+
 ```c
 // include/linux/kfifo.h
-struct kfifo {
-    unsigned char *buffer;    // 缓冲区指针
-    unsigned int size;        // 缓冲区大小（2 的幂次）
-    unsigned int in;          // 写入位置（无符号，可溢出）
-    unsigned int out;         // 读取位置（无符号，可溢出）
+struct __kfifo {
+    unsigned int in;     // 写入计数，单调递增
+    unsigned int out;    // 读取计数，单调递增
+    unsigned int mask;   // size - 1，用于 & 回绕
+    unsigned int esize;  // 每个元素的大小
+    void *data;          // 缓冲区起始地址
 };
+
+// DEFINE_KFIFO(name, type, size) 展开后的布局（简化）
+struct {
+    union {
+        struct __kfifo kfifo;
+        type *type;
+        ...
+    };
+    type buf[size];      // 内联缓冲区，size 必须是 2 的幂
+} name;
 ```
+
+动态分配的 `struct kfifo` 是 `__STRUCT_KFIFO_PTR(unsigned char, 0, void)` 的兼容类型：`data` 指向 `kfifo_alloc()` 分配的缓冲区，`buf[]` 为空。
+
+| 字段 | 作用 |
+|---|---|
+| `in` | 生产者游标：指向下一次写入位置；只由生产者递增，回绕由无符号溢出自然完成 |
+| `out` | 消费者游标：指向下一次读取位置；只由消费者递增 |
+| `mask` | `size - 1`；实际下标为 `counter & mask`，把取模换成位与 |
+| `esize` | 元素大小；`kfifo_in()` 等按元素个数增减 `in/out`，字节操作时按 `len / esize` 换算 |
+| `data` | 缓冲区指针；内联模式下指向 `buf[]`，动态模式下指向 `kfifo_alloc()` 分配的内存 |
+
+已用元素数为 `in - out`，可用空间为 `size - (in - out)`；空是 `in == out`，满是 `in - out == size`。
+
+```plantuml
+@startdot
+digraph kfifo {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="kfifo 结构体与环形 buffer", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  fifo [label="{__kfifo|in|out|mask|esize|data}", fillcolor="#FFF3E0"];
+  buf [label="{data[0..mask]|slot0|slot1|…|slotN}"];
+  fifo -> buf [label="data"];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="in：下一次写入的单调计数\nout：下一次读取的单调计数\nmask = size - 1，esize = 元素大小\n实际下标 = counter & mask\n已用 = in - out，空：in == out，满：in - out == size\nDEFINE_KFIFO() 把 __kfifo 与 buf[size] 包成类型化结构"];
+  buf -> note [style=invis];
+}
+@enddot
+```
+
+*结构图：`__kfifo` 只保存 `in/out/mask/esize/data` 五个字段；`data` 指向环形缓冲区，索引通过 `counter & mask` 回绕，不存在头尾指针或哨兵节点。*
 
 #### 8.1.3 核心操作
 
@@ -3702,6 +6273,39 @@ size - (in - out) // 剩余空间
 满：in - out == size
 空：in == out
 ```
+
+**图解：环形缓冲区的 in/out**
+
+```plantuml
+@startdot
+digraph kfifo {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="kfifo：2 的幂次环形缓冲区，in/out 单调递增", labelloc=t, fontsize=14];
+  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  s0 [label="slot0\n(data)"];
+  s1 [label="slot1\n(data)"];
+  s2 [label="slot2\n(data)"];
+  s3 [label="slot3"];
+  s4 [label="slot4"];
+  s5 [label="slot5\n(data)"];
+  s6 [label="slot6"];
+  s7 [label="slot7"];
+
+  s0 -> s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s0 [style=invis];
+
+  in [shape=plaintext, label="in = 6"];
+  out [shape=plaintext, label="out = 2"];
+  in -> s6 [label="下一次写入"];
+  out -> s2 [label="下一次读取"];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="已用长度 = in - out\n索引 = in & (size - 1)\n满：in - out == size\n空：in == out\nsize 必须是 2 的幂"];
+  s3 -> note [style=invis];
+}
+@enddot
+```
+
+*图 8-1：`in` 和 `out` 单调递增，实际索引用 `& (size - 1)` 回绕；已用长度直接由 `in - out` 得到，满/空判断不需要额外标志位。*
 
 #### 8.1.6 完整使用示例
 
@@ -3789,20 +6393,76 @@ void my_driver_read(struct my_driver *drv, void *buf, size_t len)
 #### 8.2.2 核心数据结构
 
 ```c
-// include/linux/workqueue.h
+// include/linux/workqueue_types.h
 struct work_struct {
-    atomic_long_t data;          // 工作状态和函数指针
-    struct list_head entry;      // 链表节点，连接到工作队列
-    work_func_t func;            // 工作函数
+    atomic_long_t data;      // 低若干位是状态标志，其余位存放 pool id 或 pwq 指针
+    struct list_head entry;  // 挂到 worker_pool->worklist 的链表节点
+    work_func_t func;        // 工作回调函数
+#ifdef CONFIG_LOCKDEP
+    struct lockdep_map lockdep_map;
+#endif
 };
 
+// kernel/workqueue.c
 struct worker_pool {
-    spinlock_t          lock;        // 保护队列的锁
-    struct list_head    worklist;    // 待处理工作链表
-    int                 nr_workers;  // 工作线程数
+    raw_spinlock_t      lock;        // 保护 pool 的队列与计数
+    int                 cpu;         // 绑定的 CPU；-1 表示 unbound
+    int                 node;        // 所属 NUMA 节点
+    int                 id;          // pool ID
+    int                 nr_running;  // 正在运行的工作项数
+    struct list_head    worklist;    // 待处理工作项链表
+    int                 nr_workers;  // 工作线程总数
+    int                 nr_idle;     // 空闲工作线程数
+    struct list_head    idle_list;   // 空闲 worker 链
+    struct list_head    workers;     // 所有 worker
+    ...
+};
+
+// kernel/workqueue_internal.h
+struct worker {
+    union {
+        struct list_head entry;      // 空闲时挂在 idle_list
+        struct hlist_node hentry;    // 忙碌时挂在 busy_hash
+    };
+    struct work_struct *current_work;  // 当前执行的工作项
+    work_func_t         current_func;
+    struct task_struct *task;          // worker 内核线程
+    struct worker_pool *pool;
     ...
 };
 ```
+
+| 结构体/字段 | 作用 |
+|---|---|
+| `work_struct.data` | 位打包字段：`WORK_STRUCT_PENDING_BIT` 表示已入队，`WORK_STRUCT_PWQ_BIT` 表示其余位是 `pool_workqueue` 指针，否则存放 pool id；`test_and_set_bit()` 用它实现"同一工作项只能入队一次" |
+| `work_struct.entry` | 挂入 `worker_pool.worklist`（或 `pool_workqueue` 的延迟链）的节点，一个工作项同时只能出现在一条队列上 |
+| `work_struct.func` | worker 线程取出后调用的回调，参数是 `work_struct *` 本身，宿主用 `container_of()` 找回 |
+| `worker_pool.lock` | 保护 `worklist`、`nr_running` 和 worker 状态转移的自旋锁 |
+| `worker_pool.worklist` | 待执行工作项队列；worker 从头部取，`queue_work()` 从尾部/头部插入 |
+| `worker_pool.nr_running` | 已取出但尚未执行完的工作项数，用于判断是否需要唤醒新 worker |
+| `worker_pool.workers` / `idle_list` / `nr_idle` | 管理 worker 线程池：空闲线程挂在 `idle_list`，需要时唤醒，长时间空闲则回收 |
+| `worker.current_work` / `pool` | 当前正在执行的工作项及其所属 pool；`current_func` 用于 stall 检测和调试输出 |
+
+```plantuml
+@startdot
+digraph wq {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="workqueue：worker_pool 的 worklist 与 work_struct 节点", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  pool [label="{worker_pool|lock|cpu / node|nr_running|worklist|nr_workers|workers|idle_list|nr_idle}", fillcolor="#FFF3E0"];
+  w1 [label="{work_struct|data|entry|func}"];
+  w2 [label="{work_struct|data|entry|func}"];
+  worker [label="{worker|current_work|current_func|pool|task}"];
+
+  pool -> w1 [label="worklist"];
+  w1 -> w2 [label="entry"];
+  worker -> w1 [label="current_work", style=dashed];
+}
+@enddot
+```
+
+*结构图：`worker_pool.worklist` 是 `work_struct.entry` 组成的双向链表；`worker` 通过 `current_work` 指向正在执行的工作项，执行期间该工作项已从 `worklist` 摘下。*
 
 #### 8.2.3 操作流程
 
@@ -3820,6 +6480,33 @@ worker 线程：
       work->func(work);        // 执行工作函数
   }
 ```
+
+**图解：工作项的生命周期**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title workqueue：工作项从提交到执行
+participant "调用者" as C
+participant "worker_pool" as P
+participant "worker 内核线程" as W
+C -> P : queue_work() / schedule_work()
+P -> P : 选择 pool（当前 CPU 或 unbound）
+P -> P : list_add_tail(&work->entry, &pool->worklist)
+P -> W : 唤醒 worker
+W -> P : list_first_entry(&pool->worklist)
+W -> W : work->func(work)
+note right of W
+  执行期间 work 已从 worklist 摘下；
+  若在 func 内再次 queue_work()，
+  会重新排到队尾，实现周期性任务
+end note
+@enduml
+```
+
+*图 8-2：`queue_work()` 把 `work_struct` 挂到目标 `worker_pool` 的 `worklist`，worker 线程取出并执行；执行期间工作项已不在队列中，可在回调内重新入队实现周期性任务。*
 
 #### 8.2.4 应用场景
 
@@ -3860,12 +6547,13 @@ struct free_area {
 
 struct zone {
     ...
-    struct free_area    free_area[MAX_ORDER];      // 每个 order 一个 free_area
+    struct free_area    free_area[NR_PAGE_ORDERS]; // 每个 order 一个 free_area
     ...
 };
 
-// 最大 order 定义
-#define MAX_ORDER 11  // 即最大可分配 2^10 = 1024 个连续页框
+// 最大 order：默认 10，可由 CONFIG_ARCH_FORCE_MAX_ORDER 覆盖
+#define MAX_PAGE_ORDER 10
+#define NR_PAGE_ORDERS (MAX_PAGE_ORDER + 1)  // order 0..10，共 11 个 free_area
 ```
 
 **页描述符中的伙伴系统字段**
@@ -3873,17 +6561,56 @@ struct zone {
 ```c
 // include/linux/mm_types.h
 struct page {
-    unsigned long flags;           // 标志位（PageBuddy 等）
+    unsigned long flags;           // 标志位；空闲块在伙伴系统中时 PageBuddy 置位
     union {
         struct {
-            unsigned long private; // 存储伙伴阶数（order）
+            union {
+                struct list_head lru;        // 页缓存/匿名页的 LRU 链
+                struct list_head buddy_list; // 空闲页块在伙伴系统中的链表节点
+                ...
+            };
             ...
+            unsigned long private;  // PageBuddy 时保存该页块的 order
         };
         ...
     };
     ...
 };
 ```
+
+| 结构体/字段 | 作用 |
+|---|---|
+| `free_area.free_list[]` | 按迁移类型分链；每一条链上的页块 order 相同，`MIGRATE_MOVABLE`/`UNMOVABLE`/`RECLAIMABLE` 等分开管理以抑制碎片 |
+| `free_area.nr_free` | 该 order 的空闲页块总数（跨所有迁移类型）；分配/释放/合并时同步增减 |
+| `zone.free_area[]` | 下标即 order；分配从请求 order 向上找，释放时向下合并 |
+| `page.buddy_list` | 页块空闲时充当 `free_list` 节点；与 `lru` 共用同一联合体，`list_del()` 摘链即表示该块被分配 |
+| `page.private` | `PageBuddy` 置位时保存页块的 order，合并时用它校验伙伴阶数（`buddy_order()` 即读此字段） |
+| `page.flags` | `PageBuddy` 表示页块位于伙伴系统；释放时用它判断伙伴是否空闲 |
+| `NR_PAGE_ORDERS` | `free_area[]` 的数组长度，决定伙伴系统可管理的最大块（默认 order 10，即 1024 页） |
+
+```plantuml
+@startdot
+digraph buddy {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="伙伴系统：zone → free_area[order] → 按迁移类型分链的页块", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  zone [label="{zone|free_area[NR_PAGE_ORDERS]|…}", fillcolor="#FFF3E0"];
+  fa2 [label="{free_area[2]|free_list[MIGRATE_TYPES]|nr_free}"];
+  fa1 [label="{free_area[1]|free_list[MIGRATE_TYPES]|nr_free}"];
+  fa0 [label="{free_area[0]|free_list[MIGRATE_TYPES]|nr_free}"];
+  block [shape=box, label="页块（2^order 页）\npage->private = order\npage->buddy_list 挂入 free_list\npage->flags 中 PageBuddy 置位"];
+
+  zone -> fa2 [label="order=2"];
+  zone -> fa1 [label="order=1"];
+  zone -> fa0 [label="order=0"];
+  fa2 -> block [label="free_list[migratetype]"];
+  block -> block [style=dashed, label="buddy = pfn ^ (1<<order)"];
+}
+@enddot
+```
+
+*结构图：`zone.free_area[order]` 是数组，每项再按迁移类型分成多条 `free_list`；空闲页块用 `page->buddy_list`（与 `lru` 共用联合体）串链，`page->private` 记录 order，`PageBuddy` 标志表示块处于空闲状态。*
 
 ### 9.3 核心辅助函数
 
@@ -3929,7 +6656,7 @@ struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
     struct page *page;
 
     // 从请求的 order 开始向上查找
-    for (current_order = order; current_order < MAX_ORDER; ++current_order) {
+    for (current_order = order; current_order < NR_PAGE_ORDERS; ++current_order) {
         area = &(zone->free_area[current_order]);
         page = get_page_from_free_area(area, migratetype);
         if (!page)
@@ -3970,7 +6697,7 @@ static inline void __free_one_page(struct page *page,
     struct page *buddy;
 
     // 尝试反复合并伙伴块
-    while (order < MAX_ORDER - 1) {
+    while (order < MAX_PAGE_ORDER) {
         buddy_pfn = __find_buddy_pfn(pfn, order);
         buddy = page + (buddy_pfn - pfn);
         if (!page_is_buddy(page, buddy, order))
@@ -4013,6 +6740,48 @@ order 2:  [0-3]                 [4-7]                 ...
 - order 1: (0-1, 2-3), (4-5, 6-7), ...
 - order 2: (0-3, 4-7), ...
 ```
+
+**图解：分配拆分与释放合并**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title 伙伴系统：分配拆分与释放合并
+start
+partition "分配 order=2" {
+  :从 free_area[2] 开始向上找;
+  if (当前 order 有空闲块?) then (是)
+    :摘下该块;
+  else (否)
+    :order++，继续找更大的块;
+  endif
+  while (块 order > 请求 order?) is (是)
+    :把块对半拆开;
+    :后一半挂到 free_area[order-1];
+    :order--;
+  endwhile
+  :返回前一半;
+}
+partition "释放 order=0" {
+  while (伙伴存在且空闲?) is (是)
+    :从 free_area[order] 摘下伙伴;
+    :合并为 order+1 的块;
+    :order++;
+  endwhile
+  :把最终块挂回 free_area[order];
+}
+note right
+  伙伴 PFN = pfn ^ (1 << order)
+  合并时取两个 PFN 中较小者作为新块起点
+  free_area[order] 内按迁移类型分链表
+end note
+stop
+@enduml
+```
+
+*图 9-1：申请 `order=2` 但只有更大的空闲块时，反复对半拆分，把后一半挂到低阶 `free_area`；释放时若伙伴空闲则逐级合并，直到伙伴不空闲或到达 `MAX_PAGE_ORDER`。*
 
 ### 9.7 迁移类型
 
@@ -4133,7 +6902,42 @@ void free_exact_3pages(void *addr)
 struct kref {
     refcount_t refcount;
 };
+
+// include/linux/refcount_types.h
+typedef struct refcount_struct {
+    atomic_t refs;
+} refcount_t;
 ```
+
+| 结构体/字段 | 作用 |
+|---|---|
+| `kref.refcount` | 唯一的计数成员；`kref_get()`/`kref_put()` 分别转调 `refcount_inc()`/`refcount_dec_and_test()` |
+| `refcount_t.refs` | 底层 `atomic_t` 计数；正常范围 `1 … REFCOUNT_MAX`，溢出/下溢/0 上递增会饱和到 `REFCOUNT_SATURATED` 并 WARN |
+| 宿主对象 | 把 `kref` 作为成员嵌入，`release()` 中用 `container_of()` 从 `kref *` 找回宿主并释放 |
+
+`kref` 本身不带指针、不带锁，也不带析构数据；它只要求调用者约定"计数归零时调用 `release`"。
+
+```plantuml
+@startdot
+digraph ref {
+  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="kref / refcount_t：对象内嵌计数", labelloc=t, fontsize=14];
+  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
+  edge [fontname="WenQuanYi Zen Hei"];
+
+  obj [label="{宿主对象|…|kref refcount|…}", fillcolor="#FFF3E0"];
+  kref [label="{kref|refcount_t refcount}"];
+  ref [label="{refcount_t|atomic_t refs}"];
+
+  obj -> kref [label="内嵌"];
+  kref -> ref [label="refs"];
+
+  note [shape=note, style=filled, fillcolor="#FFF8E1", label="kref_init() → 1\nkref_get() → refcount_inc()\nkref_put() → refcount_dec_and_test()\n0 时回调 release()"];
+  ref -> note [style=invis];
+}
+@enddot
+```
+
+*结构图：宿主对象内嵌 `kref`，`kref` 内嵌 `refcount_t`，最内层只有一个 `atomic_t refs`；计数与对象在同一块内存中，没有额外的引用节点或全局表。*
 
 ### 10.3 核心操作
 
@@ -4150,6 +6954,33 @@ int kref_put(struct kref *kref, void (*release)(struct kref *kref));
 // 安全获取（如果计数已为 0，则不递增）
 int kref_get_unless_zero(struct kref *kref);
 ```
+
+**图解：kref 生命周期**
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title kref：引用计数生命周期
+state "refcount = 1\n对象已创建" as One
+state "refcount = N\n被多处引用" as Many
+state "refcount = 0\nrelease 已调用" as Dead
+[*] --> One : kref_init()\nrefcount_set(1)
+One --> Many : kref_get()
+Many --> Many : kref_get()
+Many --> One : kref_put()\nN → 1
+One --> Dead : kref_put()\n1 → 0\nrelease(kref)
+Dead --> [*]
+note right of Dead
+  kref 内部就是 refcount_t；
+  kref_get_unless_zero() 只能在
+  确认对象仍存活时把 0 挡在门外
+end note
+@enduml
+```
+
+*图 10-1：`kref_init()` 把计数设为 1；`kref_get()` 递增；`kref_put()` 递减到 0 时调用 `release`。`kref_get_unless_zero()` 用于"弱引用"场景，避免在对象已释放时把 0 加回 1。*
 
 ### 10.4 完整 API 参考
 
@@ -4234,6 +7065,94 @@ void usage_example(void)
 
 ---
 
+### 10.7 refcount_t
+
+#### 10.7.1 概述
+
+`kref` 是"引用计数 + 释放回调"的封装，它内部的计数就是 `refcount_t`。`refcount_t` 不是普通的 `atomic_t`，而是**带溢出/下溢检测的加固计数器**：正常计数范围是 `1 … REFCOUNT_MAX`，一旦检测到"0 上递增"、"加法溢出"或"减法下溢"，就把计数器饱和到 `REFCOUNT_SATURATED` 并触发一次 WARN，而不是继续回绕。
+
+```c
+// include/linux/refcount_types.h
+typedef struct refcount_struct {
+    atomic_t refs;
+} refcount_t;
+
+// include/linux/refcount.h
+#define REFCOUNT_INIT(n)        { .refs = ATOMIC_INIT(n) }
+#define REFCOUNT_MAX            INT_MAX
+#define REFCOUNT_SATURATED      (INT_MIN / 2)
+
+enum refcount_saturation_type {
+    REFCOUNT_ADD_NOT_ZERO_OVF,
+    REFCOUNT_ADD_OVF,
+    REFCOUNT_ADD_UAF,
+    REFCOUNT_SUB_UAF,
+    REFCOUNT_DEC_LEAK,
+};
+```
+
+#### 10.7.2 核心 API
+
+```c
+void refcount_set(refcount_t *r, int n);
+unsigned int refcount_read(const refcount_t *r);
+
+void refcount_inc(refcount_t *r);
+bool refcount_inc_not_zero(refcount_t *r);
+void refcount_add(int i, refcount_t *r);
+bool refcount_add_not_zero(int i, refcount_t *r);
+
+void refcount_dec(refcount_t *r);
+bool refcount_dec_and_test(refcount_t *r);
+bool refcount_sub_and_test(int i, refcount_t *r);
+bool refcount_dec_if_one(refcount_t *r);
+
+bool refcount_dec_and_lock(refcount_t *r, spinlock_t *lock);
+bool refcount_dec_and_mutex_lock(refcount_t *r, struct mutex *mutex);
+```
+
+内存序比普通 `atomic_t` 更宽松：递增是 relaxed，递减带 release，`dec_and_test()` 成功时带 acquire。只有在 `SLAB_TYPESAFE_BY_RCU` 等需要二次验证的场景，才使用 `refcount_*_acquire()` / `refcount_set_release()`。
+
+#### 10.7.3 图解：饱和状态迁移
+
+```plantuml
+@startuml
+skinparam defaultFontName "WenQuanYi Zen Hei"
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+title refcount_t：溢出/下溢饱和与告警
+state "正常计数\n1 … REFCOUNT_MAX" as N
+state "0\n对象可释放" as Z
+state "饱和\nREFCOUNT_SATURATED" as S
+[*] --> N : refcount_set(n)
+N --> N : refcount_inc()\nrefcount_add()
+N --> Z : refcount_dec_and_test()\n1 → 0
+N --> S : 加法溢出\ninc(0) / 减法下溢
+Z --> S : refcount_inc()\nUSE-AFTER-FREE 告警
+S --> S : 后续操作保持饱和
+note right of S
+  REFCOUNT_MAX = INT_MAX
+  REFCOUNT_SATURATED = INT_MIN / 2
+  refcount_warn_saturate() 一次性 WARN，
+  并阻止计数继续回绕
+end note
+@enduml
+```
+
+*图 10-2：正常计数在 1 与 `REFCOUNT_MAX` 之间；`dec_and_test()` 使 1→0 时对象可释放；任何溢出、下溢或在 0 上递增都会进入 `REFCOUNT_SATURATED` 并 WARN。*
+
+#### 10.7.4 kref、refcount_t 与 percpu_ref 的分工
+
+| 机制 | 计数位置 | 释放语义 | 典型场景 |
+|---|---|---|---|
+| `kref` | 对象内 `refcount_t` | `kref_put()` 到 0 自动调用 `release` | 设备、文件、socket 等对象生命周期 |
+| `refcount_t` | 对象内 `atomic_t` | 只提供计数，释放由调用者处理 | 需要自定义释放逻辑或与锁配合的场景 |
+| `percpu_ref` | Per-CPU 计数 + 汇总 | `percpu_ref_kill()` 切换到 atomic 模式并阻止新引用，确认旧读者退出后释放 | 读多写少的热路径（block cgroup、aio 等） |
+
+`kref` 的每个操作最终都落到 `refcount_t` 上，因此同样具备溢出/下溢保护；区别只在于 `kref` 多了 `release` 回调约定。
+
+---
+
 ## 11. 核心思想：权衡与优化
 
 ### 11.1 时间与空间的权衡
@@ -4243,10 +7162,16 @@ void usage_example(void)
 | 数据结构 | 查找 | 插入/删除 | 空间开销 | 适用场景 |
 |---|---|---|---|---|
 | 双向链表 | O(n) | O(1) | 2 指针/节点 | 动态变化频繁的集合 |
+| `llist` | O(n) | O(1)（仅头部） | 1 指针/节点 | NMI/中断上下文无锁压栈 |
+| `plist` | O(n) | O(k)（k 为不同优先级数） | 2 条链表/节点 | 按优先级排列的等待队列 |
 | 哈希表 | O(1) avg | O(1) | 桶数组 + 链表 | 快速精确查找 |
+| `rhashtable` | O(1) avg | O(1) avg | 桶数组 + 链表，可扩容 | 动态规模、RCU 读 |
 | 红黑树 | O(log n) | O(log n) | 3 指针/节点 | 需要有序性 |
+| 区间树 | O(log n + k) | O(log n) | rbtree + max | 区间重叠查询 |
 | 基数树/XArray | O(k) | O(k) | 多级节点 | 稀疏整数索引 |
+| 16 路 Trie（`assoc_array`） | O(键长/4) | O(键长/4) | 16 指针/节点 | 任意长度键、RCU 读 |
 | 位图 | O(1) | O(1) | 1 bit/元素 | 大量"有/无"状态 |
+| 二叉堆（`min_heap`） | O(1) 取最小 | O(log n) | 1 数组 | 反复取最小值 |
 | 伙伴系统 | O(log n) | O(log n) | 链表数组 | 连续内存管理 |
 
 ### 11.2 演进趋势
@@ -4263,13 +7188,17 @@ Linux 内核数据结构在不断演进，核心趋势是**向范围查询优化
 在内核开发中选择数据结构时，遵循以下原则：
 
 1. **需要有序集合**？ → 红黑树（Maple Tree 正在成为新标准）
-2. **需要快速精确查找**？ → 哈希表
-3. **需要范围查询**？ → Maple Tree / B-Tree
-4. **需要动态插入/删除**？ → 链表
-5. **需要稀疏整数索引**？ → XArray
+2. **需要快速精确查找**？ → 哈希表；规模动态变化时选 `rhashtable`
+3. **需要范围查询**？ → Maple Tree / B-Tree / 区间树
+4. **需要动态插入/删除**？ → 链表；中断上下文且只压栈时选 `llist`
+5. **需要稀疏整数索引**？ → XArray / IDR
 6. **需要连续内存分配**？ → 伙伴系统
-7. **需要大量二进制状态**？ → 位图
+7. **需要大量二进制状态**？ → 位图；多核高并发分配选 `sbitmap`
 8. **需要生产者-消费者通信**？ → kfifo / 工作队列
+9. **需要按优先级等待**？ → `plist`
+10. **需要反复取最小值**？ → `min_heap`
+11. **需要用长索引键查找对象**？ → `assoc_array`
+12. **需要防止引用计数回绕**？ → `refcount_t`（`kref` 已内置）
 
 ---
 
@@ -4279,14 +7208,25 @@ Linux 内核数据结构在不断演进，核心趋势是**向范围查询优化
 |---|---|---|
 | 双向链表 (list_head) | `include/linux/list.h` | 内联实现 |
 | 哈希链表 (hlist_head) | `include/linux/list.h` | 内联实现 |
+| 无锁链表 (llist) | `include/linux/llist.h` | `lib/llist.c` |
+| Nulls 哈希链表 (hlist_nulls) | `include/linux/list_nulls.h`、`rculist_nulls.h` | 内联实现 |
+| 位锁哈希链表 (hlist_bl) | `include/linux/list_bl.h` | 内联实现 |
+| 优先级链表 (plist) | `include/linux/plist.h` | `lib/plist.c` |
+| 引用计数链表 (klist) | `include/linux/klist.h` | `lib/klist.c` |
 | 哈希表 | `include/linux/hashtable.h` | 内联实现 |
+| 可扩容哈希表 (rhashtable) | `include/linux/rhashtable.h` | `lib/rhashtable.c` |
 | 红黑树 (rb_node) | `include/linux/rbtree.h` | `lib/rbtree.c` |
+| 区间树 (interval_tree) | `include/linux/interval_tree.h` | `lib/interval_tree.c` |
 | 基数树 (历史) | `include/linux/radix-tree.h` | `lib/radix-tree.c` |
 | XArray | `include/linux/xarray.h` | `lib/xarray.c` |
 | Maple Tree | `include/linux/maple_tree.h` | `lib/maple_tree.c` |
+| 关联数组 (assoc_array) | `include/linux/assoc_array.h` | `lib/assoc_array.c` |
+| 二叉堆 (min_heap) | `include/linux/min_heap.h` | `lib/min_heap.c` |
 | 伙伴系统 | `include/linux/mmzone.h` | `mm/page_alloc.c` |
 | 位图 | `include/linux/bitmap.h` | `lib/bitmap.c` |
+| sbitmap | `include/linux/sbitmap.h` | `lib/sbitmap.c` |
 | 引用计数 (kref) | `include/linux/kref.h` | `lib/kref.c` |
+| 加固引用计数 (refcount_t) | `include/linux/refcount.h` | `lib/refcount.c` |
 | IDR | `include/linux/idr.h` | `lib/idr.c` |
 | kfifo | `include/linux/kfifo.h` | `lib/kfifo.c` |
 | 工作队列 | `include/linux/workqueue.h` | `kernel/workqueue.c` |

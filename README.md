@@ -647,7 +647,7 @@ notes/
 | 时间 | 完整 | 启用 | clocksource/clockevent、tick、hrtimer、NTP、POSIX timer、vDSO |
 | 并发与同步 | 完整 | 启用 | 原子、锁、RCU、seqlock、per-CPU、lockdep、屏障 |
 | 异步执行 | 完整 | 启用 | softirq、tasklet、workqueue、hrtimer、task_work、io_uring |
-| 数据结构 | 完整 | 不适用 | 链表、树、哈希、位图、XArray、kfifo、伙伴系统、kref |
+| 数据结构 | 完整 | 不适用 | 链表（list/hlist/llist/hlist_nulls/hlist_bl/plist/klist）、树（rbtree/基数树/Maple Tree/B 树/区间树）、哈希（静态表/rhashtable）、位图/sbitmap、堆（min_heap）、Trie/assoc_array、XArray/IDR、kfifo、伙伴系统、kref/refcount_t |
 | 驱动模型/总线 | 新增 | 部分启用 | kobject 对象模型 + driver core、platform、I2C/SPI/GPIO/pinctrl/regmap/MMC/UFS 概览；设备类全景覆盖 input/HID、DRM、ALSA、thermal、regulator、hwmon、IIO、V4L2 |
 | USB | 新增 | 未启用 | USB core/HCD(xHCI/EHCI/UHCI)/Hub/存储(BOT/UAS)/Gadget/Type-C 完整分析；`CONFIG_USB_SUPPORT` 未启用 |
 | 电源管理 | 新增 | 部分启用 | CPU_FREQ=y；CPU_IDLE/PM/SUSPEND 未启用 |
