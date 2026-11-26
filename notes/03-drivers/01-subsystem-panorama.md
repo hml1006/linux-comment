@@ -341,7 +341,8 @@ V4L2 覆盖摄像头、视频采集、编解码：
 | HWMON | 未启用 | `/sys/class/hwmon`、`sensors` |
 | IIO | 未启用 | `/sys/bus/iio/devices`、`iio_info` |
 | V4L2 | 未启用 | `/dev/videoN`、`v4l2-ctl` |
-| RTC/Watchdog/LED | 未启用 | `/sys/class/rtc`、`/dev/watchdog`、`/sys/class/leds` |
+| RTC | **启用** | `/sys/class/rtc`、`/dev/rtcN`；`RTC_CLASS=y`、`RTC_HCTOSYS=y`；详见 [RTC 专章](misc/02-rtc.md) |
+| Watchdog / LED | 未启用 | `/dev/watchdog`、`/sys/class/leds`；`CONFIG_WATCHDOG`、`CONFIG_NEW_LEDS` 均未设置；框架见 [watchdog 专章](misc/01-watchdog.md) |
 
 ---
 

@@ -443,6 +443,7 @@
 - [进程创建退出](02-core/sched/fork_exec_analysis.md)
 - [调度子系统概览](02-core/sched/schedule_subsystem_analysis.md)
 - [PREEMPT_RT 实时抢占分析](02-core/sched/preempt_rt_analysis.md)
+- [ELF 文件格式与内核加载](02-core/exec/01-elf-format.md)
 
 # 6. 时间子系统
 
@@ -501,7 +502,8 @@
     - [driver core：device/driver/bus 与 probe](03-drivers/driver-model/01-driver-model.md)
     - [platform bus 与 platform driver](03-drivers/driver-model/02-platform-bus.md)
 - [10.2 总线与外设]()
-    - [I2C/SPI/GPIO/pinctrl/regmap/USB/MMC/UFS 核心框架](03-drivers/bus/01-bus-framework.md)
+    - [I2C/SPI/GPIO/pinctrl/regmap/MMC/UFS 核心框架](03-drivers/bus/01-bus-framework.md)
+    - [USB 子系统：枚举、URB、xHCI、Hub、存储与 Gadget](03-drivers/usb/01-usb-subsystem.md)
 - [10.3 电源管理]()
     - [cpufreq/cpuidle/OPP/genpd/runtime PM/suspend](03-drivers/power/01-power-management.md)
 - [10.4 设备类全景]()
@@ -509,6 +511,9 @@
 - [10.5 PCIe]()
     - [PCIe 总线初始化流程](03-drivers/pcie/pcie.md)
     - [PCI 驱动相关结构体](03-drivers/pcie/pcie-struct.md)
+- [10.6 看门狗与 RTC]()
+    - [watchdog 看门狗子系统](03-drivers/misc/01-watchdog.md)
+    - [RTC 实时时钟子系统](03-drivers/misc/02-rtc.md)
 
 # 11. 存储栈
 
@@ -541,6 +546,8 @@
         - [nvme设备基本原理](04-storage/ssd/nvme原理/arch.md)
         - [nvme数据结构定义](04-storage/ssd/nvme原理/define.md)
         - [nvme命令](04-storage/ssd/nvme原理/cmd.md)
+- [11.7 ATA 与 libata]()
+    - [libata/ATA 子系统：命令提交、AHCI 与错误处理](04-storage/ata/01-libata.md)
 
 # 12. 文件系统
 

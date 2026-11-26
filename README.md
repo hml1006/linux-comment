@@ -51,18 +51,22 @@ notes/
 │   ├── time/
 │   ├── sync/
 │   ├── async/
+│   ├── exec/
 │   ├── dsaa/
 │   └── kernel-core/
 ├── 03-drivers/         驱动模型、总线、电源、PCIe、设备类全景
 │   ├── driver-model/
 │   ├── bus/
 │   ├── power/
+│   ├── usb/
+│   ├── misc/
 │   └── pcie/
 ├── 04-storage/         块层、NVMe、SCSI/UFS/eMMC、DM/MD、FUSE/DAX、SSD
 │   ├── block/
 │   ├── nvme/
 │   ├── scsi-ufs/
 │   ├── dm-md/
+│   ├── ata/
 │   └── ssd/
 ├── 05-filesystems/     VFS、kernfs、特殊文件系统、真实文件系统
 │   ├── vfs/
@@ -311,6 +315,7 @@ notes/
 - [进程创建退出](notes/02-core/sched/fork_exec_analysis.md)
 - [调度子系统概览](notes/02-core/sched/schedule_subsystem_analysis.md)
 - [PREEMPT_RT 实时抢占分析](notes/02-core/sched/preempt_rt_analysis.md)
+- [ELF 文件格式与内核加载](notes/02-core/exec/01-elf-format.md)
 
 ## 6. 时间子系统
 
@@ -373,7 +378,8 @@ notes/
 
 ### 10.2 总线与外设
 
-- [I2C/SPI/GPIO/pinctrl/regmap/USB/MMC/UFS 核心框架](notes/03-drivers/bus/01-bus-framework.md)
+- [I2C/SPI/GPIO/pinctrl/regmap/MMC/UFS 核心框架](notes/03-drivers/bus/01-bus-framework.md)
+- [USB 子系统：枚举、URB、xHCI、Hub、存储与 Gadget](notes/03-drivers/usb/01-usb-subsystem.md)
 
 ### 10.3 电源管理
 
@@ -387,6 +393,11 @@ notes/
 
 - [PCIe 总线初始化流程](notes/03-drivers/pcie/pcie.md)
 - [PCI 驱动相关结构体](notes/03-drivers/pcie/pcie-struct.md)
+
+### 10.6 看门狗与 RTC
+
+- [watchdog 看门狗子系统](notes/03-drivers/misc/01-watchdog.md)
+- [RTC 实时时钟子系统](notes/03-drivers/misc/02-rtc.md)
 
 ## 11. 存储栈
 
@@ -423,6 +434,10 @@ notes/
   - [简介](notes/04-storage/ssd/nand原理/README.md) | [闪存物理特性](notes/04-storage/ssd/nand原理/physical.md) | [闪存内部结构原理](notes/04-storage/ssd/nand原理/arch.md) | [命令](notes/04-storage/ssd/nand原理/cmd.md) | [FTL](notes/04-storage/ssd/nand原理/ftl.md)
 - NVMe 原理
   - [简介](notes/04-storage/ssd/nvme原理/intro.md) | [nvme设备基本原理](notes/04-storage/ssd/nvme原理/arch.md) | [nvme数据结构定义](notes/04-storage/ssd/nvme原理/define.md) | [nvme命令](notes/04-storage/ssd/nvme原理/cmd.md)
+
+### 11.7 ATA 与 libata
+
+- [libata/ATA 子系统：命令提交、AHCI 与错误处理](notes/04-storage/ata/01-libata.md)
 
 ## 12. 文件系统
 
@@ -628,16 +643,18 @@ notes/
 | 中断 | 完整 | 启用 | GICv3/ITS/MSI、异常入口；新增 generic IRQ 层 |
 | 系统调用 | 完整 | 启用 | 353 篇，覆盖 arm64 64 位表；本轮补 23 个遗漏调用 |
 | 内存管理 | 完整 | 启用 | 伙伴系统、SLUB、页表、回收、swap、THP/KSM、memcg、NUMA、CMA、DAMON |
-| 进程与调度 | 完整 | 启用 | EEVDF、RT、DL、负载均衡、PELT、cgroup、core scheduling、sched_ext |
+| 进程与调度 | 完整 | 启用 | EEVDF、RT、DL、负载均衡、PELT、cgroup、core scheduling、sched_ext；ELF 格式与加载 |
 | 时间 | 完整 | 启用 | clocksource/clockevent、tick、hrtimer、NTP、POSIX timer、vDSO |
 | 并发与同步 | 完整 | 启用 | 原子、锁、RCU、seqlock、per-CPU、lockdep、屏障 |
 | 异步执行 | 完整 | 启用 | softirq、tasklet、workqueue、hrtimer、task_work、io_uring |
 | 数据结构 | 完整 | 不适用 | 链表、树、哈希、位图、XArray、kfifo、伙伴系统、kref |
-| 驱动模型/总线 | 新增 | 部分启用 | kobject 对象模型（引用计数/uevent/命名空间/sysfs 映射）+ driver core、platform、I2C/SPI/GPIO/pinctrl/regmap/USB/MMC/UFS 概览；设备类全景覆盖 input/HID、DRM、ALSA、thermal、regulator、hwmon、IIO、V4L2 |
+| 驱动模型/总线 | 新增 | 部分启用 | kobject 对象模型 + driver core、platform、I2C/SPI/GPIO/pinctrl/regmap/MMC/UFS 概览；设备类全景覆盖 input/HID、DRM、ALSA、thermal、regulator、hwmon、IIO、V4L2 |
+| USB | 新增 | 未启用 | USB core/HCD(xHCI/EHCI/UHCI)/Hub/存储(BOT/UAS)/Gadget/Type-C 完整分析；`CONFIG_USB_SUPPORT` 未启用 |
 | 电源管理 | 新增 | 部分启用 | CPU_FREQ=y；CPU_IDLE/PM/SUSPEND 未启用 |
 | PCIe | 部分 | 启用 | 总线初始化与结构体；设备树/ACPI 绑定见启动章节 |
 | 块层/NVMe | 完整 | 启用 | bio、blk-mq、I/O 调度、QoS、NVMe host |
-| SCSI/UFS/eMMC | 新增 | 部分启用 | SCSI=y；MMC/UFS 未启用 |
+| SCSI/UFS/eMMC/ATA | 新增 | 部分启用 | SCSI=y、ATA/AHCI=y；MMC/UFS 未启用；libata 命令提交、AHCI、EH、SCSI 翻译完整覆盖 |
+| RTC / Watchdog | 新增 | RTC 启用、Watchdog 未启用 | RTC class/hctosys/闹钟/校准；watchdog core/dev/pretimeout（当前未编译） |
 | DM/MD | 新增 | 未启用 | 源码存在，当前配置未开启 |
 | FUSE/DAX | 新增 | 部分启用 | FUSE_FS=y；DAX 取决于具体 FS |
 | VFS/kernfs/特殊 FS | 完整 | 启用 | VFS 核心 + kernfs 框架（节点生命周期、kernfs_ops、VFS 对接、sysfs/cgroup/resctrl 使用方）+ 15 种特殊文件系统 |
