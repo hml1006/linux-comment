@@ -12,12 +12,12 @@
 
 内核里有大量"要出现在 sysfs、要被引用计数、要发 uevent"的对象。没有统一抽象，每个子系统都要重复实现同样的四套机制：
 
-| 职责 | 各自为政的做法 | kobject 的机制 |
-|------|----------------|----------------|
-| 命名与拓扑 | 维护父指针、手工拼路径 | `name`/`parent` + `kobject_get_path()` 向上拼 |
-| 生命周期 | 自定义 refcount 与释放时机 | `kref` + `kobj_type->release` 单一收敛点 |
-| sysfs 呈现 | 直接调 kernfs、自己处理并发删除 | `sd` + `ktype->default_groups` 自动建删 |
-| 事件通知 | 手拼 netlink 报文 | `kobject_uevent()` 统一 ACTION/DEVPATH/SUBSYSTEM/SEQNUM |
+| 职责       | 各自为政的做法                  | kobject 的机制                                            |
+| ---------- | ------------------------------- | --------------------------------------------------------- |
+| 命名与拓扑 | 维护父指针、手工拼路径          | `name`/`parent` + `kobject_get_path()` 向上拼       |
+| 生命周期   | 自定义 refcount 与释放时机      | `kref` + `kobj_type->release` 单一收敛点              |
+| sysfs 呈现 | 直接调 kernfs、自己处理并发删除 | `sd` + `ktype->default_groups` 自动建删               |
+| 事件通知   | 手拼 netlink 报文               | `kobject_uevent()` 统一 ACTION/DEVPATH/SUBSYSTEM/SEQNUM |
 
 因此 kobject 是**最小公约数**：只放共有的字段，业务数据留在外层结构体，用 `container_of()` 反查（`kobj_to_dev()`、`to_kset()`、`to_class_dir()`）。这带来两个反直觉的设计：内嵌者自己分配内存，kobject 从不 `kzalloc` 外层结构（唯一例外是 `kobject_create()` 的裸 kobject）；kobject 被销毁的唯一合法途径是 `kobject_put()` 掉到 0，`kfree()` 一律错误。
 
@@ -42,15 +42,15 @@
 
 ### 1.3 本树文件构成
 
-| 文件 | 行数 | 内容 |
-|------|------|------|
-| `include/linux/kobject.h` | 222 | `kobject`/`kset`/`kobj_type`/`kobj_attribute`、action 枚举 |
-| `lib/kobject.c` | 1107 | 生命周期、注册、命名、路径、kset、ns 类型表 |
-| `include/linux/kref.h` | 135 | 引用计数，**纯内联**；本树无 `lib/kref.c` |
-| `include/linux/kobject_ns.h` | 58 | `enum kobj_ns_type` 与 `kobj_ns_type_operations` |
-| `lib/kobject_uevent.c` | 851 | netlink 广播、synth uevent、`uevent_helper`、per-net socket |
-| `fs/sysfs/dir.c` / `file.c` | 161 / 821 | kobject→目录节点、属性文件→`sysfs_ops` |
-| `samples/kobject/*.c` | — | 裸 kobject 与 kset 两个最小示例 |
+| 文件                            | 行数      | 内容                                                               |
+| ------------------------------- | --------- | ------------------------------------------------------------------ |
+| `include/linux/kobject.h`     | 222       | `kobject`/`kset`/`kobj_type`/`kobj_attribute`、action 枚举 |
+| `lib/kobject.c`               | 1107      | 生命周期、注册、命名、路径、kset、ns 类型表                        |
+| `include/linux/kref.h`        | 135       | 引用计数，**纯内联**；本树无 `lib/kref.c`                  |
+| `include/linux/kobject_ns.h`  | 58        | `enum kobj_ns_type` 与 `kobj_ns_type_operations`               |
+| `lib/kobject_uevent.c`        | 851       | netlink 广播、synth uevent、`uevent_helper`、per-net socket      |
+| `fs/sysfs/dir.c` / `file.c` | 161 / 821 | kobject→目录节点、属性文件→`sysfs_ops`                         |
+| `samples/kobject/*.c`         | —        | 裸 kobject 与 kset 两个最小示例                                    |
 
 `kref` 没有 `.c` 文件这点常被记错：`kref_init/get/put/get_unless_zero` 全是 `static inline`，编译进每个使用者。本树也没有 `kref_replace_release()`，只有 `kref_put_mutex()`/`kref_put_lock()` 两个"持锁发布"变体（`kref.h:81-113`）。
 
@@ -84,20 +84,20 @@ struct kobject {
 };
 ```
 
-| 字段 | 语义 | 维护者 |
-|------|------|--------|
-| `name` | 目录名、`DEVPATH` 末段 | `kobject_set_name*()`，堆分配 |
-| `entry` | 挂进 `kset->list` 的节点 | `kobj_kset_join()`/`kobj_kset_leave()` |
-| `parent` | 父对象；`NULL` 表示挂 sysfs 根 | `kobject_add_internal()`，持有引用 |
-| `kset` | 所属集合，add 前必须设好 | 使用者（如 `device_initialize()`） |
-| `ktype` | 类型回调，`kobject_init()` 强制非空 | `kobject_init()` |
-| `sd` | 对应 sysfs 目录节点，未注册为 `NULL` | `sysfs_create_dir_ns()`/`sysfs_remove_dir()` |
-| `kref` | 引用计数，初始 1 | `kref_*` |
-| `state_initialized` | 已 `kobject_init()` | init 置 1，之后不清 |
-| `state_in_sysfs` | `sd` 有效 | add/del 成对置位 |
-| `state_add_uevent_sent` | 发过 `KOBJ_ADD` | `kobject_uevent_env()` |
-| `state_remove_uevent_sent` | 发过 `KOBJ_REMOVE` | `kobject_uevent_env()` |
-| `uevent_suppress` | 静默该对象的 uevent | 使用者直接置位（网卡常用） |
+| 字段                         | 语义                                   | 维护者                                           |
+| ---------------------------- | -------------------------------------- | ------------------------------------------------ |
+| `name`                     | 目录名、`DEVPATH` 末段               | `kobject_set_name*()`，堆分配                  |
+| `entry`                    | 挂进 `kset->list` 的节点             | `kobj_kset_join()`/`kobj_kset_leave()`       |
+| `parent`                   | 父对象；`NULL` 表示挂 sysfs 根       | `kobject_add_internal()`，持有引用             |
+| `kset`                     | 所属集合，add 前必须设好               | 使用者（如 `device_initialize()`）             |
+| `ktype`                    | 类型回调，`kobject_init()` 强制非空  | `kobject_init()`                               |
+| `sd`                       | 对应 sysfs 目录节点，未注册为 `NULL` | `sysfs_create_dir_ns()`/`sysfs_remove_dir()` |
+| `kref`                     | 引用计数，初始 1                       | `kref_*`                                       |
+| `state_initialized`        | 已 `kobject_init()`                  | init 置 1，之后不清                              |
+| `state_in_sysfs`           | `sd` 有效                            | add/del 成对置位                                 |
+| `state_add_uevent_sent`    | 发过 `KOBJ_ADD`                      | `kobject_uevent_env()`                         |
+| `state_remove_uevent_sent` | 发过 `KOBJ_REMOVE`                   | `kobject_uevent_env()`                         |
+| `uevent_suppress`          | 静默该对象的 uevent                    | 使用者直接置位（网卡常用）                       |
 
 状态位不是装饰，它们让 core 能"替使用者补做"动作：`__kobject_del()` 发现发过 add 却没发 remove 时会自动补发；`kobject_cleanup()` 发现还在 sysfs 里会自动 `__kobject_del()`。容错变好，但也掩盖使用者的生命周期 bug。`entry` 只有加入 kset 才有意义；`parent` 与 `kset` 是两套并行组织方式——**kset 决定"属于哪个子系统、uevent 谁加工"，parent 决定"在 sysfs 树的哪个位置"**，两者常指向同一对象（kset 自身的 kobject 往往是成员的父目录）。
 
@@ -140,14 +140,14 @@ struct kobj_type {
 };
 ```
 
-| 回调 | 调用点 | 作用 |
-|------|--------|------|
-| `release` | `kobject_cleanup()`（kobject.c:686） | **唯一**释放外层对象的地方 |
-| `sysfs_ops` | `sysfs_add_file_mode_ns()`、`fs/sysfs/file.c` | 属性文件 show/store 分派 |
-| `default_groups` | `create_dir()`（kobject.c:78） | 注册时自动建组、删除时自动摘 |
-| `child_ns_type` | `kobj_child_ns_ops()`（kobject.c:1059） | 声明"我的子对象带哪种 ns tag" |
-| `namespace` | `kobject_namespace()`（kobject.c:30） | 给出本对象自己的 ns tag |
-| `get_ownership` | `kobject_get_ownership()`（kobject.c:50） | 覆盖 sysfs 节点属主，容器场景用 |
+| 回调               | 调用点                                            | 作用                             |
+| ------------------ | ------------------------------------------------- | -------------------------------- |
+| `release`        | `kobject_cleanup()`（kobject.c:686）            | **唯一**释放外层对象的地方 |
+| `sysfs_ops`      | `sysfs_add_file_mode_ns()`、`fs/sysfs/file.c` | 属性文件 show/store 分派         |
+| `default_groups` | `create_dir()`（kobject.c:78）                  | 注册时自动建组、删除时自动摘     |
+| `child_ns_type`  | `kobj_child_ns_ops()`（kobject.c:1059）         | 声明"我的子对象带哪种 ns tag"    |
+| `namespace`      | `kobject_namespace()`（kobject.c:30）           | 给出本对象自己的 ns tag          |
+| `get_ownership`  | `kobject_get_ownership()`（kobject.c:50）       | 覆盖 sysfs 节点属主，容器场景用  |
 
 `release` 可以缺省，`kobject_cleanup()` 只 `pr_debug` 抱怨，但代价是外层对象永不释放——这正是裸 kobject 必须自带 `dynamic_kobj_ktype` 的原因。
 
@@ -205,6 +205,222 @@ struct kobj_ns_type_operations {
 ```
 
 只有两种类型：`KOBJ_NS_TYPE_NONE` 与 `KOBJ_NS_TYPE_NET`（`kobject_ns.h:27-31`）。除 net ns 外没有别的使用者，这解释了为什么 `kobject_uevent_net_broadcast()` 能直接把 `ns_common` `container_of` 成 `struct net`。
+
+### 2.8 结构体包含与链接关系
+
+三张图分别描述：kobject 核心对象的组成、device 如何嵌入 kobject、bus/class 注册时 `subsys_private` 如何组织 kset。图中节点只保留与关系相关的字段，完整字段语义见上文各表；实线箭头表示嵌入或强指针，虚线箭头表示弱关联或查找路径。
+
+```plantuml
+@startuml
+title kobject 核心：包含与链接
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
+}
+
+class kobject #FFF3E0 {
+  name
+  entry
+  parent
+  kset
+  ktype
+  sd
+  kref
+}
+class kset {
+  list
+  list_lock
+  kobj
+  uevent_ops
+}
+class kobj_type {
+  release()
+  sysfs_ops
+  default_groups
+  child_ns_type()
+  namespace()
+  get_ownership()
+}
+class kref {
+  refcount
+}
+class refcount_t {
+  refs
+}
+class kernfs_node {
+  parent
+  name
+  dir.subdirs
+}
+class attribute {
+  name
+  mode
+}
+class attribute_group {
+  name
+  attrs[]
+}
+class kobj_attribute {
+  attr
+  show()
+  store()
+}
+class sysfs_ops {
+  show()
+  store()
+}
+class kset_uevent_ops {
+  filter()
+  name()
+  uevent()
+}
+class "另一个 kobject\n（parent，0..1）" as parent #White
+
+kset --> kobject : kobj 自嵌
+kobject --> kref : kref 自嵌
+kref --> refcount_t : refcount 自嵌
+kobject --> kset : kset；entry 挂入 list
+kobject ..> parent : parent
+kobject --> kobj_type : ktype
+kobject --> kernfs_node : sd
+kset --> kset_uevent_ops : uevent_ops
+kobj_type --> sysfs_ops : sysfs_ops
+kobj_type --> attribute_group : default_groups
+attribute_group --> attribute : attrs[]
+kobj_attribute --> attribute : attr 自嵌
+kobj_attribute ..> sysfs_ops : show/store 分派
+@enduml
+```
+
+*图 2-1：`kset` 自嵌一个 `kobject`，所以 kset 本身也是 sysfs 目录；普通 `kobject.kset` 指回所属集合，`entry` 挂入 `kset.list`；`parent` 决定 sysfs 树位置，`ktype` 提供 release/sysfs 回调，`sd` 指向对应的 kernfs 节点。*
+
+```plantuml
+@startuml
+title device 嵌入：kobject 作为首字段
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
+}
+
+class device #FFF3E0 {
+  kobj（首字段）
+  parent
+  p
+  bus
+  driver
+  class
+}
+class kobject {
+  name
+  entry
+  parent
+  kset
+  ktype
+  sd
+  kref
+}
+class device_private {
+  klist_children
+  knode_parent
+  knode_driver
+  knode_bus
+  knode_class
+  device
+}
+class device_driver {
+  name
+  bus
+  p
+}
+class driver_private {
+  kobj
+  driver
+}
+class "另一个 device\n（parent，0..1）" as parent #White
+class "bus_type（见下图）" as bus #White
+class "class（见下图）" as cls #White
+class "devices_kset\n/sys/devices" as devkset #E8F5E9
+
+device --> kobject : kobj 自嵌（首字段）
+device ..> parent : parent
+device --> device_private : p
+device_private ..> device : device
+device ..> bus : bus
+device ..> cls : class
+device --> device_driver : driver
+device_driver --> driver_private : p
+driver_private --> kobject : kobj 自嵌
+driver_private ..> device_driver : driver
+kobject ..> devkset : kset
+@enduml
+```
+
+*图 2-2：`device.kobj` 是首字段，`container_of` 可零偏移反查；`device.p` 指向 `device_private`，其中的 `knode_parent/knode_driver/knode_bus/knode_class` 把设备挂到父设备、driver、bus、class 的 klist；`device_driver.p` 指向 `driver_private`，其 `kobj` 对应 `/sys/bus/*/drivers/*` 目录；`device.kobj.kset` 通常指向 `devices_kset`。*
+
+```plantuml
+@startuml
+title bus / class 注册：subsys_private 与 kset
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
+}
+
+class bus_type #FFF3E0 {
+  name
+  match()
+  probe()
+}
+class "class" as cls #FFF3E0 {
+  name
+  dev_uevent()
+  devnode()
+}
+class subsys_private {
+  subsys（kset，自嵌）
+  devices_kset
+  drivers_kset
+  klist_devices
+  klist_drivers
+  glue_dirs（kset，自嵌）
+  bus
+  class
+}
+class kset {
+  list
+  list_lock
+  kobj
+  uevent_ops
+}
+class "devices_kset\n/sys/devices" as devkset #E8F5E9
+class "bus_kset\n/sys/bus" as buskset #E8F5E9
+class "class_kset\n/sys/class" as classkset #E8F5E9
+class "bus_to_subsys()/class_to_subsys()\n通过遍历 bus_kset/class_kset 的 list\n找到对应的 subsys_private" as note1 #FFF8E1
+
+subsys_private --> kset : subsys / glue_dirs 自嵌（2 个 kset）
+subsys_private --> devkset : devices_kset
+subsys_private --> buskset : subsys.kobj.kset
+subsys_private --> classkset : subsys.kobj.kset
+bus_type <..> subsys_private : bus ↔ sp
+cls <..> subsys_private : class ↔ sp
+@enduml
+```
+
+*图 2-3：`subsys_private` 自嵌 `subsys` 与 `glue_dirs` 两个 kset；`devices_kset`/`drivers_kset` 指向成员 kset；`bus_type`/`class` 在本树没有直接回指字段，`bus_to_subsys()`/`class_to_subsys()` 通过遍历 `bus_kset`/`class_kset` 的 `list` 找到对应的 `subsys_private`。*
 
 ---
 
@@ -310,14 +526,14 @@ static const struct kobj_type dynamic_kobj_ktype = {
 
 ### 4.1 两段式接口
 
-| API | 语义 | 备注 |
-|-----|------|------|
-| `kobject_init(kobj, ktype)` | 只初始化 | `state_initialized=1`，kref=1 |
-| `kobject_add(kobj, parent, fmt, ...)` | 设名 + 建目录 | 要求已 init |
-| `kobject_init_and_add(...)` | 二者合一 | 失败后仍必须 put |
-| `kobject_create_and_add(name, parent)` | 分配 + init + add | 返回裸 kobject |
-| `kobject_del(kobj)` | 卸载目录 | 不释放对象 |
-| `kobject_rename`/`kobject_move` | 改名/换父 | 只对已注册对象 |
+| API                                      | 语义              | 备注                            |
+| ---------------------------------------- | ----------------- | ------------------------------- |
+| `kobject_init(kobj, ktype)`            | 只初始化          | `state_initialized=1`，kref=1 |
+| `kobject_add(kobj, parent, fmt, ...)`  | 设名 + 建目录     | 要求已 init                     |
+| `kobject_init_and_add(...)`            | 二者合一          | 失败后仍必须 put                |
+| `kobject_create_and_add(name, parent)` | 分配 + init + add | 返回裸 kobject                  |
+| `kobject_del(kobj)`                    | 卸载目录          | 不释放对象                      |
+| `kobject_rename`/`kobject_move`      | 改名/换父         | 只对已注册对象                  |
 
 两段式的意义是"能在 add 之前拿到引用并慢慢初始化"：`device_initialize()` 先 `kobject_init()`，调用者随后可 `get_device()`，字段填好再 `device_add()`。
 
@@ -525,12 +741,12 @@ read(2) → kernfs_fop_read_iter → seq_read_iter → kernfs_seq_show
 
 ### 6.3 删除、改名、移动的另一半
 
-| kobject 操作 | sysfs 函数 | kernfs 最终动作 |
-|--------------|-----------|------------------|
-| `create_dir()` | `sysfs_create_dir_ns` | `kernfs_create_dir_ns` |
-| `__kobject_del` | `sysfs_remove_groups` + `sysfs_remove_dir` | `kernfs_remove` |
-| `kobject_rename` | `sysfs_rename_dir_ns` | `kernfs_rename_ns` |
-| `kobject_move` | `sysfs_move_dir_ns` | `kernfs_rename_ns(new_parent)` |
+| kobject 操作       | sysfs 函数                                     | kernfs 最终动作                  |
+| ------------------ | ---------------------------------------------- | -------------------------------- |
+| `create_dir()`   | `sysfs_create_dir_ns`                        | `kernfs_create_dir_ns`         |
+| `__kobject_del`  | `sysfs_remove_groups` + `sysfs_remove_dir` | `kernfs_remove`                |
+| `kobject_rename` | `sysfs_rename_dir_ns`                        | `kernfs_rename_ns`             |
+| `kobject_move`   | `sysfs_move_dir_ns`                          | `kernfs_rename_ns(new_parent)` |
 
 `sysfs_remove_dir()`（`fs/sysfs/dir.c:79-103`）在 `sysfs_symlink_target_lock` 下把 `kobj->sd = NULL` 再 `kernfs_remove(kn)`。那把锁存在的原因是：kobject 可能被别人当作 symlink 目标却没被"拥有"，删除方无法阻止对方并发解引用 `sd`；锁保证 symlink 代码读到的 `sd` 要么有效要么是 `NULL`。`kobject_cleanup()` 里若 `state_in_sysfs` 仍为 1 会自动 `__kobject_del()`（`:677-680`），这是"忘了 del 也不留空目录"的兜底，但若还有子对象就会变成孤儿，所以**仍应在 put 之前显式 del**。
 
@@ -714,14 +930,14 @@ static inline const char *dev_name(const struct device *dev)
 
 ### 9.2 initialize / add / del 的生命周期对应
 
-| device 侧 | kobject 侧 | 说明 |
-|-----------|-----------|------|
-| `device_initialize()` | `kobj.kset = devices_kset; kobject_init(&kobj, &device_ktype)` | kref=1，调用者持有 |
-| `device_add()` 开头 | `dev_set_name()` → `kobject_add(&kobj, kobj.parent, NULL)` | 名字与 parent 在 add 前定好 |
-| `device_add()` 末尾 | `kobject_uevent(&kobj, KOBJ_ADD)` | 属性/链接都建完才发 |
-| `device_del()` | `kobject_uevent(KOBJ_REMOVE)` → `kobject_del(&kobj)` | 先发事件再摘目录 |
-| `device_unregister()` | `device_del()` + `put_device()` | put 到 0 才 `device_release` |
-| `get_device()/put_device()` | `kobject_get()/kobject_put()` | 纯转发 |
+| device 侧                     | kobject 侧                                                       | 说明                           |
+| ----------------------------- | ---------------------------------------------------------------- | ------------------------------ |
+| `device_initialize()`       | `kobj.kset = devices_kset; kobject_init(&kobj, &device_ktype)` | kref=1，调用者持有             |
+| `device_add()` 开头         | `dev_set_name()` → `kobject_add(&kobj, kobj.parent, NULL)`  | 名字与 parent 在 add 前定好    |
+| `device_add()` 末尾         | `kobject_uevent(&kobj, KOBJ_ADD)`                              | 属性/链接都建完才发            |
+| `device_del()`              | `kobject_uevent(KOBJ_REMOVE)` → `kobject_del(&kobj)`        | 先发事件再摘目录               |
+| `device_unregister()`       | `device_del()` + `put_device()`                              | put 到 0 才 `device_release` |
+| `get_device()/put_device()` | `kobject_get()/kobject_put()`                                  | 纯转发                         |
 
 ```c
 /* drivers/base/core.c:3227-3230 */
@@ -749,12 +965,12 @@ static const struct kobj_type device_ktype = {
 
 ### 9.4 class / bus 的 kset 角色
 
-| 全局 kset | 创建点 | 作用 |
-|-----------|--------|------|
-| `devices_kset`（`/sys/devices`） | `kset_create_and_add("devices", &device_uevent_ops, NULL)`，core.c:4228 | 所有 device 的 `kobj.kset` |
-| `bus_kset`（`/sys/bus`） | `kset_create_and_add("bus", &bus_uevent_ops, NULL)`，bus.c:1480 | 所有 bus 子系统 |
-| `class_kset`（`/sys/class`） | `kset_create_and_add("class", NULL, NULL)`，class.c:650 | 所有 class 子系统 |
-| `system_kset`（`/sys/devices/system`） | bus.c:1484 | CPU/memory/node |
+| 全局 kset                                  | 创建点                                                                    | 作用                         |
+| ------------------------------------------ | ------------------------------------------------------------------------- | ---------------------------- |
+| `devices_kset`（`/sys/devices`）       | `kset_create_and_add("devices", &device_uevent_ops, NULL)`，core.c:4228 | 所有 device 的 `kobj.kset` |
+| `bus_kset`（`/sys/bus`）               | `kset_create_and_add("bus", &bus_uevent_ops, NULL)`，bus.c:1480         | 所有 bus 子系统              |
+| `class_kset`（`/sys/class`）           | `kset_create_and_add("class", NULL, NULL)`，class.c:650                 | 所有 class 子系统            |
+| `system_kset`（`/sys/devices/system`） | bus.c:1484                                                                | CPU/memory/node              |
 
 每个 `bus_type`/`class` 的注册状态藏在 `subsys_private`（`drivers/base/base.h:43-60`）：`subsys`（自己的 kset）、`devices_kset`、`drivers_kset`、`glue_dirs`。`class_register()` 是典型写法（`class.c:197-224`）：`kset_init(&cp->glue_dirs)` → `kobject_set_name(&cp->subsys.kobj, "%s", cls->name)` → 手工设 `cp->subsys.kobj.kset = class_kset` 与 `ktype = &class_ktype` → `kset_register(&cp->subsys)`。`kset_register()`（`kobject.c:857-880`）内部只做 `kset_init()` + `kobject_add_internal()` + `kobject_uevent(KOBJ_ADD)`，并拒绝没有 ktype 的 kset（`:864-867`）——所以 kset 的 `kobj.ktype` 必须在注册前由使用者指定。
 
@@ -775,19 +991,19 @@ class 设备的中间目录是"kobject 引用计数 + kernfs 节点引用"两套
 
 ## 10. 常见错误与调试
 
-| 症状 | 根因 | 排查 |
-|------|------|------|
-| sysfs 目录在、`kfree()` 后随机崩 | 绕过 `kobject_put()` 直接释放 | 搜 `kobject_init` 与释放是否配对 |
-| 内存只涨不降 | `ktype->release` 缺失 | cleanup 的 `pr_debug`；device 侧看 `WARN ... does not have a release()` |
-| `-EEXIST`，目录建不出来 | 同名注册到同一父 | `sysfs_warn_dup()` 打印父路径 + `dump_stack()` |
-| `kobject_get() ... is not initialized` | 未 init 就 add/get | 检查 `kobject_init()` 是否被跳过 |
-| `tried to init an initialized object` | 重复 init，kref 被重置 | 调用点是否跑了两遍（probe 重入） |
-| `attempted to be registered with empty name` | `fmt` 为 NULL 且名字未设 | `dev_set_name()` 失败是否被忽略 |
-| 目录名出现 `!` | 名字含 `/` 被替换 | `kobject_set_name_vargs()` |
-| 事件发了但收不到 | 无 kset / 被 filter / 在别的 netns | `kobject_uevent_env` 的 `pr_debug` |
-| `uevent_suppress` 后事件全无 | 使用者置位未清 | 检查网卡驱动的 suppress 逻辑 |
-| 删了目录但文件仍可读写 | kernfs active 保护延迟移除 | 见 kernfs 章 §7.4、`sysfs_break_active_protection()` |
-| `-ENOENT` 但 parent 正常 | `parent->sd == NULL`（父未注册） | `fs/sysfs/dir.c:49-55` |
+| 症状                                           | 根因                               | 排查                                                                        |
+| ---------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------- |
+| sysfs 目录在、`kfree()` 后随机崩             | 绕过 `kobject_put()` 直接释放    | 搜 `kobject_init` 与释放是否配对                                          |
+| 内存只涨不降                                   | `ktype->release` 缺失            | cleanup 的 `pr_debug`；device 侧看 `WARN ... does not have a release()` |
+| `-EEXIST`，目录建不出来                      | 同名注册到同一父                   | `sysfs_warn_dup()` 打印父路径 + `dump_stack()`                          |
+| `kobject_get() ... is not initialized`       | 未 init 就 add/get                 | 检查 `kobject_init()` 是否被跳过                                          |
+| `tried to init an initialized object`        | 重复 init，kref 被重置             | 调用点是否跑了两遍（probe 重入）                                            |
+| `attempted to be registered with empty name` | `fmt` 为 NULL 且名字未设         | `dev_set_name()` 失败是否被忽略                                           |
+| 目录名出现 `!`                               | 名字含 `/` 被替换                | `kobject_set_name_vargs()`                                                |
+| 事件发了但收不到                               | 无 kset / 被 filter / 在别的 netns | `kobject_uevent_env` 的 `pr_debug`                                      |
+| `uevent_suppress` 后事件全无                 | 使用者置位未清                     | 检查网卡驱动的 suppress 逻辑                                                |
+| 删了目录但文件仍可读写                         | kernfs active 保护延迟移除         | 见 kernfs 章 §7.4、`sysfs_break_active_protection()`                     |
+| `-ENOENT` 但 parent 正常                     | `parent->sd == NULL`（父未注册） | `fs/sysfs/dir.c:49-55`                                                    |
 
 几条独立说明：`name` 的生命周期归 kobject，任何 `kobj->name = buf` 式直接赋值都是 bug（cleanup 会 `kfree_const()` 它），名字只能经 `kobject_set_name*()` 设置；`kobject_del()` 之后对象仍可 `get`/`put`，但 `sd` 已 NULL、`parent` 已清空，此时发 uevent 会因找不到 kset 返回 `-EINVAL`，重建 sysfs 只能重新 add（不推荐，会与旧引用竞态）；`kobject_add()` 失败后不要跳过 `put`，也不要 `kfree`；`kset_register()` 失败会顺手 `kfree_const(k->kobj.name)` 并把 name 置 NULL（`kobject.c:871-876`），调用者不能再访问这个名字；`class_register()` 的 err 路径因此只释放 `cp` 本身（外加注销 lockdep key），不去碰已被清空的名字。
 
@@ -807,20 +1023,20 @@ cat /proc/slabinfo | grep -E 'kernfs_node_cache|kmalloc-'
 
 ## 11. 关键文件清单
 
-| 文件 | 关键内容 |
-|------|----------|
-| `include/linux/kobject.h` | `struct kobject`/`kset`/`kobj_type`/`kobj_attribute`、action 枚举、全局 `*_kobj` |
-| `include/linux/kref.h` | `kref_init/get/put/put_mutex/put_lock/get_unless_zero/read`（全内联，无 `.c`） |
-| `include/linux/kobject_ns.h` | `enum kobj_ns_type`、`struct kobj_ns_type_operations` |
-| `lib/kobject.c` | init/add/del、rename/move、get/put、cleanup/release、kset、ns 表、路径 |
-| `lib/kobject_uevent.c` | action 表、`kobject_uevent_env`、netlink 广播、synth、per-net socket |
-| `fs/sysfs/dir.c` | `sysfs_create_dir_ns`/`remove_dir`/`rename_dir_ns`/`move_dir_ns` |
-| `fs/sysfs/file.c` | `sysfs_file_kobj`、`sysfs_kf_seq_show/read/write`、`sysfs_add_file_mode_ns` |
-| `fs/sysfs/group.c` | `sysfs_create_groups`（`default_groups` 的执行者） |
-| `drivers/base/core.c` | `device_initialize/add/del`、`device_ktype`、`dev_uevent*`、`devices_kset` |
-| `drivers/base/class.c` / `bus.c` | `class_register`/`class_kset`/`class_ktype`、`bus_kset`、`subsys_private` |
-| `kernel/ksysfs.c` | `kernel_kobj = kobject_create_and_add("kernel", NULL)` |
-| `samples/kobject/*.c` | 最小 kobject / kset 用法 |
+| 文件                                 | 关键内容                                                                                   |
+| ------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `include/linux/kobject.h`          | `struct kobject`/`kset`/`kobj_type`/`kobj_attribute`、action 枚举、全局 `*_kobj` |
+| `include/linux/kref.h`             | `kref_init/get/put/put_mutex/put_lock/get_unless_zero/read`（全内联，无 `.c`）         |
+| `include/linux/kobject_ns.h`       | `enum kobj_ns_type`、`struct kobj_ns_type_operations`                                  |
+| `lib/kobject.c`                    | init/add/del、rename/move、get/put、cleanup/release、kset、ns 表、路径                     |
+| `lib/kobject_uevent.c`             | action 表、`kobject_uevent_env`、netlink 广播、synth、per-net socket                     |
+| `fs/sysfs/dir.c`                   | `sysfs_create_dir_ns`/`remove_dir`/`rename_dir_ns`/`move_dir_ns`                   |
+| `fs/sysfs/file.c`                  | `sysfs_file_kobj`、`sysfs_kf_seq_show/read/write`、`sysfs_add_file_mode_ns`          |
+| `fs/sysfs/group.c`                 | `sysfs_create_groups`（`default_groups` 的执行者）                                     |
+| `drivers/base/core.c`              | `device_initialize/add/del`、`device_ktype`、`dev_uevent*`、`devices_kset`         |
+| `drivers/base/class.c` / `bus.c` | `class_register`/`class_kset`/`class_ktype`、`bus_kset`、`subsys_private`        |
+| `kernel/ksysfs.c`                  | `kernel_kobj = kobject_create_and_add("kernel", NULL)`                                   |
+| `samples/kobject/*.c`              | 最小 kobject / kset 用法                                                                   |
 
 ---
 

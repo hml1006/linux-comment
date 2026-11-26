@@ -1,14 +1,197 @@
 # ARM64 通用定时器硬件配置过程分析
 
+## 0. 端到端总览：从晶振到内核定时器
+
+本节先给出整条时间链路的全局视图：晶振如何经 PLL/时钟树产生参考时钟，ARM Generic Timer 如何比较计数并触发中断，以及内核的 clocksource、clockevent、tick、hrtimer、timer wheel 如何分工。后续章节再展开 ARM64 通用定时器的寄存器级配置细节。
+
+### 0.1 三条时间线
+
+时间子系统可以拆成三条互相配合、但职责不同的链路：
+
+| 链路                | 起点                          | 关键硬件                      | 内核主体                                                  | 终点                                         |
+| ------------------- | ----------------------------- | ----------------------------- | --------------------------------------------------------- | -------------------------------------------- |
+| **时间保持**  | System Counter 自由运行       | `CNTPCT_EL0`/`CNTVCT_EL0` | `clocksource` → `timekeeping`                        | vDSO、`clock_gettime()`、`sched_clock()` |
+| **定时到期**  | Per-CPU Timer 比较器          | `CNT*_CVAL/CTL/TVAL` → GIC | `clockevent` → `tick` → `hrtimer`/`timer wheel` | 回调、唤醒、信号、工作队列                   |
+| **日历/安全** | RTC 32.768 kHz、Watchdog、PMU | RTC、WDT、PMU cycle counter   | RTC 子系统、watchdog、perf                                | 墙钟初始化/回写、闹钟唤醒、复位、性能统计    |
+
+三条链路会交互：tick 更新 jiffies 并驱动低精度定时器；hrtimer 到期后重新编程 clockevent；NTP/PPS 调整 timekeeping 的频率和相位，并定期回写 RTC；RTC 在启动时通过 `hctosys` 给出初始墙钟。
+
+### 0.2 全链路主流程图
+
+```plantuml
+@startuml
+title ARM64 时间子系统：从晶振到内核定时器
+top to bottom direction
+skinparam rectangle {
+  RoundCorner 12
+  BackgroundColor #F8F9FA
+  BorderColor #666666
+}
+skinparam ArrowColor #444444
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+
+rectangle "主晶振\nXTAL 24/26 MHz" as xtal #FFF3E0
+rectangle "RTC 晶振\n32.768 kHz" as rtc_xtal #FFF3E0
+rectangle "PLL + 时钟树\nAPLL/MPLL/GPLL → mux/divider/gate\nCPU / bus / timer / APB" as pll #FFF3E0
+
+rectangle "ARM Generic Timer\nSystem Counter（always-on）\nCNTPCT/CNTVCT\nPer-CPU: CNTP/CNTV/CNTHP\nCNTVCT = CNTPCT - CNTVOFF_EL2" as gt #E3F2FD
+rectangle "MMIO / SoC Timer\nCNTCTLBase + Frame\nSP804 / DW APB / broadcast" as mmio #E3F2FD
+rectangle "Watchdog / PMU\nAPB / PMU cycle" as wdt #E3F2FD
+rectangle "RTC（SoC/PMIC）\nalarm / hctosys" as rtc #E3F2FD
+rectangle "Event Stream\nCNTKCTL_EL1.EVNTEN/EVNTI\n→ WFE（非中断）" as evt #E3F2FD
+
+rectangle "GIC\nPPI (per-CPU) / SPI (全局)" as gic #FCE4EC
+rectangle "CPU IRQ 异常入口\nel1_irq → gic_handle_irq" as cpu #FCE4EC
+
+rectangle "clockevent / tick\nclock_event_device\ntick_device (periodic/oneshot)" as ce #E8F5E9
+rectangle "hrtimer\nper-CPU 红黑树\n高精度到期" as hrt #E8F5E9
+rectangle "timer wheel\nper-CPU 9×64 桶\n低精度到期" as tw #E8F5E9
+
+rectangle "timekeeping / clocksource\nwall time / NTP / PPS\nsched_clock" as tk #FFF8E1
+rectangle "使用者：用户接口 / 内核子系统\nvDSO / syscall / POSIX timer\nRTC/watchdog 节点 / workqueue / RCU" as user #F3E5F5
+
+xtal --> pll
+rtc_xtal --> rtc
+pll --> gt : 定时器参考时钟
+pll --> mmio
+pll --> wdt
+gt --> evt : 事件流
+gt --> gic : PPI
+mmio --> gic : SPI
+rtc --> gic : alarm
+wdt --> gic : WDT/PMU IRQ
+gic --> cpu
+cpu --> ce
+ce --> hrt : 高精度到期
+ce --> tw : tick 驱动
+hrt --> ce : 编程下一次 CVAL/TVAL
+tw --> user : 到期回调
+hrt --> user : 到期回调
+gt --> tk : 读取计数器
+tk --> user : clock_gettime / vDSO
+rtc --> tk : RTC hctosys / NTP 校准
+user --> hrt : timer_create / nanosleep
+user --> tw : mod_timer / delayed_work
+@enduml
+```
+
+*图 0-1：主晶振经 PLL/时钟树产生 CPU、总线、定时器和 APB 时钟；RTC 通常由独立的 32.768 kHz 晶振直接驱动。System Counter 自由运行，Per-CPU Timer 用比较值产生 PPI；MMIO/SoC Timer（含 SP804、DW APB、broadcast timer）通过 SPI 接入；RTC 闹钟和 Watchdog/PMU 也可产生中断。GIC 把中断送入 CPU 后，clockevent 统一接管，再分发给 tick、hrtimer 和 timer wheel；timekeeping 则通过 clocksource 读取同一个 System Counter。*
+
+### 0.3 时间保持路径
+
+```plantuml
+@startuml
+title 时间保持路径：计数器 → clocksource → timekeeping
+top to bottom direction
+skinparam rectangle {
+  RoundCorner 12
+  BackgroundColor #F8F9FA
+  BorderColor #666666
+}
+skinparam ArrowColor #444444
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+
+rectangle "System Counter\nCNTPCT_EL0 / CNTVCT_EL0\nalways-on" as hw #E3F2FD
+rectangle "clocksource\narch timer / MMIO timer\nrating / read / mult / shift" as cs #FFF8E1
+rectangle "timekeeping\ntk_core / timekeeper / timecounter" as tk #FFF8E1
+rectangle "NTP / PPS / PTP\nadjtimex / PHC" as ntp #FFF8E1
+rectangle "RTC 子系统\nrtc_read_time / hctosys" as rtc #FCE4EC
+rectangle "vDSO\n__vdso_clock_gettime\ngettimeofday" as vdso #F3E5F5
+rectangle "sched_clock\n调度器时间戳" as sched #F3E5F5
+rectangle "syscall\nclock_gettime / clock_settime" as sys #F3E5F5
+
+hw --> cs : 读取计数器
+cs --> tk : 累计 cycles → ns
+ntp --> tk : 频率/相位调整
+rtc --> tk : hctosys（启动）
+tk --> rtc : 定期回写
+tk --> vdso : 用户态直接读
+tk --> sched
+tk --> sys
+@enduml
+```
+
+*图 0-2：时间保持是“读”路径。`clocksource` 只负责把计数器转换成纳秒；`timekeeping` 维护墙钟、单调时钟和 NTP 调整；用户态通过 vDSO 直接读计数器，只有需要校正或写时间时才进系统调用。*
+
+### 0.4 定时到期路径
+
+```plantuml
+@startuml
+title 定时到期路径：clockevent → tick → hrtimer / timer wheel
+top to bottom direction
+skinparam rectangle {
+  RoundCorner 12
+  BackgroundColor #F8F9FA
+  BorderColor #666666
+}
+skinparam ArrowColor #444444
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+
+rectangle "Per-CPU Timer\nCNTP/CNTV/CNTHP\nCVAL/CTL/TVAL" as hw #E3F2FD
+rectangle "GIC → CPU IRQ\narch_timer_handler_*" as irq #FCE4EC
+rectangle "clock_event_device\nset_next_event / event_handler" as ced #E8F5E9
+rectangle "tick_device\nperiodic / oneshot / broadcast" as tick #E8F5E9
+rectangle "hrtimer\nper-CPU 红黑树\n高精度" as hrt #E8F5E9
+rectangle "timer wheel\nper-CPU 9×64 桶\n低精度" as tw #E8F5E9
+rectangle "POSIX timer / itimer / alarmtimer\ntimerfd / nanosleep" as posix #F3E5F5
+rectangle "workqueue / delayed_work" as wq #F3E5F5
+
+hw --> irq : 比较匹配
+irq --> ced : event_handler
+ced --> tick
+tick --> hrt : 高精度
+tick --> tw : 低精度
+hrt --> ced : 编程下一次 CVAL/TVAL
+hrt --> posix : 到期
+tw --> wq : 到期
+posix --> hrt : 注册
+wq --> tw : 注册
+@enduml
+```
+
+*图 0-3：定时到期是“中断 + 回调”路径。`clock_event_device` 负责编程下一次比较值；`tick_device` 是 per-CPU 心跳；高精度请求进入 `hrtimer` 红黑树，低精度请求进入 `timer wheel`。hrtimer 到期后会重新编程 clockevent，形成“中断—回调—再编程”的闭环。*
+
+### 0.5 分层对照
+
+| 层次       | 典型组件                                      | 职责                                      | 关键接口/寄存器                                                        |
+| ---------- | --------------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------- |
+| 物理时钟   | 晶振、PLL、mux/divider/gate                   | 产生 CPU、总线、定时器、APB、RTC 参考时钟 | CCF：`clk_get_rate()`、`clk_prepare_enable()`                      |
+| 计时硬件   | System Counter、Per-CPU Timer、MMIO/SoC Timer | 自由计数、比较匹配、产生 PPI/SPI          | `CNTFRQ_EL0`、`CNTPCT_EL0`、`CNTVCT_EL0`、`CNT*_CVAL/CTL/TVAL` |
+| 中断控制器 | GIC Distributor/Redistributor/CPU Interface   | 把 PPI/SPI 送到目标 CPU                   | `request_percpu_irq()`、`gic_handle_irq()`                         |
+| 时钟事件   | `clock_event_device`、`tick_device`       | 编程下一次事件、维护 tick                 | `clockevents_config_and_register()`、`set_next_event()`            |
+| 高精度定时 | `hrtimer`                                   | 纳秒级到期、红黑树排序                    | `hrtimer_start()`、`hrtimer_interrupt()`                           |
+| 低精度定时 | `timer wheel`                               | 批量、低开销的毫秒级到期                  | `mod_timer()`、`run_timer_softirq()`                               |
+| 时间保持   | `clocksource`、`timekeeping`              | 维护墙钟/单调时钟、NTP 调整               | `clocksource_register_hz()`、`tk_set_wall_to_mono()`               |
+| 用户接口   | vDSO、syscall、POSIX timer                    | 读时间、注册定时器、睡眠                  | `clock_gettime()`、`timer_create()`、`nanosleep()`               |
+| 辅助设备   | RTC、watchdog、PMU、PTP                       | 日历时间、复位/锁检测、性能计数、网络时间 | `rtc_read_time()`、`watchdog_ping()`、`perf_event_open()`        |
+
+### 0.6 容易混淆的边界
+
+- **PLL 不是定时器**：PLL 只产生参考时钟；定时器是计数器/比较器。`CNTFRQ_EL0` 是 System Counter 的频率，不是 CPU 主频。
+- **System Counter 的参考时钟不是 CPU 主频**：它通常来自 always-on 时钟域（晶振或固定 PLL 分频，常见 24/25/26 MHz）；CPU DVFS 改变主频不影响计数器，这也是它适合做 clocksource 的原因。
+- **System Counter 与 Per-CPU Timer 不同**：前者是 SoC 级、always-on 的自由计数器；后者是每个 CPU 的比较器，用 `CVAL` 与计数器比较后产生 PPI。
+- **clocksource 与 clockevent 不同**：clocksource 只“读时间”，clockevent 负责“产生下一次中断”；两者通常由同一个 ARM Generic Timer 硬件提供。
+- **tick、hrtimer、timer wheel 的分工**：tick 是心跳/周期或 oneshot 事件；hrtimer 是高精度红黑树；timer wheel 是低精度、批量处理的 9×64 桶。POSIX timer、`nanosleep`、`timerfd` 最终落到 hrtimer；`mod_timer()`、`delayed_work` 最终落到 timer wheel。
+- **Event Stream 不是中断**：它通过 `CNTKCTL_EL1.EVNTEN/EVNTI` 产生 WFE 唤醒事件，用于 idle 等待，不经过 GIC。
+- **RTC 不是 System Counter**：RTC 通常由独立 32.768 kHz 晶振供电，断电后继续走时；启动时 `hctosys` 只用它初始化墙钟，之后由 timekeeping 维护，并定期回写。
+- **Watchdog/PMU 不参与计时**：watchdog 用于复位或锁检测；PMU cycle counter 用于性能采样，不能替代 clocksource。
+- **PPI 号由 DT/ACPI 指定**：本文使用的 10/11/13/14 是典型绑定（hyp/virt/secure-phys/non-secure-phys），不同 SoC 的 DT 可能不同，以 `arch_timer_ppi[]` 实际解析结果为准。
+- **vDSO 不是独立时钟源**：它只是把“读 clocksource + timekeeping 参数”的换算搬到用户态，底层仍是 `CNTVCT_EL0`/`CNTPCT_EL0`。
+
+---
+
 ## 1. 硬件体系概述
 
 ARMv8/Arm64 架构定义了一套 **Generic Timer**（通用定时器）硬件规范，包括以下三种硬件变体：
 
-| 类型 | 访问方式 | 硬件位置 | 用途 |
-|------|----------|----------|------|
-| **CP15 Sysreg Timer** | `mrs`/`msr` 系统寄存器指令 | 每个 CPU 核心内部 | 标准 per-CPU 定时器，clocksource + clockevent |
-| **Memory-Mapped Timer** | MMIO 读写（`ldr`/`str`） | SoC 内存空间 | 不支持 CP15 访问的系统，或需要额外定时器框架 |
-| **EL2 Hypervisor Timer** | 系统寄存器（EL2 专属） | 每个 CPU 核心内部 | 虚拟化场景，Hypervisor 使用 |
+| 类型                           | 访问方式                       | 硬件位置          | 用途                                          |
+| ------------------------------ | ------------------------------ | ----------------- | --------------------------------------------- |
+| **CP15 Sysreg Timer**    | `mrs`/`msr` 系统寄存器指令 | 每个 CPU 核心内部 | 标准 per-CPU 定时器，clocksource + clockevent |
+| **Memory-Mapped Timer**  | MMIO 读写（`ldr`/`str`）   | SoC 内存空间      | 不支持 CP15 访问的系统，或需要额外定时器框架  |
+| **EL2 Hypervisor Timer** | 系统寄存器（EL2 专属）         | 每个 CPU 核心内部 | 虚拟化场景，Hypervisor 使用                   |
 
 ### 1.1 硬件架构图
 
@@ -70,17 +253,20 @@ ARMv8/Arm64 架构定义了一套 **Generic Timer**（通用定时器）硬件�
 ### 1.2 关键硬件概念
 
 **System Counter（系统计数器）**：
+
 - 由整个 SoC 唯一的自由运行计数器驱动
 - 宽度至少 56 位（通常 64 位）
 - 频率由 `CNTFRQ_EL0` 寄存器报告（典型值：1MHz~100MHz）
 - 最小滚转保证时间：40 年
 
 **CNTVOFF_EL2（虚拟偏移）**：
+
 - `CNTVCT = CNTPCT - CNTVOFF_EL2`
 - 由 Hypervisor 设置，为每个 VM 提供独立的虚拟时间视图
 - 在 EL2 启动代码中清零（`cntvoff_el2, xzr`）
 
 **ECV（Enhanced Counter Virtualization）**：
+
 - ARMv8.6 引入，提供 `CNTPCTSS_EL0` / `CNTVCTSS_EL0` 自同步读取
 - 消除传统 `ISB + MRS` 序列的开销
 - 使能位在 `CNTHCTL_EL2.ECV`（bit 12）
@@ -109,14 +295,14 @@ ARM64 通用定时器有三种配置入口，由固件/设备树/ACPI 决定走�
 
 ### 2.1 路径比较
 
-| 特性 | DT CP15 路径 | ACPI CP15 路径 | MMIO 路径 |
-|------|-------------|---------------|-----------|
-| 触发方式 | `TIMER_OF_DECLARE` | `TIMER_ACPI_DECLARE` | `platform_driver.probe` |
-| 中断类型 | PPI（per-CPU） | PPI（per-CPU） | SPI（全局） |
-| 频率来源 | `CNTFRQ_EL0` 或 DTS `clock-frequency` | 仅 `CNTFRQ_EL0` | 寄存器 `CNTFRQ` 或 DTS |
-| `c3stop` 判断 | DTS `always-on` 属性 | `GTDT` 表 `C3STOP` 标志 | 始终 `false`（MMIO 帧独立于 CPU） |
-| Errata 匹配 | `ate_match_dt` | `ate_match_acpi_oem_info` | 不适用 |
-| 每个 CPU 配置 | CPU hotplug 回调 | CPU hotplug 回调 | 全局配置 |
+| 特性            | DT CP15 路径                              | ACPI CP15 路径              | MMIO 路径                           |
+| --------------- | ----------------------------------------- | --------------------------- | ----------------------------------- |
+| 触发方式        | `TIMER_OF_DECLARE`                      | `TIMER_ACPI_DECLARE`      | `platform_driver.probe`           |
+| 中断类型        | PPI（per-CPU）                            | PPI（per-CPU）              | SPI（全局）                         |
+| 频率来源        | `CNTFRQ_EL0` 或 DTS `clock-frequency` | 仅 `CNTFRQ_EL0`           | 寄存器 `CNTFRQ` 或 DTS            |
+| `c3stop` 判断 | DTS `always-on` 属性                    | `GTDT` 表 `C3STOP` 标志 | 始终 `false`（MMIO 帧独立于 CPU） |
+| Errata 匹配     | `ate_match_dt`                          | `ate_match_acpi_oem_info` | 不适用                              |
+| 每个 CPU 配置   | CPU hotplug 回调                          | CPU hotplug 回调            | 全局配置                            |
 
 ---
 
@@ -143,13 +329,13 @@ ARM64 通用定时器有三种配置入口，由固件/设备树/ACPI 决定走�
 
 **非 VHE 模式（nVHE）**：`CNTHCTL_EL2 = 0x3`
 
-| 位域 | 值 | 含义 |
-|------|----|------|
-| [0] EL1PCTEN | 1 | 允许 EL1 访问物理计数器 `CNTPCT_EL0` |
-| [1] EL1PCEN | 1 | 允许 EL1 访问物理定时器 `CNTP_CTL/CVAL_EL0` |
-| [2] EVNTEN | 0 | 事件流禁用 |
-| [13] EL1TVT | 0 | 禁止 EL1 访问虚拟定时器（nVHE 下由 Host 管理） |
-| [14] EL1TVCT | 0 | 禁止 EL1 访问虚拟计数器（nVHE 下由 Host 管理） |
+| 位域         | 值 | 含义                                           |
+| ------------ | -- | ---------------------------------------------- |
+| [0] EL1PCTEN | 1  | 允许 EL1 访问物理计数器 `CNTPCT_EL0`         |
+| [1] EL1PCEN  | 1  | 允许 EL1 访问物理定时器 `CNTP_CTL/CVAL_EL0`  |
+| [2] EVNTEN   | 0  | 事件流禁用                                     |
+| [13] EL1TVT  | 0  | 禁止 EL1 访问虚拟定时器（nVHE 下由 Host 管理） |
+| [14] EL1TVCT | 0  | 禁止 EL1 访问虚拟计数器（nVHE 下由 Host 管理） |
 
 **VHE 模式**：`CNTHCTL_EL2 = 0xC00`
 
@@ -161,10 +347,10 @@ ARM64 通用定时器有三种配置入口，由固件/设备树/ACPI 决定走�
 
 ### 3.4 寄存器变化
 
-| 寄存器 | 配置前 | 配置后 |
-|--------|--------|--------|
+| 寄存器          | 配置前     | 配置后                    |
+| --------------- | ---------- | ------------------------- |
 | `CNTHCTL_EL2` | 0（Reset） | 0x3 (nVHE) 或 0xC00 (VHE) |
-| `CNTVOFF_EL2` | 未定义 | 0x0 |
+| `CNTVOFF_EL2` | 未定义     | 0x0                       |
 
 ### 3.5 调用上下文
 
@@ -237,6 +423,7 @@ start_kernel()
 **中断解析**：读取 DTS 中 `interrupts` 属性，将 PPI 号存入全局 `arch_timer_ppi[]` 数组。
 
 **频率确定**：
+
 1. 默认读取 `CNTFRQ_EL0` 系统寄存器（硬件复位值由 SoC 固件设置）
 2. 如果 DTS 中有 `clock-frequency` 属性，则覆盖硬件值
 3. 频率必须 ≥ 1MHz，否则 `WARN_ON`
@@ -283,21 +470,21 @@ PPI 选择流程图:
 
 **PPI 选择总结**：
 
-| 场景 | 选择的 PPI | 使用的寄存器 | 说明 |
-|------|-----------|-------------|------|
-| VHE (EL2) | `HYP_PPI` (10) | `CNTHP_*_EL2` | 内核在 EL2 运行，物理定时器被重定向 |
-| nVHE + virt PPI 可用 | `VIRT_PPI` (11) | `CNTV_*_EL0` | 标准路径，虚拟定时器留给 Guest |
-| 无 HYP + arm64 | `PHYS_NONSECURE` (14) | `CNTP_*_EL0` | 非安全物理定时器 |
-| 无 HYP + arm | `PHYS_SECURE` (13) | `CNTP_*_EL0` | 安全物理定时器 |
+| 场景                 | 选择的 PPI              | 使用的寄存器    | 说明                                |
+| -------------------- | ----------------------- | --------------- | ----------------------------------- |
+| VHE (EL2)            | `HYP_PPI` (10)        | `CNTHP_*_EL2` | 内核在 EL2 运行，物理定时器被重定向 |
+| nVHE + virt PPI 可用 | `VIRT_PPI` (11)       | `CNTV_*_EL0`  | 标准路径，虚拟定时器留给 Guest      |
+| 无 HYP + arm64       | `PHYS_NONSECURE` (14) | `CNTP_*_EL0`  | 非安全物理定时器                    |
+| 无 HYP + arm         | `PHYS_SECURE` (13)    | `CNTP_*_EL0`  | 安全物理定时器                      |
 
 #### 4.1.3 寄存器变化
 
-| 寄存器 | 阶段 | 值 | 说明 |
-|--------|------|----|------|
-| `CNTFRQ_EL0` | 探测前 | SoC 复位值 | 硬件写入，只读 |
-| `arch_timer_rate` | 探测后 | 如 19200000 | 全局变量，频率值 |
-| `arch_timer_ppi[]` | 探测后 | 如 [13, 14, 11, 10] | 全局数组，PPI 号 |
-| `arch_timer_c3stop` | 探测后 | true/false | 由 `always-on` 属性决定 |
+| 寄存器                | 阶段   | 值                  | 说明                      |
+| --------------------- | ------ | ------------------- | ------------------------- |
+| `CNTFRQ_EL0`        | 探测前 | SoC 复位值          | 硬件写入，只读            |
+| `arch_timer_rate`   | 探测后 | 如 19200000         | 全局变量，频率值          |
+| `arch_timer_ppi[]`  | 探测后 | 如 [13, 14, 11, 10] | 全局数组，PPI 号          |
+| `arch_timer_c3stop` | 探测后 | true/false          | 由 `always-on` 属性决定 |
 
 ### 4.2 ACPI 路径：`arch_timer_acpi_init()`
 
@@ -338,13 +525,13 @@ start_kernel()
 
 #### 4.2.2 ACPI 与 DT 路径的关键差异
 
-| 差异点 | DT 路径 | ACPI 路径 |
-|--------|---------|-----------|
-| 中断命名 | 通过 `interrupt-names` 匹配 | 通过 GTDT 表固定位置 |
-| 频率覆盖 | 支持 `clock-frequency` 属性覆盖 | 强制使用 `CNTFRQ_EL0` |
-| `c3stop` | DTS `always-on` 属性 | GTDT 表的 `C3STOP` 标志 |
+| 差异点      | DT 路径                                     | ACPI 路径                       |
+| ----------- | ------------------------------------------- | ------------------------------- |
+| 中断命名    | 通过 `interrupt-names` 匹配               | 通过 GTDT 表固定位置            |
+| 频率覆盖    | 支持 `clock-frequency` 属性覆盖           | 强制使用 `CNTFRQ_EL0`         |
+| `c3stop`  | DTS `always-on` 属性                      | GTDT 表的 `C3STOP` 标志       |
 | Errata 匹配 | 匹配 DTS 属性（如 `fsl,erratum-a008585`） | 匹配 ACPI OEM ID（如 `HISI`） |
-| 安全 PPI | arm64 下不使用 `PHYS_SECURE_PPI` | 同左 |
+| 安全 PPI    | arm64 下不使用 `PHYS_SECURE_PPI`          | 同左                            |
 
 ### 4.3 MMIO 路径：`arch_timer_mmio_probe()`
 
@@ -407,26 +594,26 @@ timer@2a810000 {
 
 MMIO Frame 内部寄存器偏移（相对于 frame 的 cntbase）：
 
-| 偏移 | 寄存器 | 宽度 | 描述 |
-|------|--------|------|------|
-| 0x00 | `CNTPCT_LO` | 32 | 物理计数器低 32 位 |
-| 0x04 | `CNTPCT_HI` | 32 | 物理计数器高 32 位 |
-| 0x08 | `CNTVCT_LO` | 32 | 虚拟计数器低 32 位 |
-| 0x0C | `CNTVCT_HI` | 32 | 虚拟计数器高 32 位 |
-| 0x10 | `CNTFRQ` | 32 | 计数器频率 |
-| 0x20 | `CNTP_CVAL_LO` | 32 | 物理比较值低 32 位 |
-| 0x24 | `CNTP_CVAL_HI` | 32 | 物理比较值高 32 位 |
-| 0x2C | `CNTP_CTL` | 32 | 物理定时器控制 |
-| 0x30 | `CNTV_CVAL_LO` | 32 | 虚拟比较值低 32 位 |
-| 0x34 | `CNTV_CVAL_HI` | 32 | 虚拟比较值高 32 位 |
-| 0x3C | `CNTV_CTL` | 32 | 虚拟定时器控制 |
+| 偏移 | 寄存器           | 宽度 | 描述               |
+| ---- | ---------------- | ---- | ------------------ |
+| 0x00 | `CNTPCT_LO`    | 32   | 物理计数器低 32 位 |
+| 0x04 | `CNTPCT_HI`    | 32   | 物理计数器高 32 位 |
+| 0x08 | `CNTVCT_LO`    | 32   | 虚拟计数器低 32 位 |
+| 0x0C | `CNTVCT_HI`    | 32   | 虚拟计数器高 32 位 |
+| 0x10 | `CNTFRQ`       | 32   | 计数器频率         |
+| 0x20 | `CNTP_CVAL_LO` | 32   | 物理比较值低 32 位 |
+| 0x24 | `CNTP_CVAL_HI` | 32   | 物理比较值高 32 位 |
+| 0x2C | `CNTP_CTL`     | 32   | 物理定时器控制     |
+| 0x30 | `CNTV_CVAL_LO` | 32   | 虚拟比较值低 32 位 |
+| 0x34 | `CNTV_CVAL_HI` | 32   | 虚拟比较值高 32 位 |
+| 0x3C | `CNTV_CTL`     | 32   | 虚拟定时器控制     |
 
 CNTCTLBase 内部寄存器（全局控制）：
 
-| 偏移 | 寄存器 | 描述 |
-|------|--------|------|
-| 0x08 | `CNTTIDR` | 标识各 frame 的能力（bit[4n+1] = frame n 支持 virtual） |
-| 0x40 + n*4 | `CNTACR(n)` | Frame n 的访问控制寄存器 |
+| 偏移       | 寄存器        | 描述                                                    |
+| ---------- | ------------- | ------------------------------------------------------- |
+| 0x08       | `CNTTIDR`   | 标识各 frame 的能力（bit[4n+1] = frame n 支持 virtual） |
+| 0x40 + n*4 | `CNTACR(n)` | Frame n 的访问控制寄存器                                |
 
 #### 4.3.4 Frame 选择算法
 
@@ -465,12 +652,12 @@ find_best_frame() 算法:
 
 根据已选择的 PPI 类型，注册对应的中断处理函数：
 
-| PPI 选择 | 中断号 | 处理函数 | 备注 |
-|----------|--------|----------|------|
-| `VIRT_PPI` | PPI 11 | `arch_timer_handler_virt` | 使用 `CNTV_*_EL0` |
-| `PHYS_NONSECURE_PPI` | PPI 14 | `arch_timer_handler_phys` | 使用 `CNTP_*_EL0`，额外注册 PPI 14 |
-| `PHYS_SECURE_PPI` | PPI 13 | `arch_timer_handler_phys` | 使用 `CNTP_*_EL0`，如果 PPI 14 可用也注册 |
-| `HYP_PPI` | PPI 10 | `arch_timer_handler_phys` | 使用 `CNTHP_*_EL2`（VHE 重定向） |
+| PPI 选择               | 中断号 | 处理函数                    | 备注                                        |
+| ---------------------- | ------ | --------------------------- | ------------------------------------------- |
+| `VIRT_PPI`           | PPI 11 | `arch_timer_handler_virt` | 使用 `CNTV_*_EL0`                         |
+| `PHYS_NONSECURE_PPI` | PPI 14 | `arch_timer_handler_phys` | 使用 `CNTP_*_EL0`，额外注册 PPI 14        |
+| `PHYS_SECURE_PPI`    | PPI 13 | `arch_timer_handler_phys` | 使用 `CNTP_*_EL0`，如果 PPI 14 可用也注册 |
+| `HYP_PPI`            | PPI 10 | `arch_timer_handler_phys` | 使用 `CNTHP_*_EL2`（VHE 重定向）          |
 
 **CPU hotplug 回调注册**：
 
@@ -531,11 +718,11 @@ isb();
 
 **CNTV_CTL_EL0 寄存器变化**：
 
-| 位域 | 名称 | 配置前 | 配置后 |
-|------|------|--------|--------|
-| [0] | ENABLE | 取决于固件 | 0（关闭） |
-| [1] | IMASK | 取决于固件 | 保持不变 |
-| [2] | ISTATUS | 只读 | 不变 |
+| 位域 | 名称    | 配置前     | 配置后    |
+| ---- | ------- | ---------- | --------- |
+| [0]  | ENABLE  | 取决于固件 | 0（关闭） |
+| [1]  | IMASK   | 取决于固件 | 保持不变  |
+| [2]  | ISTATUS | 只读       | 不变      |
 
 #### 5.2.3 硬件行为 — 配置用户态访问
 
@@ -558,23 +745,23 @@ if (!arch_timer_this_cpu_has_cntvct_wa())
 
 **CNTKCTL_EL1 寄存器布局**：
 
-| 位域 | 名称 | 描述 | 典型值 |
-|------|------|------|--------|
-| [0] | EL0PCTEN | 用户态访问物理计数器 | 0 |
-| [1] | EL0PVTEN | 用户态访问物理定时器 | 0 |
-| [8] | EL0VTEN | 用户态访问虚拟定时器 | 0 |
-| [9] | EL0VCTEN | 用户态访问虚拟计数器 | 1（VDSO 需要） |
-| [2] | EVNTEN | 事件流使能 | 0（后续配置） |
-| [3] | EVNTDIR | 事件流方向 | 0 |
-| [7:4] | EVNTI | 事件流 divider | 0 |
+| 位域  | 名称     | 描述                 | 典型值         |
+| ----- | -------- | -------------------- | -------------- |
+| [0]   | EL0PCTEN | 用户态访问物理计数器 | 0              |
+| [1]   | EL0PVTEN | 用户态访问物理定时器 | 0              |
+| [8]   | EL0VTEN  | 用户态访问虚拟定时器 | 0              |
+| [9]   | EL0VCTEN | 用户态访问虚拟计数器 | 1（VDSO 需要） |
+| [2]   | EVNTEN   | 事件流使能           | 0（后续配置）  |
+| [3]   | EVNTDIR  | 事件流方向           | 0              |
+| [7:4] | EVNTI    | 事件流 divider       | 0              |
 
 #### 5.2.4 寄存器变化总结（Per-CPU 配置阶段）
 
-| 寄存器 | 配置前 | 配置后 | 说明 |
-|--------|--------|--------|------|
-| `CNTV_CTL_EL0` (或 `CNTP_CTL_EL0`) | 未定义/固件值 | ENABLE=0, IMASK 不变 | 关闭定时器 |
-| `CNTKCTL_EL1` | 0（Reset） | `EL0VCTEN=1` (通常) | 允许用户态读虚拟计数器 |
-| GIC PPI 中断 | 掩码（masked） | 使能（unmasked） | 允许接收定时器中断 |
+| 寄存器                                 | 配置前         | 配置后                | 说明                   |
+| -------------------------------------- | -------------- | --------------------- | ---------------------- |
+| `CNTV_CTL_EL0` (或 `CNTP_CTL_EL0`) | 未定义/固件值  | ENABLE=0, IMASK 不变  | 关闭定时器             |
+| `CNTKCTL_EL1`                        | 0（Reset）     | `EL0VCTEN=1` (通常) | 允许用户态读虚拟计数器 |
+| GIC PPI 中断                           | 掩码（masked） | 使能（unmasked）      | 允许接收定时器中断     |
 
 ---
 
@@ -734,12 +921,12 @@ if (cpus_have_final_cap(ARM64_HAS_ECV) && divider > 15) {
 
 ### 7.2 寄存器变化
 
-| 寄存器 | 配置前 | 配置后 |
-|--------|--------|--------|
-| `CNTKCTL_EL1.EVNTEN` | 0 | 1 |
-| `CNTKCTL_EL1.EVNTI` | 0 | divider 值 |
-| `CNTKCTL_EL1.EVNTDIR` | 0 | 0（递增计数触发） |
-| `CNTKCTL_EL1.EVNTIS` (ECV) | 0 | 1（如果 divider > 15） |
+| 寄存器                       | 配置前 | 配置后                 |
+| ---------------------------- | ------ | ---------------------- |
+| `CNTKCTL_EL1.EVNTEN`       | 0      | 1                      |
+| `CNTKCTL_EL1.EVNTI`        | 0      | divider 值             |
+| `CNTKCTL_EL1.EVNTDIR`      | 0      | 0（递增计数触发）      |
+| `CNTKCTL_EL1.EVNTIS` (ECV) | 0      | 1（如果 divider > 15） |
 
 ---
 
@@ -800,12 +987,12 @@ System Counter 递增 ...
 
 ### 8.3 中断处理后的寄存器状态
 
-| 寄存器 | 中断前 | 中断处理中 | 中断处理后 |
-|--------|--------|-----------|-----------|
-| `CNTV_CTL_EL0.ISTATUS` | 0 | 1 | 1（直到写入新 CVAL） |
-| `CNTV_CTL_EL0.IMASK` | 0 | 1（设置屏蔽） | 1（直到下次 set_next_event 清除） |
-| `CNTV_CTL_EL0.ENABLE` | 1 | 1 | 1 |
-| GIC PPI 状态 | 未断言 | 断言 | 断言（直到 EOI） |
+| 寄存器                   | 中断前 | 中断处理中    | 中断处理后                        |
+| ------------------------ | ------ | ------------- | --------------------------------- |
+| `CNTV_CTL_EL0.ISTATUS` | 0      | 1             | 1（直到写入新 CVAL）              |
+| `CNTV_CTL_EL0.IMASK`   | 0      | 1（设置屏蔽） | 1（直到下次 set_next_event 清除） |
+| `CNTV_CTL_EL0.ENABLE`  | 1      | 1             | 1                                 |
+| GIC PPI 状态             | 未断言 | 断言          | 断言（直到 EOI）                  |
 
 ---
 
@@ -920,15 +1107,15 @@ struct arch_timer {
 
 ### 9.6 全局变量
 
-| 变量 | 类型 | 描述 |
-|------|------|------|
-| `arch_timer_rate` | `u32` | 计数器频率（Hz） |
-| `arch_timer_ppi[]` | `int[5]` | 各 PPI 中断号 |
-| `arch_timer_uses_ppi` | `enum arch_timer_ppi_nr` | 选中的 PPI 类型 |
-| `arch_timer_evt` | `struct clock_event_device __percpu *` | 每 CPU clockevent 设备 |
-| `arch_timer_c3stop` | `bool` | 空闲时定时器是否停止 |
-| `arch_timer_read_counter` | `u64 (*)(void)` | 函数指针，当前使用的计数器读取函数 |
-| `arch_counter_suspend_stop` | `bool` | 挂起时计数器是否停止 |
+| 变量                          | 类型                                     | 描述                               |
+| ----------------------------- | ---------------------------------------- | ---------------------------------- |
+| `arch_timer_rate`           | `u32`                                  | 计数器频率（Hz）                   |
+| `arch_timer_ppi[]`          | `int[5]`                               | 各 PPI 中断号                      |
+| `arch_timer_uses_ppi`       | `enum arch_timer_ppi_nr`               | 选中的 PPI 类型                    |
+| `arch_timer_evt`            | `struct clock_event_device __percpu *` | 每 CPU clockevent 设备             |
+| `arch_timer_c3stop`         | `bool`                                 | 空闲时定时器是否停止               |
+| `arch_timer_read_counter`   | `u64 (*)(void)`                        | 函数指针，当前使用的计数器读取函数 |
+| `arch_counter_suspend_stop` | `bool`                                 | 挂起时计数器是否停止               |
 
 ---
 
@@ -1014,14 +1201,14 @@ struct arch_timer {
 
 ## 11. 文件清单
 
-| 文件 | 说明 |
-|------|------|
-| [drivers/clocksource/arm_arch_timer.c](file:///home/louis/code/linux/drivers/clocksource/arm_arch_timer.c) | CP15 sysreg 定时器驱动（主驱动） |
-| [drivers/clocksource/arm_arch_timer_mmio.c](file:///home/louis/code/linux/drivers/clocksource/arm_arch_timer_mmio.c) | MMIO 内存映射定时器驱动 |
-| [arch/arm64/include/asm/arch_timer.h](file:///home/louis/code/linux/arch/arm64/include/asm/arch_timer.h) | 架构相关的定时器访问函数 |
-| [arch/arm64/include/asm/sysreg.h](file:///home/louis/code/linux/arch/arm64/include/asm/sysreg.h) | 系统寄存器编码定义 |
-| [arch/arm64/include/asm/el2_setup.h](file:///home/louis/code/linux/arch/arm64/include/asm/el2_setup.h) | EL2 启动代码中的定时器配置 |
-| [include/clocksource/arm_arch_timer.h](file:///home/louis/code/linux/include/clocksource/arm_arch_timer.h) | 定时器驱动公共头文件 |
-| [include/linux/clocksource.h](file:///home/louis/code/linux/include/linux/clocksource.h) | Clocksource 核心数据结构 |
-| [include/linux/clockchips.h](file:///home/louis/code/linux/include/linux/clockchips.h) | Clockevent 核心数据结构 |
-| [arch/arm64/include/asm/timex.h](file:///home/louis/code/linux/arch/arm64/include/asm/timex.h) | ARM64 timex 接口（`get_cycles`） |
+| 文件                                                                                                                | 说明                               |
+| ------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| [drivers/clocksource/arm_arch_timer.c](file:///home/louis/code/linux/drivers/clocksource/arm_arch_timer.c)           | CP15 sysreg 定时器驱动（主驱动）   |
+| [drivers/clocksource/arm_arch_timer_mmio.c](file:///home/louis/code/linux/drivers/clocksource/arm_arch_timer_mmio.c) | MMIO 内存映射定时器驱动            |
+| [arch/arm64/include/asm/arch_timer.h](file:///home/louis/code/linux/arch/arm64/include/asm/arch_timer.h)             | 架构相关的定时器访问函数           |
+| [arch/arm64/include/asm/sysreg.h](file:///home/louis/code/linux/arch/arm64/include/asm/sysreg.h)                     | 系统寄存器编码定义                 |
+| [arch/arm64/include/asm/el2_setup.h](file:///home/louis/code/linux/arch/arm64/include/asm/el2_setup.h)               | EL2 启动代码中的定时器配置         |
+| [include/clocksource/arm_arch_timer.h](file:///home/louis/code/linux/include/clocksource/arm_arch_timer.h)           | 定时器驱动公共头文件               |
+| [include/linux/clocksource.h](file:///home/louis/code/linux/include/linux/clocksource.h)                             | Clocksource 核心数据结构           |
+| [include/linux/clockchips.h](file:///home/louis/code/linux/include/linux/clockchips.h)                               | Clockevent 核心数据结构            |
+| [arch/arm64/include/asm/timex.h](file:///home/louis/code/linux/arch/arm64/include/asm/timex.h)                       | ARM64 timex 接口（`get_cycles`） |

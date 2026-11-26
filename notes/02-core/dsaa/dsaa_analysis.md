@@ -61,17 +61,17 @@ Linux 内核作为一个大型系统软件，在其各个子系统中广泛使�
 
 内核里的"数据结构"可以分为两层：一层是 `include/linux/` 与 `lib/` 中提供的**通用容器/索引结构**，可被任意子系统复用；另一层是各子系统私有的数据组织（如 `sk_buff`、`bio`、`dentry`、`folio` 等），它们通常与具体业务语义绑定，已在对应子系统章节分析。本章覆盖前者，并在本次修订中补齐了此前遗漏的通用结构：
 
-| 类别 | 覆盖的通用数据结构 | 章节 |
-|---|---|---|
-| 链表 | `list_head`、`hlist`、`llist`、`hlist_nulls`、`hlist_bl`、`plist`、`klist` | 2.1–2.7 |
-| 树 | 红黑树、基数树、Maple Tree、B 树变体、区间树 | 3.1–3.5 |
-| 哈希 | 静态哈希表（`hashtable.h`）、可扩容哈希表 `rhashtable` | 4.1–4.6 |
-| 堆/优先队列 | 实时调度优先级队列、定时器时间轮、`min_heap` | 5.1–5.3 |
-| 查找/索引 | `bitmap`、`sbitmap`、Trie/LC-Trie、`assoc_array` | 6.1–6.4 |
-| 映射 | IDR、XArray、eBPF Maps | 7.1–7.3 |
-| 队列/缓冲 | `kfifo`、工作队列 | 8.1–8.2 |
-| 页框分配 | 伙伴系统 | 9 |
-| 引用计数 | `kref`、`refcount_t` | 10.1–10.7 |
+| 类别        | 覆盖的通用数据结构                                                                       | 章节       |
+| ----------- | ---------------------------------------------------------------------------------------- | ---------- |
+| 链表        | `list_head`、`hlist`、`llist`、`hlist_nulls`、`hlist_bl`、`plist`、`klist` | 2.1–2.7   |
+| 树          | 红黑树、基数树、Maple Tree、B 树变体、区间树                                             | 3.1–3.5   |
+| 哈希        | 静态哈希表（`hashtable.h`）、可扩容哈希表 `rhashtable`                               | 4.1–4.6   |
+| 堆/优先队列 | 实时调度优先级队列、定时器时间轮、`min_heap`                                           | 5.1–5.3   |
+| 查找/索引   | `bitmap`、`sbitmap`、Trie/LC-Trie、`assoc_array`                                   | 6.1–6.4   |
+| 映射        | IDR、XArray、eBPF Maps                                                                   | 7.1–7.3   |
+| 队列/缓冲   | `kfifo`、工作队列                                                                      | 8.1–8.2   |
+| 页框分配    | 伙伴系统                                                                                 | 9          |
+| 引用计数    | `kref`、`refcount_t`                                                                 | 10.1–10.7 |
 
 本章所有结构体定义、函数签名与调用点均以当前 Linux 7.2 源码树为准。为便于理解操作过程，各节直接内嵌 `plantuml` 围栏代码块，由 `mdbook-plantuml` 预处理器在构建时渲染；`mdbook serve` 会在保存 Markdown 后自动重新渲染，无需手工生成图片。
 
@@ -91,14 +91,14 @@ Linux 内核作为一个大型系统软件，在其各个子系统中广泛使�
 
 传统链表（如 C++ STL `std::list<T>`）是**非侵入式**的：链表节点存储的是数据的副本，数据本身不包含链表链接信息。内核的 `list_head` 是**侵入式**的：数据结构体内部嵌入 `list_head` 成员，链表操作直接操作嵌入的节点指针。
 
-| 特性 | 内核侵入式 (`list_head`) | 传统非侵入式 |
-|---|---|---|
-| 内存布局 | 节点指针在数据内部 | 数据在节点内部 |
-| 内存分配 | 一次 `kmalloc` 即可 | 需要额外分配节点包装器 |
-| 空链表开销 | 1 个 `list_head`（16 字节） | 1 个哨兵节点（通常 24+ 字节） |
-| 删除操作 | 不需要数据地址，只需 `list_del(&node)` | 需要从数据找到节点容器 |
-| 类型安全 | 通过 `container_of` 实现 | 模板/泛型实现 |
-| 数据移动 | 节点指针不变，链表关系不变 | 移动数据需要更新链表<br>（或额外封装） |
+| 特性       | 内核侵入式 (`list_head`)               | 传统非侵入式                       |
+| ---------- | ---------------------------------------- | ---------------------------------- |
+| 内存布局   | 节点指针在数据内部                       | 数据在节点内部                     |
+| 内存分配   | 一次 `kmalloc` 即可                    | 需要额外分配节点包装器             |
+| 空链表开销 | 1 个 `list_head`（16 字节）            | 1 个哨兵节点（通常 24+ 字节）      |
+| 删除操作   | 不需要数据地址，只需 `list_del(&node)` | 需要从数据找到节点容器             |
+| 类型安全   | 通过 `container_of` 实现               | 模板/泛型实现                      |
+| 数据移动   | 节点指针不变，链表关系不变               | 移动数据需要更新链表（或额外封装） |
 
 #### 2.1.2 核心数据结构
 
@@ -111,9 +111,9 @@ struct list_head {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `next` | `struct list_head *` | 指向后一个节点；在头节点中指向第一个元素；空链表时指向自身 |
+| 字段     | 类型                   | 作用                                                         |
+| -------- | ---------------------- | ------------------------------------------------------------ |
+| `next` | `struct list_head *` | 指向后一个节点；在头节点中指向第一个元素；空链表时指向自身   |
 | `prev` | `struct list_head *` | 指向前一个节点；在头节点中指向最后一个元素；空链表时指向自身 |
 
 `list_head` 本身不带数据，通常作为成员嵌入宿主结构体，再用 `container_of()` 找回宿主。头节点是一个**哨兵**，不存业务数据，使插入/删除不需要特判空链表。
@@ -121,27 +121,32 @@ struct list_head {
 **链接图**
 
 ```plantuml
-@startdot
-digraph list {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="list_head：带哨兵头节点的双向循环链表", labelloc=t, fontsize=14];
-  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  head [label="head（哨兵）\nnext / prev", fillcolor="#FFF3E0"];
-  a [label="节点 A\nnext / prev"];
-  b [label="节点 B\nnext / prev"];
-
-  head -> a [label="next"];
-  a -> b [label="next"];
-  b -> head [label="next（回绕）"];
-  head -> b [label="prev"];
-  b -> a [label="prev"];
-  a -> head [label="prev（回绕）"];
-
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="空链表：head.next = head.prev = &head\n节点通过 container_of() 找回宿主结构体\n插入/删除只改相邻节点的 next/prev"];
-  head -> note [style=invis];
+@startuml
+title list_head：带哨兵头节点的双向循环链表
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "head（哨兵）\nnext / prev" as head #FFF3E0
+class "节点 A\nnext / prev" as a
+class "节点 B\nnext / prev" as b
+
+head --> a : next
+a --> b : next
+b --> head : next（回绕）
+head --> b : prev
+b --> a : prev
+a --> head : prev（回绕）
+
+class "空链表：head.next = head.prev = &head\n节点通过 container_of() 找回宿主结构体\n插入/删除只改相邻节点的 next/prev" as note1 #FFF8E1
+@enduml
 ```
 
 *结构图：`head` 是哨兵；`next` 正向成环，`prev` 反向成环。*
@@ -321,33 +326,33 @@ stop
 
 #### 2.1.7 完整 API 参考
 
-| 函数/宏 | 功能 | 时间复杂度 |
-|---|---|---|
-| `list_add(new, head)` | 在头部插入 | O(1) |
-| `list_add_tail(new, head)` | 在尾部插入 | O(1) |
-| `list_del(entry)` | 删除节点 | O(1) |
-| `list_del_init(entry)` | 删除并重新初始化 | O(1) |
-| `list_replace(old, new)` | 替换节点 | O(1) |
-| `list_move(list, head)` | 移动到头部 | O(1) |
-| `list_move_tail(list, head)` | 移动到尾部 | O(1) |
-| `list_is_last(pos, head)` | 判断是否为最后一个节点 | O(1) |
-| `list_empty(head)` | 判断是否为空 | O(1) |
-| `list_is_head(pos, head)` | 判断是否为头节点 | O(1) |
-| `list_cut_position(head, list, entry)` | 从 entry 处切割 | O(n) |
-| `list_splice(list, head)` | 拼接链表到头部 | O(1) |
-| `list_splice_tail(list, head)` | 拼接链表到尾部 | O(1) |
-| `list_splice_init(list, head)` | 拼接并初始化原链表 | O(1) |
-| `list_bulk_move_tail(head, first, last)` | 批量移动节点到尾部 | O(1) |
-| `list_for_each(pos, head)` | 遍历（list_head 指针） | O(n) |
-| `list_for_each_safe(pos, n, head)` | 安全遍历（支持删除） | O(n) |
-| `list_for_each_entry(pos, head, member)` | 遍历宿主结构体 | O(n) |
-| `list_for_each_entry_safe(pos, n, head, member)` | 安全遍历宿主结构体 | O(n) |
-| `list_for_each_entry_reverse(pos, head, member)` | 反向遍历 | O(n) |
-| `list_for_each_prev(pos, head)` | 反向遍历 list_head | O(n) |
-| `list_first_entry_or_null(ptr, type, member)` | 取第一个或 NULL | O(1) |
-| `list_entry_is_head(pos, head, member)` | 判断是否到头 | O(1) |
-| `list_rotate_to_front(head, entry)` | 将 entry 旋转到头部 | O(1) |
-| `list_rotate_left(head)` | 链表左旋 | O(1) |
+| 函数/宏                                            | 功能                   | 时间复杂度 |
+| -------------------------------------------------- | ---------------------- | ---------- |
+| `list_add(new, head)`                            | 在头部插入             | O(1)       |
+| `list_add_tail(new, head)`                       | 在尾部插入             | O(1)       |
+| `list_del(entry)`                                | 删除节点               | O(1)       |
+| `list_del_init(entry)`                           | 删除并重新初始化       | O(1)       |
+| `list_replace(old, new)`                         | 替换节点               | O(1)       |
+| `list_move(list, head)`                          | 移动到头部             | O(1)       |
+| `list_move_tail(list, head)`                     | 移动到尾部             | O(1)       |
+| `list_is_last(pos, head)`                        | 判断是否为最后一个节点 | O(1)       |
+| `list_empty(head)`                               | 判断是否为空           | O(1)       |
+| `list_is_head(pos, head)`                        | 判断是否为头节点       | O(1)       |
+| `list_cut_position(head, list, entry)`           | 从 entry 处切割        | O(n)       |
+| `list_splice(list, head)`                        | 拼接链表到头部         | O(1)       |
+| `list_splice_tail(list, head)`                   | 拼接链表到尾部         | O(1)       |
+| `list_splice_init(list, head)`                   | 拼接并初始化原链表     | O(1)       |
+| `list_bulk_move_tail(head, first, last)`         | 批量移动节点到尾部     | O(1)       |
+| `list_for_each(pos, head)`                       | 遍历（list_head 指针） | O(n)       |
+| `list_for_each_safe(pos, n, head)`               | 安全遍历（支持删除）   | O(n)       |
+| `list_for_each_entry(pos, head, member)`         | 遍历宿主结构体         | O(n)       |
+| `list_for_each_entry_safe(pos, n, head, member)` | 安全遍历宿主结构体     | O(n)       |
+| `list_for_each_entry_reverse(pos, head, member)` | 反向遍历               | O(n)       |
+| `list_for_each_prev(pos, head)`                  | 反向遍历 list_head     | O(n)       |
+| `list_first_entry_or_null(ptr, type, member)`    | 取第一个或 NULL        | O(1)       |
+| `list_entry_is_head(pos, head, member)`          | 判断是否到头           | O(1)       |
+| `list_rotate_to_front(head, entry)`              | 将 entry 旋转到头部    | O(1)       |
+| `list_rotate_left(head)`                         | 链表左旋               | O(1)       |
 
 #### 2.1.8 完整使用示例
 
@@ -424,6 +429,7 @@ struct my_task *pop_first_task(void)
 #### 2.1.9 应用场景
 
 `list_head` 在内核中无处不在，典型应用包括：
+
 - **进程链表**：`task_struct` 中的 `tasks` 字段将所有进程链接为双向循环链表
 - **文件系统**：目录项缓存（dentry）、inode 链表
 - **内存管理**：空闲页链表（`free_area.free_list`）、LRU 链表
@@ -439,16 +445,16 @@ struct my_task *pop_first_task(void)
 
 **内核实现 vs 传统实现（`list_head`）的差异**
 
-| 特性 | `hlist_head` | `list_head` |
-|---|---|---|
-| 头节点大小 | 1 指针（8 字节） | 2 指针（16 字节） |
-| 普通节点大小 | 2 指针（16 字节） | 2 指针（16 字节） |
-| 遍历方向 | 单向 | 双向 |
-| 删除操作 | 通过 `pprev` 二级指针实现 | 直接操作 `prev`/`next` |
-| 适用场景 | 哈希表桶数组（大量桶时空间减半） | 通用双向链表 |
-| 空间效率 | 桶数组：`N × 8` 字节 | 桶数组：`N × 16` 字节 |
-| 优点 | 节省大量内存（哈希表可能有数千个桶） | 操作更灵活，支持反向遍历 |
-| 缺点 | 反向遍历需要重新从头开始，删除需 `hlist_del` | 作为哈希表桶时浪费一半空间 |
+| 特性         | `hlist_head`                                 | `list_head`              |
+| ------------ | ---------------------------------------------- | -------------------------- |
+| 头节点大小   | 1 指针（8 字节）                               | 2 指针（16 字节）          |
+| 普通节点大小 | 2 指针（16 字节）                              | 2 指针（16 字节）          |
+| 遍历方向     | 单向                                           | 双向                       |
+| 删除操作     | 通过 `pprev` 二级指针实现                    | 直接操作 `prev`/`next` |
+| 适用场景     | 哈希表桶数组（大量桶时空间减半）               | 通用双向链表               |
+| 空间效率     | 桶数组：`N × 8` 字节                        | 桶数组：`N × 16` 字节   |
+| 优点         | 节省大量内存（哈希表可能有数千个桶）           | 操作更灵活，支持反向遍历   |
+| 缺点         | 反向遍历需要重新从头开始，删除需 `hlist_del` | 作为哈希表桶时浪费一半空间 |
 
 #### 2.2.2 核心数据结构
 
@@ -467,36 +473,41 @@ struct hlist_node {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `hlist_head.first` | `struct hlist_node *` | 桶/链表的第一个节点；空链为 `NULL` |
-| `hlist_node.next` | `struct hlist_node *` | 指向下一个节点；链尾为 `NULL` |
+| 字段                 | 类型                     | 作用                                                                       |
+| -------------------- | ------------------------ | -------------------------------------------------------------------------- |
+| `hlist_head.first` | `struct hlist_node *`  | 桶/链表的第一个节点；空链为 `NULL`                                       |
+| `hlist_node.next`  | `struct hlist_node *`  | 指向下一个节点；链尾为 `NULL`                                            |
 | `hlist_node.pprev` | `struct hlist_node **` | 指向"前驱的 `next` 字段"或 `head.first`；删除时直接改 `*pprev`，O(1) |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph hlist {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="hlist：头节点只存 first，节点用 pprev 反向定位", labelloc=t, fontsize=14];
-  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  head [label="hlist_head\nfirst", fillcolor="#FFF3E0"];
-  a [label="节点 A\nnext / pprev"];
-  b [label="节点 B\nnext / pprev"];
-  nul [shape=plaintext, label="NULL"];
-
-  head -> a [label="first"];
-  a -> b [label="next"];
-  b -> nul [label="next"];
-  a -> head [style=dashed, color="#2E7D32", label="pprev = &head.first"];
-  b -> a [style=dashed, color="#2E7D32", label="pprev = &A.next"];
-
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="pprev 指向上一个节点的 next 字段\n（或 head.first），删除 O(1)\n头节点只占 1 个指针，适合哈希桶数组"];
-  b -> note [style=invis];
+@startuml
+title hlist：头节点只存 first，节点用 pprev 反向定位
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "hlist_head\nfirst" as head #FFF3E0
+class "节点 A\nnext / pprev" as a
+class "节点 B\nnext / pprev" as b
+class "NULL" as nul #FFFFFF
+
+head --> a : first
+a --> b : next
+b --> nul : next
+a -[#2E7D32]..> head : pprev = &head.first
+b -[#2E7D32]..> a : pprev = &A.next
+
+class "pprev 指向上一个节点的 next 字段\n（或 head.first），删除 O(1)\n头节点只占 1 个指针，适合哈希桶数组" as note1 #FFF8E1
+@enduml
 ```
 
 *结构图：实线是 `next` 正向链，虚线是 `pprev` 反向定位；头节点只占 1 个指针。*
@@ -600,20 +611,20 @@ end note
 
 #### 2.2.6 完整 API 参考
 
-| 函数/宏 | 功能 | 时间复杂度 |
-|---|---|---|
-| `hlist_add_head(n, h)` | 插入到头部 | O(1) |
-| `hlist_add_before(n, next)` | 在指定节点前插入 | O(1) |
-| `hlist_add_behind(n, prev)` | 在指定节点后插入 | O(1) |
-| `hlist_del(n)` | 删除节点 | O(1) |
-| `hlist_del_init(n)` | 删除并重新初始化 | O(1) |
-| `hlist_move_list(old, new)` | 移动整个链表 | O(1) |
-| `hlist_unhashed(n)` | 判断节点是否未被哈希 | O(1) |
-| `hlist_empty(h)` | 判断链表是否为空 | O(1) |
-| `hlist_for_each(pos, head)` | 遍历（hlist_node 指针） | O(n) |
-| `hlist_for_each_entry(pos, head, member)` | 遍历宿主结构体 | O(n) |
-| `hlist_for_each_entry_safe(pos, n, head, member)` | 安全遍历 | O(n) |
-| `hlist_entry(ptr, type, member)` | 获取宿主结构体 | O(1) |
+| 函数/宏                                             | 功能                    | 时间复杂度 |
+| --------------------------------------------------- | ----------------------- | ---------- |
+| `hlist_add_head(n, h)`                            | 插入到头部              | O(1)       |
+| `hlist_add_before(n, next)`                       | 在指定节点前插入        | O(1)       |
+| `hlist_add_behind(n, prev)`                       | 在指定节点后插入        | O(1)       |
+| `hlist_del(n)`                                    | 删除节点                | O(1)       |
+| `hlist_del_init(n)`                               | 删除并重新初始化        | O(1)       |
+| `hlist_move_list(old, new)`                       | 移动整个链表            | O(1)       |
+| `hlist_unhashed(n)`                               | 判断节点是否未被哈希    | O(1)       |
+| `hlist_empty(h)`                                  | 判断链表是否为空        | O(1)       |
+| `hlist_for_each(pos, head)`                       | 遍历（hlist_node 指针） | O(n)       |
+| `hlist_for_each_entry(pos, head, member)`         | 遍历宿主结构体          | O(n)       |
+| `hlist_for_each_entry_safe(pos, n, head, member)` | 安全遍历                | O(n)       |
+| `hlist_entry(ptr, type, member)`                  | 获取宿主结构体          | O(1)       |
 
 #### 2.2.7 完整使用示例
 
@@ -704,14 +715,14 @@ void cache_dump(void)
 
 `llist`（lock-less list）是**单向**链表，只支持在头部压入、从头部弹出或一次性摘走整条链。它用 `cmpxchg` 原子地更新 `head->first`，因此多个 CPU 可以并发 `llist_add()`，不需要自旋锁，也不会睡眠。代价是：不支持在链表中间插入/删除，也不支持反向遍历。
 
-| 特性 | `llist` | `list_head` / `hlist` |
-|---|---|---|
-| 链接方向 | 单向 | 双向 / 单向 |
-| 插入 | 仅头部，`cmpxchg` 无锁 | 任意位置，需调用者加锁 |
-| 删除 | 仅头部或整链 | 任意节点 O(1) |
-| 并发 | 多生产者、多消费者均安全 | 需外部锁或 RCU |
-| 内存开销 | 每节点 1 指针 | 每节点 2 指针 |
-| 典型上下文 | NMI、硬中断、RCU 回调 | 进程上下文为主 |
+| 特性       | `llist`                | `list_head` / `hlist` |
+| ---------- | ------------------------ | ------------------------- |
+| 链接方向   | 单向                     | 双向 / 单向               |
+| 插入       | 仅头部，`cmpxchg` 无锁 | 任意位置，需调用者加锁    |
+| 删除       | 仅头部或整链             | 任意节点 O(1)             |
+| 并发       | 多生产者、多消费者均安全 | 需外部锁或 RCU            |
+| 内存开销   | 每节点 1 指针            | 每节点 2 指针             |
+| 典型上下文 | NMI、硬中断、RCU 回调    | 进程上下文为主            |
 
 #### 2.3.2 核心数据结构
 
@@ -731,35 +742,40 @@ struct llist_node {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `llist_head.first` | `struct llist_node *` | 栈顶节点；`llist_add()` 用 `cmpxchg` 更新它 |
-| `llist_node.next` | `struct llist_node *` | 指向下一个节点；链尾为 `NULL`；`init_llist_node()` 会把它指向自身表示"不在链上" |
+| 字段                 | 类型                    | 作用                                                                                |
+| -------------------- | ----------------------- | ----------------------------------------------------------------------------------- |
+| `llist_head.first` | `struct llist_node *` | 栈顶节点；`llist_add()` 用 `cmpxchg` 更新它                                     |
+| `llist_node.next`  | `struct llist_node *` | 指向下一个节点；链尾为 `NULL`；`init_llist_node()` 会把它指向自身表示"不在链上" |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph llist {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="llist：单向无锁链表，只支持头部压栈/整链摘取", labelloc=t, fontsize=14];
-  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  head [label="llist_head\nfirst", fillcolor="#FFF3E0"];
-  a [label="节点 A\nnext"];
-  b [label="节点 B\nnext"];
-  c [label="节点 C\nnext"];
-  nul [shape=plaintext, label="NULL"];
-
-  head -> a [label="first"];
-  a -> b [label="next"];
-  b -> c [label="next"];
-  c -> nul [label="next"];
-
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="llist_add() 用 cmpxchg 在头部压栈\nllist_del_all() 用 xchg 一次摘走整链\n没有 prev，不能反向遍历或中间删除"];
-  c -> note [style=invis];
+@startuml
+title llist：单向无锁链表，只支持头部压栈/整链摘取
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "llist_head\nfirst" as head #FFF3E0
+class "节点 A\nnext" as a
+class "节点 B\nnext" as b
+class "节点 C\nnext" as c
+class "NULL" as nul #FFFFFF
+
+head --> a : first
+a --> b : next
+b --> c : next
+c --> nul : next
+
+class "llist_add() 用 cmpxchg 在头部压栈\nllist_del_all() 用 xchg 一次摘走整链\n没有 prev，不能反向遍历或中间删除" as note1 #FFF8E1
+@enduml
 ```
 
 *结构图：只有 `next`，因此只能头部压栈、整链摘取或从头部弹出。*
@@ -898,37 +914,42 @@ static inline void hlist_nulls_add_head(struct hlist_nulls_node *n,
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `hlist_nulls_head.first` | `struct hlist_nulls_node *` | 链头；空链时是 `NULLS_MARKER(bucket)` 而不是 `NULL` |
-| `hlist_nulls_node.next` | `struct hlist_nulls_node *` | 指向下一个节点，或链尾的 nulls 标记；删除时保留旧值供 RCU 读者走完 |
-| `hlist_nulls_node.pprev` | `struct hlist_nulls_node **` | 指向前驱 `next` 或 `head.first`；删除 O(1) |
-| 低 bit 编码 | `unsigned long` | 最低位为 1 表示标记；高位右移一位得到桶号 `get_nulls_value()` |
+| 字段                       | 类型                           | 作用                                                               |
+| -------------------------- | ------------------------------ | ------------------------------------------------------------------ |
+| `hlist_nulls_head.first` | `struct hlist_nulls_node *`  | 链头；空链时是 `NULLS_MARKER(bucket)` 而不是 `NULL`            |
+| `hlist_nulls_node.next`  | `struct hlist_nulls_node *`  | 指向下一个节点，或链尾的 nulls 标记；删除时保留旧值供 RCU 读者走完 |
+| `hlist_nulls_node.pprev` | `struct hlist_nulls_node **` | 指向前驱 `next` 或 `head.first`；删除 O(1)                     |
+| 低 bit 编码                | `unsigned long`              | 最低位为 1 表示标记；高位右移一位得到桶号 `get_nulls_value()`    |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph nulls {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="hlist_nulls：链尾是带桶号的 nulls 标记", labelloc=t, fontsize=14];
-  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  head [label="hlist_nulls_head\nfirst", fillcolor="#FFF3E0"];
-  a [label="节点 A\nnext / pprev"];
-  b [label="节点 B\nnext / pprev"];
-  marker [label="NULLS_MARKER(i)\n最低位 = 1", fillcolor="#FFEBEE"];
-
-  head -> a [label="first"];
-  a -> b [label="next"];
-  b -> marker [label="next"];
-  a -> head [style=dashed, color="#2E7D32", label="pprev"];
-  b -> a [style=dashed, color="#2E7D32", label="pprev"];
-
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="标记值 = 1 | (bucket << 1)\n读者走完后取 get_nulls_value()\n与当前桶号比较，不一致则重试\n删除节点时 next 保留，便于 RCU 读"];
-  marker -> note [style=invis];
+@startuml
+title hlist_nulls：链尾是带桶号的 nulls 标记
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "hlist_nulls_head\nfirst" as head #FFF3E0
+class "节点 A\nnext / pprev" as a
+class "节点 B\nnext / pprev" as b
+class "NULLS_MARKER(i)\n最低位 = 1" as marker #FFEBEE
+
+head --> a : first
+a --> b : next
+b --> marker : next
+a -[#2E7D32]..> head : pprev
+b -[#2E7D32]..> a : pprev
+
+class "标记值 = 1 | (bucket << 1)\n读者走完后取 get_nulls_value()\n与当前桶号比较，不一致则重试\n删除节点时 next 保留，便于 RCU 读" as note1 #FFF8E1
+@enduml
 ```
 
 *结构图：链尾不是 `NULL`，而是携带桶号的标记；读者据此判断是否走完了"当前桶"的链。*
@@ -1031,37 +1052,42 @@ static inline void hlist_bl_set_first(struct hlist_bl_head *h,
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `hlist_bl_head.first` | `struct hlist_bl_node *` | 首节点指针；最低位是桶锁标志（`LIST_BL_LOCKMASK`） |
-| `hlist_bl_node.next` | `struct hlist_bl_node *` | 指向下一个节点；链尾为 `NULL` |
-| `hlist_bl_node.pprev` | `struct hlist_bl_node **` | 指向前驱 `next` 或 `head.first`；删除 O(1) |
-| 锁位 | `unsigned long` 最低位 | `hlist_bl_lock()` 用 `bit_spin_lock` 置位；取节点时用 `first & ~1` 屏蔽 |
+| 字段                    | 类型                        | 作用                                                                          |
+| ----------------------- | --------------------------- | ----------------------------------------------------------------------------- |
+| `hlist_bl_head.first` | `struct hlist_bl_node *`  | 首节点指针；最低位是桶锁标志（`LIST_BL_LOCKMASK`）                          |
+| `hlist_bl_node.next`  | `struct hlist_bl_node *`  | 指向下一个节点；链尾为 `NULL`                                               |
+| `hlist_bl_node.pprev` | `struct hlist_bl_node **` | 指向前驱 `next` 或 `head.first`；删除 O(1)                                |
+| 锁位                    | `unsigned long` 最低位    | `hlist_bl_lock()` 用 `bit_spin_lock` 置位；取节点时用 `first & ~1` 屏蔽 |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph hlistbl {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="hlist_bl：首指针最低位兼作桶锁", labelloc=t, fontsize=14];
-  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  head [label="hlist_bl_head\nfirst | LOCK", fillcolor="#FFF3E0"];
-  a [label="节点 A\nnext / pprev"];
-  b [label="节点 B\nnext / pprev"];
-  nul [shape=plaintext, label="NULL"];
-
-  head -> a [label="first（去掉锁位）"];
-  a -> b [label="next"];
-  b -> nul [label="next"];
-  a -> head [style=dashed, color="#2E7D32", label="pprev"];
-  b -> a [style=dashed, color="#2E7D32", label="pprev"];
-
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="修改链表前：first |= LOCK（bit 0）\n取节点：first & ~LOCK\n读取/写入节点本身仍用 pprev，O(1)"];
-  b -> note [style=invis];
+@startuml
+title hlist_bl：首指针最低位兼作桶锁
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "hlist_bl_head\nfirst | LOCK" as head #FFF3E0
+class "节点 A\nnext / pprev" as a
+class "节点 B\nnext / pprev" as b
+class "NULL" as nul #FFFFFF
+
+head --> a : first（去掉锁位）
+a --> b : next
+b --> nul : next
+a -[#2E7D32]..> head : pprev
+b -[#2E7D32]..> a : pprev
+
+class "修改链表前：first |= LOCK（bit 0）\n取节点：first & ~LOCK\n读取/写入节点本身仍用 pprev，O(1)" as note1 #FFF8E1
+@enduml
 ```
 
 *结构图：`first` 同时承担"首节点指针"和"桶锁"两个角色，省掉每桶一个 `spinlock_t`。*
@@ -1138,37 +1164,57 @@ struct plist_node {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
+| 字段                     | 类型                 | 作用                                                |
+| ------------------------ | -------------------- | --------------------------------------------------- |
 | `plist_head.node_list` | `struct list_head` | 所有节点的有序链（按 `prio` 升序，同优先级 FIFO） |
-| `plist_node.prio` | `int` | 优先级；`INT_MIN` 最高，`INT_MAX` 最低 |
-| `plist_node.prio_list` | `struct list_head` | 只挂"每个优先级的代表节点"，用于快速定位插入点 |
-| `plist_node.node_list` | `struct list_head` | 挂到 `plist_head.node_list` 的节点 |
+| `plist_node.prio`      | `int`              | 优先级；`INT_MIN` 最高，`INT_MAX` 最低          |
+| `plist_node.prio_list` | `struct list_head` | 只挂"每个优先级的代表节点"，用于快速定位插入点      |
+| `plist_node.node_list` | `struct list_head` | 挂到 `plist_head.node_list` 的节点                |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph plist {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="plist：prio_list 管优先级，node_list 管全部节点", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  head [label="{plist_head|node_list}", fillcolor="#FFF3E0"];
-  n10 [label="{prio=10|{<pl>prio_list|<nl>node_list}}"];
-  n21a [label="{prio=21|{<pl>prio_list|<nl>node_list}}"];
-  n21b [label="{prio=21|{<pl>—|<nl>node_list}}"];
-  n40 [label="{prio=40|{<pl>prio_list|<nl>node_list}}"];
-
-  head -> n10:nl [label="node_list"];
-  n10:nl -> n21a:nl [label="node_list"];
-  n21a:nl -> n21b:nl [label="node_list（同 prio FIFO）"];
-  n21b:nl -> n40:nl [label="node_list"];
-
-  n10:pl -> n21a:pl [color="#2E7D32", style=dashed, label="prio_list"];
-  n21a:pl -> n40:pl [color="#2E7D32", style=dashed, label="prio_list"];
+@startuml
+title plist：prio_list 管优先级，node_list 管全部节点
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "plist_head" as head #FFF3E0 {
+  node_list
+}
+class "prio=10" as n10 {
+  prio_list
+  node_list
+}
+class "prio=21" as n21a {
+  prio_list
+  node_list
+}
+class "prio=21" as n21b {
+  —
+  node_list
+}
+class "prio=40" as n40 {
+  prio_list
+  node_list
+}
+
+head --> n10 : node_list
+n10 --> n21a : node_list
+n21a --> n21b : node_list（同 prio FIFO）
+n21b --> n40 : node_list
+
+n10 -[#2E7D32]..> n21a : prio_list
+n21a -[#2E7D32]..> n40 : prio_list
+@enduml
 ```
 
 *结构图：`prio_list` 只保留每个优先级的一个代表（绿色虚线）；`node_list` 包含全部节点，同优先级按 FIFO 排列。*
@@ -1254,39 +1300,57 @@ struct klist_iter {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `klist.k_lock` | `spinlock_t` | 保护 `k_list` 的链表锁 |
-| `klist.k_list` | `struct list_head` | 节点链 |
-| `klist.get/put` | 函数指针 | 迭代器取/放节点时对宿主对象加/减引用 |
-| `klist_node.n_klist` | `void *` | 指向所属 `klist`；最低位 `KNODE_DEAD` 表示已删除 |
-| `klist_node.n_node` | `struct list_head` | 挂到 `k_list` 的链表节点 |
-| `klist_node.n_ref` | `struct kref` | 节点引用计数；归零时 `klist_release()` 才真正 `list_del()` |
+| 字段                   | 类型                 | 作用                                                           |
+| ---------------------- | -------------------- | -------------------------------------------------------------- |
+| `klist.k_lock`       | `spinlock_t`       | 保护 `k_list` 的链表锁                                       |
+| `klist.k_list`       | `struct list_head` | 节点链                                                         |
+| `klist.get/put`      | 函数指针             | 迭代器取/放节点时对宿主对象加/减引用                           |
+| `klist_node.n_klist` | `void *`           | 指向所属 `klist`；最低位 `KNODE_DEAD` 表示已删除           |
+| `klist_node.n_node`  | `struct list_head` | 挂到 `k_list` 的链表节点                                     |
+| `klist_node.n_ref`   | `struct kref`      | 节点引用计数；归零时 `klist_release()` 才真正 `list_del()` |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph klist {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="klist：链表节点自带 kref，迭代安全", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  k [label="{klist|k_lock|k_list|get()|put()}", fillcolor="#FFF3E0"];
-  n1 [label="{klist_node|n_klist|n_node|n_ref}"];
-  n2 [label="{klist_node|n_klist|n_node|n_ref}"];
-  obj1 [label="宿主对象\ndevice / driver"];
-  obj2 [label="宿主对象\ndevice / driver"];
-
-  k -> n1 [label="k_list"];
-  n1 -> n2 [label="n_node"];
-  n1 -> obj1 [style=dashed, label="container_of"];
-  n2 -> obj2 [style=dashed, label="container_of"];
-
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="n_klist 最低位 = KNODE_DEAD\n迭代器 klist_next() 对节点 get()\n删除时先置 dead；引用归零才 list_del()"];
-  n2 -> note [style=invis];
+@startuml
+title klist：链表节点自带 kref，迭代安全
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "klist" as k #FFF3E0 {
+  k_lock
+  k_list
+  get()
+  put()
+}
+class "klist_node" as n1 {
+  n_klist
+  n_node
+  n_ref
+}
+class "klist_node" as n2 {
+  n_klist
+  n_node
+  n_ref
+}
+class "宿主对象\ndevice / driver" as obj1
+class "宿主对象\ndevice / driver" as obj2
+
+k --> n1 : k_list
+n1 --> n2 : n_node
+n1 ..> obj1 : container_of
+n2 ..> obj2 : container_of
+
+class "n_klist 最低位 = KNODE_DEAD\n迭代器 klist_next() 对节点 get()\n删除时先置 dead；引用归零才 list_del()" as note1 #FFF8E1
+@enduml
 ```
 
 *结构图：`klist_node` 内嵌 `kref`；迭代器持有引用期间，即使节点被 `klist_del()` 也不会立即释放。*
@@ -1360,14 +1424,14 @@ struct klist_node *klist_prev(struct klist_iter *i);
 
 内核红黑树采用**分离式接口**设计：将"查找插入位置"（由调用者负责）和"插入后平衡修复"（由内核负责）明确分开。这与传统库（如 C++ STL `std::map`）的封装式设计不同。
 
-| 特性 | 内核实现 (分离式) | 传统实现 (封装式, 如 `std::map`) |
-|---|---|---|
-| 插入流程 | 两步：① 调用者用 while 循环找位置并 `rb_link_node`；② 调用 `rb_insert_color` 修复 | 一步：`map.insert(key, value)` 内部完成全部操作 |
-| 比较逻辑 | 调用者用自定义 `if/else` 实现，可嵌入复杂逻辑（如区间匹配、模糊查找） | 通过模板比较器或 `operator<`，固定为全序比较 |
-| 查找策略 | 完全自定义，可支持非标准查找（如查找最接近的、查找范围） | 固定为精确查找或 `lower_bound`/`upper_bound` |
-| 对调用者的要求 | 必须理解红黑树插入语义，否则可能跳过 `rb_insert_color` 导致树不平衡 | 无需了解内部实现 |
-| 优点 | 灵活可控，适合需要特殊查找逻辑的场景（如内核 VMA 查找：按地址区间匹配） | 使用简单、安全，不易出错 |
-| 缺点 | 容易出错（忘记平衡修复、比较逻辑错误），代码模板化重复 | 灵活性不足，不适合需要自定义查找策略的场景 |
+| 特性           | 内核实现 (分离式)                                                                       | 传统实现 (封装式, 如 `std::map`)                |
+| -------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| 插入流程       | 两步：① 调用者用 while 循环找位置并 `rb_link_node`；② 调用 `rb_insert_color` 修复 | 一步：`map.insert(key, value)` 内部完成全部操作 |
+| 比较逻辑       | 调用者用自定义 `if/else` 实现，可嵌入复杂逻辑（如区间匹配、模糊查找）                 | 通过模板比较器或 `operator<`，固定为全序比较    |
+| 查找策略       | 完全自定义，可支持非标准查找（如查找最接近的、查找范围）                                | 固定为精确查找或 `lower_bound`/`upper_bound`  |
+| 对调用者的要求 | 必须理解红黑树插入语义，否则可能跳过 `rb_insert_color` 导致树不平衡                   | 无需了解内部实现                                  |
+| 优点           | 灵活可控，适合需要特殊查找逻辑的场景（如内核 VMA 查找：按地址区间匹配）                 | 使用简单、安全，不易出错                          |
+| 缺点           | 容易出错（忘记平衡修复、比较逻辑错误），代码模板化重复                                  | 灵活性不足，不适合需要自定义查找策略的场景        |
 
 #### 3.1.2 红黑树性质
 
@@ -1394,38 +1458,62 @@ struct rb_root {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `__rb_parent_color` | `unsigned long` | 父节点指针（高位）+ 颜色（最低位）；`rb_parent()` 屏蔽低位取父指针 |
-| `rb_left` | `struct rb_node *` | 左子节点 |
-| `rb_right` | `struct rb_node *` | 右子节点 |
-| `rb_root.rb_node` | `struct rb_node *` | 根节点指针；空树为 `NULL` |
-| `rb_root_cached.rb_leftmost` | `struct rb_node *` | 缓存最左节点，使 `rb_first()` 为 O(1) |
+| 字段                           | 类型                 | 作用                                                                 |
+| ------------------------------ | -------------------- | -------------------------------------------------------------------- |
+| `__rb_parent_color`          | `unsigned long`    | 父节点指针（高位）+ 颜色（最低位）；`rb_parent()` 屏蔽低位取父指针 |
+| `rb_left`                    | `struct rb_node *` | 左子节点                                                             |
+| `rb_right`                   | `struct rb_node *` | 右子节点                                                             |
+| `rb_root.rb_node`            | `struct rb_node *` | 根节点指针；空树为 `NULL`                                          |
+| `rb_root_cached.rb_leftmost` | `struct rb_node *` | 缓存最左节点，使 `rb_first()` 为 O(1)                              |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph rb {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="rb_node：父指针与颜色合并在 __rb_parent_color 中", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  root [label="{rb_root|rb_node}", fillcolor="#FFF3E0"];
-  g [label="{G|__rb_parent_color = NULL | BLACK|rb_left|rb_right}", fillcolor="#EEEEEE"];
-  p [label="{P|__rb_parent_color = G | RED|rb_left|rb_right}", fillcolor="#FFEBEE"];
-  u [label="{U|__rb_parent_color = G | RED|rb_left|rb_right}", fillcolor="#FFEBEE"];
-  n [label="{N|__rb_parent_color = P | RED|rb_left = NULL|rb_right = NULL}", fillcolor="#FFEBEE"];
-
-  root -> g [label="rb_node"];
-  g -> p [label="rb_left"];
-  g -> u [label="rb_right"];
-  p -> n [label="rb_left"];
-  p -> g [style=dashed, color="#2E7D32", label="rb_parent"];
-  u -> g [style=dashed, color="#2E7D32", label="rb_parent"];
-  n -> p [style=dashed, color="#2E7D32", label="rb_parent"];
+@startuml
+title rb_node：父指针与颜色合并在 __rb_parent_color 中
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "rb_root" as root #FFF3E0 {
+  rb_node
+}
+class "G" as g #EEEEEE {
+  __rb_parent_color = NULL | BLACK
+  rb_left
+  rb_right
+}
+class "P" as p #FFEBEE {
+  __rb_parent_color = G | RED
+  rb_left
+  rb_right
+}
+class "U" as u #FFEBEE {
+  __rb_parent_color = G | RED
+  rb_left
+  rb_right
+}
+class "N" as n #FFEBEE {
+  __rb_parent_color = P | RED
+  rb_left = NULL
+  rb_right = NULL
+}
+
+root --> g : rb_node
+g --> p : rb_left
+g --> u : rb_right
+p --> n : rb_left
+p -[#2E7D32]..> g : rb_parent
+u -[#2E7D32]..> g : rb_parent
+n -[#2E7D32]..> p : rb_parent
+@enduml
 ```
 
 *结构图：红黑树节点通过 `rb_left`/`rb_right` 组织成二叉搜索树，虚线是编码在 `__rb_parent_color` 中的父指针；节点颜色也放在该字段最低位。*
@@ -1464,6 +1552,7 @@ extern void rb_insert_color(struct rb_node *, struct rb_root *);
 ```
 
 插入新节点后，调用 `rb_insert_color` 修复红黑树性质。该函数在 `lib/rbtree.c` 中实现，主要处理以下情况：
+
 - 叔节点为红色：颜色翻转
 - 叔节点为黑色：旋转操作
 
@@ -1646,28 +1735,28 @@ stop
 
 #### 3.1.8 完整 API 参考
 
-| 函数/宏 | 功能 | 时间复杂度 |
-|---|---|---|
-| `rb_insert_color(node, root)` | 插入后修复颜色 | O(log n) |
-| `rb_erase(node, root)` | 删除节点 | O(log n) |
-| `rb_erase_cached(node, root)` | 从缓存根中删除 | O(log n) |
-| `rb_link_node(node, parent, rb_link)` | 链接节点到树中 | O(1) |
-| `rb_replace_node(old, new, root)` | 替换节点 | O(1) |
-| `rb_replace_node_cached(old, new, root)` | 在缓存根中替换 | O(1) |
-| `rb_first(root)` | 查找最小值 | O(log n) |
-| `rb_last(root)` | 查找最大值 | O(log n) |
-| `rb_next(node)` | 查找后继节点 | O(1) avg |
-| `rb_prev(node)` | 查找前驱节点 | O(1) avg |
-| `rb_find(addr, root, cmp)` | 二叉查找 | O(log n) |
-| `rb_find_add(node, root, cmp)` | 查找并插入 | O(log n) |
-| `rb_add(node, root, cmp)` | 简单插入 | O(log n) |
-| `rb_add_cached(node, root, less)` | 插入到缓存根 | O(log n) |
-| `rb_first_postorder(root)` | 后序遍历第一个 | O(log n) |
-| `rb_next_postorder(node)` | 后序遍历下一个 | O(1) |
-| `rb_entry(ptr, type, member)` | 获取宿主结构体 | O(1) |
-| `RB_EMPTY_ROOT(root)` | 判断树是否为空 | O(1) |
-| `RB_CLEAR_NODE(node)` | 清除节点状态 | O(1) |
-| `rbtree_postorder_for_each_entry_safe` | 安全后序遍历 | O(n) |
+| 函数/宏                                    | 功能           | 时间复杂度 |
+| ------------------------------------------ | -------------- | ---------- |
+| `rb_insert_color(node, root)`            | 插入后修复颜色 | O(log n)   |
+| `rb_erase(node, root)`                   | 删除节点       | O(log n)   |
+| `rb_erase_cached(node, root)`            | 从缓存根中删除 | O(log n)   |
+| `rb_link_node(node, parent, rb_link)`    | 链接节点到树中 | O(1)       |
+| `rb_replace_node(old, new, root)`        | 替换节点       | O(1)       |
+| `rb_replace_node_cached(old, new, root)` | 在缓存根中替换 | O(1)       |
+| `rb_first(root)`                         | 查找最小值     | O(log n)   |
+| `rb_last(root)`                          | 查找最大值     | O(log n)   |
+| `rb_next(node)`                          | 查找后继节点   | O(1) avg   |
+| `rb_prev(node)`                          | 查找前驱节点   | O(1) avg   |
+| `rb_find(addr, root, cmp)`               | 二叉查找       | O(log n)   |
+| `rb_find_add(node, root, cmp)`           | 查找并插入     | O(log n)   |
+| `rb_add(node, root, cmp)`                | 简单插入       | O(log n)   |
+| `rb_add_cached(node, root, less)`        | 插入到缓存根   | O(log n)   |
+| `rb_first_postorder(root)`               | 后序遍历第一个 | O(log n)   |
+| `rb_next_postorder(node)`                | 后序遍历下一个 | O(1)       |
+| `rb_entry(ptr, type, member)`            | 获取宿主结构体 | O(1)       |
+| `RB_EMPTY_ROOT(root)`                    | 判断树是否为空 | O(1)       |
+| `RB_CLEAR_NODE(node)`                    | 清除节点状态   | O(1)       |
+| `rbtree_postorder_for_each_entry_safe`   | 安全后序遍历   | O(n)       |
 
 #### 3.1.9 增强根节点
 
@@ -1822,35 +1911,51 @@ struct radix_tree_node {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `shift` | `unsigned char` | 当前节点对应的索引位偏移；根节点最大，叶节点为 0 |
-| `offset` | `unsigned char` | 本节点在父节点 `slots[]` 中的下标 |
-| `count` | `unsigned int` | 非空子项计数，用于判断节点是否为空 |
-| `slots[64]` | `void __rcu *` | 64 个槽位：内部节点指针或条目指针；低位编码内部节点 |
-| `tags[3][1]` | `unsigned long` | 每个 slot 的标记位（脏、回写等），用于快速查找带标记条目 |
-| `radix_tree_root.rnode` | `struct radix_tree_node *` | 根节点；空树为 `NULL` |
-| `radix_tree_root.gfp_mask` | `gfp_t` | 节点分配标志 |
+| 字段                         | 类型                         | 作用                                                     |
+| ---------------------------- | ---------------------------- | -------------------------------------------------------- |
+| `shift`                    | `unsigned char`            | 当前节点对应的索引位偏移；根节点最大，叶节点为 0         |
+| `offset`                   | `unsigned char`            | 本节点在父节点 `slots[]` 中的下标                      |
+| `count`                    | `unsigned int`             | 非空子项计数，用于判断节点是否为空                       |
+| `slots[64]`                | `void __rcu *`             | 64 个槽位：内部节点指针或条目指针；低位编码内部节点      |
+| `tags[3][1]`               | `unsigned long`            | 每个 slot 的标记位（脏、回写等），用于快速查找带标记条目 |
+| `radix_tree_root.rnode`    | `struct radix_tree_node *` | 根节点；空树为 `NULL`                                  |
+| `radix_tree_root.gfp_mask` | `gfp_t`                    | 节点分配标志                                             |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph radix {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="radix_tree_node：每层 6 位、64 个 slot、每节点 3 组 tag", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  root [label="{radix_tree_root|xa_lock|gfp_mask|rnode}", fillcolor="#FFF3E0"];
-  nd [label="{radix_tree_node|shift = 6|offset = 父 slot 下标|count = 非空子项数|slots[0..63]|tags[0..2]}"];
-  child [label="子节点 / 条目"];
-  empty [label="NULL slot", style="rounded,dashed", fillcolor="white"];
-
-  root -> nd [label="rnode"];
-  nd -> child [label="slots[10]（bits[11:6]）"];
-  nd -> empty [style=dashed, label="其余 slot"];
+@startuml
+title radix_tree_node：每层 6 位、64 个 slot、每节点 3 组 tag
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "radix_tree_root" as root #FFF3E0 {
+  xa_lock
+  gfp_mask
+  rnode
+}
+class "radix_tree_node" as nd {
+  shift = 6
+  offset = 父 slot 下标
+  count = 非空子项数
+  slots[0..63]
+  tags[0..2]
+}
+class "子节点 / 条目" as child
+class "NULL slot" as empty #FFFFFF
+
+root --> nd : rnode
+nd --> child : slots[10]（bits[11:6]）
+nd ..> empty : 其余 slot
+@enduml
 ```
 
 *结构图：`radix_tree_root` 指向根节点；每个节点有 64 个 slot，按索引的 6 位一段向下；`tags` 与 `slots` 平行，记录每个槽位的标记。*
@@ -1864,22 +1969,28 @@ digraph radix {
 **图解：按索引位逐层下降**
 
 ```plantuml
-@startdot
-digraph radix {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="radix tree：每个节点 64 个 slot，每层消耗 6 位索引", labelloc=t, fontsize=14];
-  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  root [label="root\nshift = 12"];
-  n1 [label="内部节点\nshift = 6\nslot[10]"];
-  leaf [label="条目\nindex = 0x0A001"];
-  empty [label="未用 slot = NULL", style="rounded,dashed", fillcolor="white"];
-
-  root -> n1 [label=" bits[11:6] = 10"];
-  n1 -> leaf [label=" bits[5:0] = 1"];
-  root -> empty [style=dashed, label="其余 63 个 slot"];
+@startuml
+title radix tree：每个节点 64 个 slot，每层消耗 6 位索引
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "root\nshift = 12" as root
+class "内部节点\nshift = 6\nslot[10]" as n1
+class "条目\nindex = 0x0A001" as leaf
+class "未用 slot = NULL" as empty #FFFFFF
+
+root --> n1 : bits[11:6] = 10
+n1 --> leaf : bits[5:0] = 1
+root ..> empty : 其余 63 个 slot
+@enduml
 ```
 
 *图 3-3：插入索引 `0x0A001` 时，按每 6 位一段从根向下创建内部节点，最后把条目放到叶 slot；未使用的 slot 保持 `NULL`，因此稀疏索引不会浪费整棵子树。*
@@ -1903,17 +2014,17 @@ Maple Tree 是 Linux 6.1+ 引入的、为**范围查询优化**的 B-Tree 变体
 
 **Maple Tree vs 红黑树（传统范围管理方式）的差异**
 
-| 特性 | Maple Tree | 红黑树 |
-|---|---|---|
-| 存储单元 | 区间 `[start, last]` | 单点 `key → value` |
-| 范围查找 | 直接区间匹配 O(log n) | 需要遍历找到包含该地址的节点 |
-| 区间插入/删除 | 天然支持，可合并/分割区间 | 需要额外逻辑处理区间重叠 |
-| 节点扇出 | 每个节点多个 slot（类似 B-Tree） | 每个节点 1 个元素 |
-| 树高度 | 较低（大扇出） | 较高（二叉） |
-| RCU 安全 | 内建支持 | 需要外部 RCU 保护 |
-| 空间局部性 | 好（节点内连续存储） | 差（分散的节点分配） |
-| 优点 | 范围操作高效，RCU 安全，缓存友好 | 实现简单成熟，理论验证充分 |
-| 缺点 | 实现复杂，较新（6.1+），工具链支持有限 | 范围操作需要额外逻辑，内存碎片化 |
+| 特性          | Maple Tree                             | 红黑树                           |
+| ------------- | -------------------------------------- | -------------------------------- |
+| 存储单元      | 区间 `[start, last]`                 | 单点 `key → value`            |
+| 范围查找      | 直接区间匹配 O(log n)                  | 需要遍历找到包含该地址的节点     |
+| 区间插入/删除 | 天然支持，可合并/分割区间              | 需要额外逻辑处理区间重叠         |
+| 节点扇出      | 每个节点多个 slot（类似 B-Tree）       | 每个节点 1 个元素                |
+| 树高度        | 较低（大扇出）                         | 较高（二叉）                     |
+| RCU 安全      | 内建支持                               | 需要外部 RCU 保护                |
+| 空间局部性    | 好（节点内连续存储）                   | 差（分散的节点分配）             |
+| 优点          | 范围操作高效，RCU 安全，缓存友好       | 实现简单成熟，理论验证充分       |
+| 缺点          | 实现复杂，较新（6.1+），工具链支持有限 | 范围操作需要额外逻辑，内存碎片化 |
 
 #### 3.3.2 核心数据结构
 
@@ -1944,40 +2055,75 @@ struct maple_node {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `maple_tree.ma_lock` | `spinlock_t` | 保护写操作 |
-| `maple_tree.ma_flags` | `unsigned int` | 树标志（如分配范围模式） |
-| `maple_tree.ma_root` | `void __rcu *` | 根节点；低位编码节点类型 |
-| `ma_state.index` / `last` | `unsigned long` | 当前操作区间的起点/终点 |
-| `ma_state.node` | `struct maple_enode *` | 当前节点（编码指针） |
-| `ma_state.min` / `max` | `unsigned long` | 当前节点覆盖的最小/最大索引 |
-| `ma_state.depth` / `offset` | `unsigned char` | 下降深度 / 节点内槽位 |
-| 内部节点 `pivots[]` | `unsigned long` | 区间分割点 |
-| 内部节点 `slots[]` | `void *` | 子节点或区间条目 |
-| 叶节点 `[start, last]` | `unsigned long` | 该条目覆盖的区间 |
+| 字段                            | 类型                     | 作用                        |
+| ------------------------------- | ------------------------ | --------------------------- |
+| `maple_tree.ma_lock`          | `spinlock_t`           | 保护写操作                  |
+| `maple_tree.ma_flags`         | `unsigned int`         | 树标志（如分配范围模式）    |
+| `maple_tree.ma_root`          | `void __rcu *`         | 根节点；低位编码节点类型    |
+| `ma_state.index` / `last`   | `unsigned long`        | 当前操作区间的起点/终点     |
+| `ma_state.node`               | `struct maple_enode *` | 当前节点（编码指针）        |
+| `ma_state.min` / `max`      | `unsigned long`        | 当前节点覆盖的最小/最大索引 |
+| `ma_state.depth` / `offset` | `unsigned char`        | 下降深度 / 节点内槽位       |
+| 内部节点 `pivots[]`           | `unsigned long`        | 区间分割点                  |
+| 内部节点 `slots[]`            | `void *`               | 子节点或区间条目            |
+| 叶节点 `[start, last]`        | `unsigned long`        | 该条目覆盖的区间            |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph maple {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="Maple Tree 节点概念布局：内部节点看 pivots/slots，叶节点存 [start,last]", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  tree [label="{maple_tree|ma_lock|ma_flags|ma_root}", fillcolor="#FFF3E0"];
-  state [label="{ma_state|tree|index|last|node|min|max|depth|offset|status}"];
-  internal [label="{内部节点|type|parent|pivots[0..n]|slots[0..n]}"];
-  leaf1 [label="{叶节点|type|parent|[start, last]|entry}", fillcolor="#E8F5E9"];
-  leaf2 [label="{叶节点|type|parent|[start, last]|entry}", fillcolor="#E8F5E9"];
-
-  tree -> internal [label="ma_root"];
-  state -> internal [style=dashed, label="mas.node"];
-  internal -> leaf1 [label="slot[i]"];
-  internal -> leaf2 [label="slot[i+1]"];
+@startuml
+title Maple Tree 节点概念布局：内部节点看 pivots/slots，叶节点存 [start,last]
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "maple_tree" as tree #FFF3E0 {
+  ma_lock
+  ma_flags
+  ma_root
+}
+class "ma_state" as state {
+  tree
+  index
+  last
+  node
+  min
+  max
+  depth
+  offset
+  status
+}
+class "内部节点" as internal {
+  type
+  parent
+  pivots[0..n]
+  slots[0..n]
+}
+class "叶节点" as leaf1 #E8F5E9 {
+  type
+  parent
+  [start, last]
+  entry
+}
+class "叶节点" as leaf2 #E8F5E9 {
+  type
+  parent
+  [start, last]
+  entry
+}
+
+tree --> internal : ma_root
+state ..> internal : mas.node
+internal --> leaf1 : slot[i]
+internal --> leaf2 : slot[i+1]
+@enduml
 ```
 
 *结构图：内部节点用 `pivots[]` 划分范围、`slots[]` 指向子节点/条目；叶条目直接保存 `[start, last]`。`ma_state` 是遍历/写入时的游标。*
@@ -2062,25 +2208,33 @@ Maple Tree:  range [0x1000, 0x1FFF] → VMA1
 **图解：区间查找与 pivots**
 
 ```plantuml
-@startdot
-digraph maple {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="Maple Tree：pivots 划分区间，叶子直接保存 [start, last] 条目", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  root [label="{根节点|pivots: 10 | 30 | MAX|slots: 0 | 1 | 2}"];
-  v0 [label="[0, 9]\nVMA1"];
-  v1 [label="[10, 29]\nVMA2"];
-  v2 [label="[30, MAX]\nVMA3"];
-
-  root -> v0 [label="addr < 10"];
-  root -> v1 [label="10 ≤ addr < 30"];
-  root -> v2 [label="addr ≥ 30"];
-
-  q [shape=note, style=filled, fillcolor="#FFF8E1", label="查找 addr=25：\n25 落在 pivot[1]=30 之前、pivot[0]=10 之后\n→ 进入 slot[1]，返回 VMA2\n\n插入/删除导致区间变化时，\n分裂或合并叶子并更新 pivots"];
-  v1 -> q [style=invis];
+@startuml
+title Maple Tree：pivots 划分区间，叶子直接保存 [start, last] 条目
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "根节点" as root {
+  pivots: 10 | 30 | MAX
+  slots: 0 | 1 | 2
+}
+class "[0, 9]\nVMA1" as v0
+class "[10, 29]\nVMA2" as v1
+class "[30, MAX]\nVMA3" as v2
+
+root --> v0 : addr < 10
+root --> v1 : 10 ≤ addr < 30
+root --> v2 : addr ≥ 30
+
+class "查找 addr=25：\n25 落在 pivot[1]=30 之前、pivot[0]=10 之后\n→ 进入 slot[1]，返回 VMA2\n\n插入/删除导致区间变化时，\n分裂或合并叶子并更新 pivots" as note1 #FFF8E1
+@enduml
 ```
 
 *图 3-4：内部节点的 `pivots[]` 划分地址范围，`slots[]` 指向子节点或区间条目；查找 `addr=25` 时只需在 pivots 中定位到 `slot[1]`。区间变化时分裂/合并叶子并更新 pivots。*
@@ -2167,15 +2321,15 @@ B-Tree（及其变体 B+Tree）是文件系统和存储场景的核心数据结�
 
 **B-Tree 与 B+Tree 的核心区别**
 
-| 特性 | B-Tree | B+Tree |
-|------|--------|--------|
-| 数据存储 | 内部节点和叶节点都存储数据 | 仅叶节点存储数据，内部节点只存键 |
-| 键的冗余 | 键不重复，每个键唯一存在 | 键在内部节点中冗余，叶节点包含所有键 |
-| 叶节点链表 | 无 | 叶节点形成双向链表，支持范围扫描 |
-| 内部节点扇出 | 较小（因为要存数据指针） | 更大（只存键，节点可容纳更多条目） |
-| 范围查询 | 需中序遍历，跨节点复杂 | 叶节点链表顺序扫描，高效 |
-| 查找稳定性 | 任何节点找到即返回，不稳定 | 必须到叶节点，路径长度恒定 |
-| 空间利用率 | 较差（节点分裂后内部节点可能空闲） | 更好（内部节点只存键，密度高） |
+| 特性         | B-Tree                             | B+Tree                               |
+| ------------ | ---------------------------------- | ------------------------------------ |
+| 数据存储     | 内部节点和叶节点都存储数据         | 仅叶节点存储数据，内部节点只存键     |
+| 键的冗余     | 键不重复，每个键唯一存在           | 键在内部节点中冗余，叶节点包含所有键 |
+| 叶节点链表   | 无                                 | 叶节点形成双向链表，支持范围扫描     |
+| 内部节点扇出 | 较小（因为要存数据指针）           | 更大（只存键，节点可容纳更多条目）   |
+| 范围查询     | 需中序遍历，跨节点复杂             | 叶节点链表顺序扫描，高效             |
+| 查找稳定性   | 任何节点找到即返回，不稳定         | 必须到叶节点，路径长度恒定           |
+| 空间利用率   | 较差（节点分裂后内部节点可能空闲） | 更好（内部节点只存键，密度高）       |
 
 **内核 B-Tree 变体的设计权衡**
 
@@ -2190,13 +2344,13 @@ B-Tree（及其变体 B+Tree）是文件系统和存储场景的核心数据结�
 
 #### 3.4.2 内核 B-Tree 变体分类
 
-| 变体 | 位置 | 用途 | 核心特点 |
-|------|------|------|----------|
-| **通用 B+Tree** | `lib/btree.c` — `include/linux/btree.h` | 通用的内存 B+Tree | 纯内存实现，支持 u32/u64/128bit 键，基于 mempool 的节点分配 |
-| **Btrfs COW B-Tree** | `fs/btrfs/` | 文件系统元数据管理 | **Copy-on-Write** 写时复制，支持事务、快照，节点大小 4K~64K |
-| **Ext4 Htree** | `fs/ext4/namei.c` | 目录项索引 | 哈希 B-Tree 变体，将文件名哈希为键，最多 2 层 |
-| **XFS In-Core B+Tree** | `fs/xfs/libxfs/xfs_iext_tree.c` | 内存中 extent 映射 | 专用 B+Tree，节点大小 256 字节，叶节点形成双向链表 |
-| **XFS On-Disk B+Tree** | `fs/xfs/libxfs/xfs_btree*.c` | 通用磁盘 B+Tree | 通用 B+Tree 框架，支持多种类型（inode、空闲空间、映射、引用计数等） |
+| 变体                         | 位置                                         | 用途               | 核心特点                                                            |
+| ---------------------------- | -------------------------------------------- | ------------------ | ------------------------------------------------------------------- |
+| **通用 B+Tree**        | `lib/btree.c` — `include/linux/btree.h` | 通用的内存 B+Tree  | 纯内存实现，支持 u32/u64/128bit 键，基于 mempool 的节点分配         |
+| **Btrfs COW B-Tree**   | `fs/btrfs/`                                | 文件系统元数据管理 | **Copy-on-Write** 写时复制，支持事务、快照，节点大小 4K~64K   |
+| **Ext4 Htree**         | `fs/ext4/namei.c`                          | 目录项索引         | 哈希 B-Tree 变体，将文件名哈希为键，最多 2 层                       |
+| **XFS In-Core B+Tree** | `fs/xfs/libxfs/xfs_iext_tree.c`            | 内存中 extent 映射 | 专用 B+Tree，节点大小 256 字节，叶节点形成双向链表                  |
+| **XFS On-Disk B+Tree** | `fs/xfs/libxfs/xfs_btree*.c`               | 通用磁盘 B+Tree    | 通用 B+Tree 框架，支持多种类型（inode、空闲空间、映射、引用计数等） |
 
 #### 3.4.3 通用 B+Tree 实现（`lib/btree.c`）
 
@@ -2229,15 +2383,15 @@ extern struct btree_geo btree_geo64;   // 64 位键
 extern struct btree_geo btree_geo128;  // 128 位键（2 × u64）
 ```
 
-| 结构体/字段 | 作用 |
-|---|---|
-| `btree_head.node` | 根节点指针；节点本身是一段 `unsigned long` 数组，不额外包结构体 |
-| `btree_head.mempool` | 节点内存池；分裂/插入时从这里取新节点，避免在内存紧张时分配失败 |
-| `btree_head.height` | 树高；结合几何结构可算出从根到叶要下降多少层 |
-| `btree_geo.keylen` | 键长（以 `unsigned long` 为单位），32/64/128 位键分别为 1/1/2 |
-| `btree_geo.no_pairs` | 每个节点最多容纳的键值对数，决定扇出 |
-| `btree_geo.no_longs` | 每个节点占用的 `unsigned long` 总数，用于计算节点边界 |
-| `btree_geo32/64/128` | 预定义几何结构，按键宽选择不同的节点布局 |
+| 结构体/字段            | 作用                                                              |
+| ---------------------- | ----------------------------------------------------------------- |
+| `btree_head.node`    | 根节点指针；节点本身是一段 `unsigned long` 数组，不额外包结构体 |
+| `btree_head.mempool` | 节点内存池；分裂/插入时从这里取新节点，避免在内存紧张时分配失败   |
+| `btree_head.height`  | 树高；结合几何结构可算出从根到叶要下降多少层                      |
+| `btree_geo.keylen`   | 键长（以 `unsigned long` 为单位），32/64/128 位键分别为 1/1/2   |
+| `btree_geo.no_pairs` | 每个节点最多容纳的键值对数，决定扇出                              |
+| `btree_geo.no_longs` | 每个节点占用的 `unsigned long` 总数，用于计算节点边界           |
+| `btree_geo32/64/128` | 预定义几何结构，按键宽选择不同的节点布局                          |
 
 节点内部布局见下一小节内嵌的 PlantUML 结构图。
 
@@ -2261,34 +2415,57 @@ extern struct btree_geo btree_geo128;  // 128 位键（2 × u64）
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `btree_head.node` | `unsigned long *` | 根节点；空树为 `NULL` |
-| `btree_head.mempool` | `mempool_t *` | 节点内存池，保证内存压力下仍可分配 |
-| `btree_head.height` | `int` | 树高；叶节点层为 0 |
-| `btree_geo.keylen` | `int` | 键长（以 `unsigned long` 为单位） |
-| `btree_geo.no_pairs` | `int` | 每个节点最多容纳的键值对数 |
-| `btree_geo.no_longs` | `int` | 节点中 key 区占用的 long 数 |
-| 节点 `key[]` | `unsigned long` | 节点前半部分：排序键 |
-| 节点 `val[]` | `void *` | 节点后半部分：键对应的值/子节点指针 |
+| 字段                   | 类型                | 作用                                |
+| ---------------------- | ------------------- | ----------------------------------- |
+| `btree_head.node`    | `unsigned long *` | 根节点；空树为 `NULL`             |
+| `btree_head.mempool` | `mempool_t *`     | 节点内存池，保证内存压力下仍可分配  |
+| `btree_head.height`  | `int`             | 树高；叶节点层为 0                  |
+| `btree_geo.keylen`   | `int`             | 键长（以 `unsigned long` 为单位） |
+| `btree_geo.no_pairs` | `int`             | 每个节点最多容纳的键值对数          |
+| `btree_geo.no_longs` | `int`             | 节点中 key 区占用的 long 数         |
+| 节点 `key[]`         | `unsigned long`   | 节点前半部分：排序键                |
+| 节点 `val[]`         | `void *`          | 节点后半部分：键对应的值/子节点指针 |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph btree {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="lib/btree 节点布局：一个节点内先存 keys，再存 vals", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  head [label="{btree_head|node|mempool|height}", fillcolor="#FFF3E0"];
-  geo [label="{btree_geo|keylen|no_pairs|no_longs}"];
-  nd [label="{节点（128 字节）|key[0]|key[1]|…|key[no_pairs-1]|val[0]|val[1]|…|val[no_pairs-1]}"];
-
-  head -> nd [label="node"];
-  geo -> nd [style=dashed, label="决定槽位数"];
+@startuml
+title lib/btree 节点布局：一个节点内先存 keys，再存 vals
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "btree_head" as head #FFF3E0 {
+  node
+  mempool
+  height
+}
+class "btree_geo" as geo {
+  keylen
+  no_pairs
+  no_longs
+}
+class "节点（128 字节）" as nd {
+  key[0]
+  key[1]
+  …
+  key[no_pairs-1]
+  val[0]
+  val[1]
+  …
+  val[no_pairs-1]
+}
+
+head --> nd : node
+geo ..> nd : 决定槽位数
+@enduml
 ```
 
 *结构图：`btree_head` 只有根指针、内存池和高度；节点是 `key[] + val[]` 的连续布局，没有父指针，分裂时由上层路径维护。*
@@ -2376,32 +2553,60 @@ static void *bval(struct btree_geo *geo, unsigned long *node, int n)
 **图解：B+Tree 叶节点分裂**
 
 ```plantuml
-@startdot
-digraph btree {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="B+Tree 叶节点分裂：中间键提升到父节点", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  subgraph cluster_before {
-    label="分裂前：叶节点已满（8 个键）";
-    fontname="WenQuanYi Zen Hei";
-    pb [label="{叶节点|k1|k2|k3|k4|k5|k6|k7|k8|next}"];
-  }
-
-  subgraph cluster_after {
-    label="插入 k9 后：分裂为两个叶节点，k5 提升";
-    fontname="WenQuanYi Zen Hei";
-    pa [label="{父节点|…|k5|…}"];
-    la [label="{左叶|k1|k2|k3|k4|next}"];
-    lb [label="{右叶|k5|k6|k7|k8|k9|next}"];
-    pa -> la [label="< k5"];
-    pa -> lb [label="≥ k5"];
-    la -> lb [style=dashed, label="叶链"];
-  }
-
-  pb -> pa [style=invis];
+@startuml
+title B+Tree 叶节点分裂：中间键提升到父节点
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+package "分裂前：叶节点已满（8 个键）" as before {
+  class "叶节点" as pb {
+    k1
+    k2
+    k3
+    k4
+    k5
+    k6
+    k7
+    k8
+    next
+  }
+}
+package "插入 k9 后：分裂为两个叶节点，k5 提升" as after {
+  class "父节点" as pa {
+    …
+    k5
+    …
+  }
+  class "左叶" as la {
+    k1
+    k2
+    k3
+    k4
+    next
+  }
+  class "右叶" as lb {
+    k5
+    k6
+    k7
+    k8
+    k9
+    next
+  }
+}
+
+pa --> la : ＜ k5
+pa --> lb : ≥ k5
+la ..> lb : 叶链
+pb -[hidden]- pa
+@enduml
 ```
 
 *图 3-5：叶节点满后分裂为左右两半，中间键提升到父节点；叶节点之间仍用链表相连，范围扫描不穿越父节点。`lib/btree.c` 的分裂逻辑在此基础上递归向上。*
@@ -2489,14 +2694,14 @@ struct btrfs_path {
 };
 ```
 
-| 结构体/字段 | 作用 |
-|---|---|
-| `btrfs_header.csum` / `fsid` | 块校验和与文件系统 UUID，用于识别和校验树块 |
-| `btrfs_header.bytenr` / `generation` | 本块物理地址与事务世代号；COW 时新块获得新地址和世代 |
-| `btrfs_header.owner` / `level` / `nritems` | 所属树根、层级（0 为叶）、条目数 |
-| `btrfs_key_ptr.key` / `blockptr` | 内部节点中：子节点最小键与子节点块地址 |
-| `btrfs_item.key` / `offset` / `size` | 叶节点中：条目键、数据区偏移、数据长度；item 区从头部增长，数据区从尾部增长 |
-| `btrfs_path.nodes[]` / `slots[]` | 缓存根到叶的路径和各层槽位，`btrfs_search_slot()` 沿路径下降并加锁 |
+| 结构体/字段                                      | 作用                                                                        |
+| ------------------------------------------------ | --------------------------------------------------------------------------- |
+| `btrfs_header.csum` / `fsid`                 | 块校验和与文件系统 UUID，用于识别和校验树块                                 |
+| `btrfs_header.bytenr` / `generation`         | 本块物理地址与事务世代号；COW 时新块获得新地址和世代                        |
+| `btrfs_header.owner` / `level` / `nritems` | 所属树根、层级（0 为叶）、条目数                                            |
+| `btrfs_key_ptr.key` / `blockptr`             | 内部节点中：子节点最小键与子节点块地址                                      |
+| `btrfs_item.key` / `offset` / `size`       | 叶节点中：条目键、数据区偏移、数据长度；item 区从头部增长，数据区从尾部增长 |
+| `btrfs_path.nodes[]` / `slots[]`             | 缓存根到叶的路径和各层槽位，`btrfs_search_slot()` 沿路径下降并加锁        |
 
 ##### 3.4.4.3 树结构
 
@@ -2675,14 +2880,14 @@ struct dx_hash_info {
 };
 ```
 
-| 结构体/字段 | 作用 |
-|---|---|
-| `dx_root.info.indirect_levels` | 索引层数；0 表示根块直接指向叶块，1 表示还有一层内部节点 |
-| `dx_root.info.hash_version` | 文件名哈希算法版本（TEA、SIPHASH 等），查找时按它重算哈希 |
-| `dx_entry.hash` / `block` | 哈希键与目标块号；条目数组按 `hash` 升序，支持二分查找 |
-| `dx_node` | 非根内部节点，布局与根块类似，但没有 `dx_root_info` 和伪装目录项 |
-| `dx_frame.bh` / `entries` / `at` | 搜索路径的一层：索引块缓冲、条目数组起点、当前命中条目 |
-| `dx_tail.dt_checksum` | 索引块末尾的 CRC32C 校验和（启用 metadata_csum 时） |
+| 结构体/字段                            | 作用                                                               |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `dx_root.info.indirect_levels`       | 索引层数；0 表示根块直接指向叶块，1 表示还有一层内部节点           |
+| `dx_root.info.hash_version`          | 文件名哈希算法版本（TEA、SIPHASH 等），查找时按它重算哈希          |
+| `dx_entry.hash` / `block`          | 哈希键与目标块号；条目数组按 `hash` 升序，支持二分查找           |
+| `dx_node`                            | 非根内部节点，布局与根块类似，但没有 `dx_root_info` 和伪装目录项 |
+| `dx_frame.bh` / `entries` / `at` | 搜索路径的一层：索引块缓冲、条目数组起点、当前命中条目             |
+| `dx_tail.dt_checksum`                | 索引块末尾的 CRC32C 校验和（启用 metadata_csum 时）                |
 
 ##### 3.4.5.3 树结构
 
@@ -2764,6 +2969,7 @@ at = p - 1;  // 找到第一个不大于 hash 的条目
 ##### 3.4.6.1 概述
 
 XFS 使用了两种 B+Tree 实现：
+
 1. **In-Core Extent B+Tree**（`xfs_iext_tree.c`）：内存中的 extent 映射管理，用于快速查找文件逻辑块到物理块的映射
 2. **On-Disk B+Tree**（`xfs_btree*.c`）：通用的磁盘 B+Tree 框架，用于管理多种元数据（inode、空闲空间、引用计数等）
 
@@ -2802,14 +3008,14 @@ struct xfs_iext_rec {
 // 内部节点：[key1][key2]...[keyN][ptr1][ptr2]...[ptrN]
 ```
 
-| 结构体/字段 | 作用 |
-|---|---|
-| `xfs_iext_leaf.recs[]` | 叶节点中的 extent 记录数组，按文件逻辑偏移排序 |
-| `xfs_iext_leaf.prev` / `next` | 叶节点双向链表；范围扫描时沿 `next` 前进，不必回到父节点 |
-| `xfs_iext_node.keys[]` | 内部节点的分隔键，用于二分/线性定位子节点 |
-| `xfs_iext_node.ptrs[]` | 与 `keys[]` 平行的子节点指针，指向下一层 node 或 leaf |
-| `xfs_iext_rec.lo` | 低 54 位保存 `startoff`，高 10 位保存 `startblock` 的低 10 位 |
-| `xfs_iext_rec.hi` | 低 21 位保存 `length`，bit 21 为 `unwritten`，其余高位保存 `startblock` 高位 |
+| 结构体/字段                       | 作用                                                                               |
+| --------------------------------- | ---------------------------------------------------------------------------------- |
+| `xfs_iext_leaf.recs[]`          | 叶节点中的 extent 记录数组，按文件逻辑偏移排序                                     |
+| `xfs_iext_leaf.prev` / `next` | 叶节点双向链表；范围扫描时沿 `next` 前进，不必回到父节点                         |
+| `xfs_iext_node.keys[]`          | 内部节点的分隔键，用于二分/线性定位子节点                                          |
+| `xfs_iext_node.ptrs[]`          | 与 `keys[]` 平行的子节点指针，指向下一层 node 或 leaf                            |
+| `xfs_iext_rec.lo`               | 低 54 位保存 `startoff`，高 10 位保存 `startblock` 的低 10 位                  |
+| `xfs_iext_rec.hi`               | 低 21 位保存 `length`，bit 21 为 `unwritten`，其余高位保存 `startblock` 高位 |
 
 **查找过程**：
 
@@ -3072,13 +3278,13 @@ xfs_btree_delete(cur, &stat)
 
 **XFS On-Disk B+Tree 的类型支持**
 
-| B-Tree 类型 | 指针格式 | 用途 | 每个 AG | 关键键 |
-|-------------|----------|------|---------|--------|
-| **BMBT** (Block Map Tree) | Long (64-bit) | 文件 extent 映射（逻辑块→物理块） | 每个文件一个 | (startoff, blockcount) |
-| **AGBT** (Allocation Group B-Tree) | Short (32-bit) | 空闲空间管理（按块号和大小） | 2 棵（bno+cnt） | (blockno, length) |
-| **IOBT** (Inode B-Tree) | Short (32-bit) | inode 分配管理 | 1 棵 | (inode #) |
-| **RMAP** (Reverse Mapping B-Tree) | Short (32-bit) | 反向映射（物理块→所有者） | 1 棵 | (blockno, owner, offset) |
-| **REFC** (Reference Count B-Tree) | Short (32-bit) | 引用计数（reflink/dedupe） | 1 棵 | (blockno, refcount) |
+| B-Tree 类型                              | 指针格式       | 用途                               | 每个 AG         | 关键键                   |
+| ---------------------------------------- | -------------- | ---------------------------------- | --------------- | ------------------------ |
+| **BMBT** (Block Map Tree)          | Long (64-bit)  | 文件 extent 映射（逻辑块→物理块） | 每个文件一个    | (startoff, blockcount)   |
+| **AGBT** (Allocation Group B-Tree) | Short (32-bit) | 空闲空间管理（按块号和大小）       | 2 棵（bno+cnt） | (blockno, length)        |
+| **IOBT** (Inode B-Tree)            | Short (32-bit) | inode 分配管理                     | 1 棵            | (inode #)                |
+| **RMAP** (Reverse Mapping B-Tree)  | Short (32-bit) | 反向映射（物理块→所有者）         | 1 棵            | (blockno, owner, offset) |
+| **REFC** (Reference Count B-Tree)  | Short (32-bit) | 引用计数（reflink/dedupe）         | 1 棵            | (blockno, refcount)      |
 
 **B-Tree 类型专用操作函数示例**
 
@@ -3222,34 +3428,34 @@ xfs_alloc_fix_freelist() → xfs_alloc_ag_vextent()
 
 #### 3.4.8 各变体对比总结
 
-| 维度 | 通用 B+Tree (`lib/btree.c`) | Btrfs COW B-Tree | Ext4 Htree | XFS In-Core Extent | XFS On-Disk B+Tree |
-|------|------|------|------|------|------|
-| **用途** | 通用内存查找 | 文件系统元数据 | 目录索引 | 内存中 extent 映射 | 通用磁盘元数据 |
-| **存储** | 纯内存 | 磁盘 + 内存 | 磁盘 + 内存 | 纯内存 | 磁盘 + 内存 |
-| **写时复制** | 否 | 是（核心特性） | 否 | 否 | 否 |
-| **节点大小** | 128 字节 | 4K~64K（块大小） | 4K（块大小） | 256 字节 | 4K（块大小） |
-| **扇出** | 4~8（小扇出） | ~138（大扇出） | ~340 个条目/块 | 21 个条目/叶节点 | ~500+（大扇出） |
-| **查找方式** | 线性扫描 | 二分查找 | 二分查找 | 线性扫描 | 二分查找 |
-| **键类型** | u32/u64/u128 | 三元组 (objectid, type, offset) | 哈希值 | 文件 offset | 多种（BMBT/AGBT/IOBT/RMAP/REFC） |
-| **节点分裂** | 等分键值对 | 等分条目 | 按哈希值等分 | 等分记录 | 等分条目（保证平衡） |
-| **事务支持** | 无 | 完整事务 + 日志 | 日志 (jbd2) | 无 | 完整事务 + 日志 |
-| **快照/回滚** | 无 | 原生支持 | 不支持 | 不支持 | 不支持 |
-| **并发控制** | 调用者负责 | 节点级锁 + 路径锁 | 缓冲区锁 | 调用者负责 | 事务 + 缓冲区锁 |
-| **复杂度** | 低 | 高 | 中 | 中 | 高 |
-| **代码行数** | ~500 | ~10000+ | ~1000 | ~1000 | ~5000+ |
+| 维度                | 通用 B+Tree (`lib/btree.c`) | Btrfs COW B-Tree                | Ext4 Htree     | XFS In-Core Extent | XFS On-Disk B+Tree               |
+| ------------------- | ----------------------------- | ------------------------------- | -------------- | ------------------ | -------------------------------- |
+| **用途**      | 通用内存查找                  | 文件系统元数据                  | 目录索引       | 内存中 extent 映射 | 通用磁盘元数据                   |
+| **存储**      | 纯内存                        | 磁盘 + 内存                     | 磁盘 + 内存    | 纯内存             | 磁盘 + 内存                      |
+| **写时复制**  | 否                            | 是（核心特性）                  | 否             | 否                 | 否                               |
+| **节点大小**  | 128 字节                      | 4K~64K（块大小）                | 4K（块大小）   | 256 字节           | 4K（块大小）                     |
+| **扇出**      | 4~8（小扇出）                 | ~138（大扇出）                  | ~340 个条目/块 | 21 个条目/叶节点   | ~500+（大扇出）                  |
+| **查找方式**  | 线性扫描                      | 二分查找                        | 二分查找       | 线性扫描           | 二分查找                         |
+| **键类型**    | u32/u64/u128                  | 三元组 (objectid, type, offset) | 哈希值         | 文件 offset        | 多种（BMBT/AGBT/IOBT/RMAP/REFC） |
+| **节点分裂**  | 等分键值对                    | 等分条目                        | 按哈希值等分   | 等分记录           | 等分条目（保证平衡）             |
+| **事务支持**  | 无                            | 完整事务 + 日志                 | 日志 (jbd2)    | 无                 | 完整事务 + 日志                  |
+| **快照/回滚** | 无                            | 原生支持                        | 不支持         | 不支持             | 不支持                           |
+| **并发控制**  | 调用者负责                    | 节点级锁 + 路径锁               | 缓冲区锁       | 调用者负责         | 事务 + 缓冲区锁                  |
+| **复杂度**    | 低                            | 高                              | 中             | 中                 | 高                               |
+| **代码行数**  | ~500                          | ~10000+                         | ~1000          | ~1000              | ~5000+                           |
 
 **B-Tree 与红黑树的选择权衡**
 
-| 场景 | 推荐结构 | 原因 |
-|------|----------|------|
-| 内存中少量元素（<1000） | 红黑树 / B+Tree | 红黑树实现简单，B-Tree 小扇出优势不明显 |
-| 内存中大量元素 | B+Tree（小节点） | 缓存局部性更好，访存次数更少 |
-| 磁盘存储（元数据） | B+Tree（大节点） | 高扇出减少 I/O 次数，顺序访问高效 |
-| 频繁插入/删除 | 红黑树 | B-Tree 分裂/合并开销大 |
-| 范围查询 | B+Tree | 叶节点链表，顺序扫描高效 |
-| 写时复制快照 | Btrfs COW B-Tree | 专为 COW 优化 |
-| 通用磁盘元数据 | XFS On-Disk B+Tree | 通用框架，支持多种类型 |
-| 哈希索引 | Ext4 Htree | 哈希 B-Tree，O(log N) 目录查找 |
+| 场景                    | 推荐结构           | 原因                                    |
+| ----------------------- | ------------------ | --------------------------------------- |
+| 内存中少量元素（<1000） | 红黑树 / B+Tree    | 红黑树实现简单，B-Tree 小扇出优势不明显 |
+| 内存中大量元素          | B+Tree（小节点）   | 缓存局部性更好，访存次数更少            |
+| 磁盘存储（元数据）      | B+Tree（大节点）   | 高扇出减少 I/O 次数，顺序访问高效       |
+| 频繁插入/删除           | 红黑树             | B-Tree 分裂/合并开销大                  |
+| 范围查询                | B+Tree             | 叶节点链表，顺序扫描高效                |
+| 写时复制快照            | Btrfs COW B-Tree   | 专为 COW 优化                           |
+| 通用磁盘元数据          | XFS On-Disk B+Tree | 通用框架，支持多种类型                  |
+| 哈希索引                | Ext4 Htree         | 哈希 B-Tree，O(log N) 目录查找          |
 
 ---
 
@@ -3291,36 +3497,57 @@ interval_tree_iter_next(struct interval_tree_node *node,
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `rb` | `struct rb_node` | 挂入红黑树的链接（父/左/右/颜色） |
-| `start` | `unsigned long` | 区间起点（含） |
-| `last` | `unsigned long` | 区间终点（含） |
-| `__subtree_last` | `unsigned long` | 整棵子树中最大的 `last`，用于剪枝 |
-| `rb_root_cached.rb_root` | `struct rb_root` | 红黑树根 |
-| `rb_root_cached.rb_leftmost` | `struct rb_node *` | 最左节点，加速区间查询起点 |
+| 字段                           | 类型                 | 作用                                |
+| ------------------------------ | -------------------- | ----------------------------------- |
+| `rb`                         | `struct rb_node`   | 挂入红黑树的链接（父/左/右/颜色）   |
+| `start`                      | `unsigned long`    | 区间起点（含）                      |
+| `last`                       | `unsigned long`    | 区间终点（含）                      |
+| `__subtree_last`             | `unsigned long`    | 整棵子树中最大的 `last`，用于剪枝 |
+| `rb_root_cached.rb_root`     | `struct rb_root`   | 红黑树根                            |
+| `rb_root_cached.rb_leftmost` | `struct rb_node *` | 最左节点，加速区间查询起点          |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph itree {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="interval_tree_node：红黑树节点 + start/last + 子树最大 last", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  root [label="{rb_root_cached|rb_root|rb_leftmost}", fillcolor="#FFF3E0"];
-  n8 [label="{节点|[8, 15]|__subtree_last = 40|rb_left/rb_right}", fillcolor="#E8F5E9"];
-  n1 [label="{节点|[1, 6]|__subtree_last = 10|rb_left/rb_right}"];
-  n20 [label="{节点|[20, 40]|__subtree_last = 40|rb_left/rb_right}"];
-
-  root -> n8 [label="rb_root"];
-  n8 -> n1 [label="left"];
-  n8 -> n20 [label="right"];
-  n1 -> n8 [style=dashed, color="#2E7D32", label="rb parent"];
-  n20 -> n8 [style=dashed, color="#2E7D32", label="rb parent"];
+@startuml
+title interval_tree_node：红黑树节点 + start/last + 子树最大 last
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "rb_root_cached" as root #FFF3E0 {
+  rb_root
+  rb_leftmost
+}
+class "节点" as n8 #E8F5E9 {
+  [8, 15]
+  __subtree_last = 40
+  rb_left/rb_right
+}
+class "节点" as n1 {
+  [1, 6]
+  __subtree_last = 10
+  rb_left/rb_right
+}
+class "节点" as n20 {
+  [20, 40]
+  __subtree_last = 40
+  rb_left/rb_right
+}
+
+root --> n8 : rb_root
+n8 --> n1 : left
+n8 --> n20 : right
+n1 -[#2E7D32]..> n8 : rb parent
+n20 -[#2E7D32]..> n8 : rb parent
+@enduml
 ```
 
 *结构图：每个节点是增强红黑树节点，`__subtree_last` 记录子树最大终点；查询时先看这个值决定能否整棵剪掉。*
@@ -3353,27 +3580,32 @@ rb_insert_augmented_cached(&node->ITRB, root, leftmost,
 #### 3.5.4 图解：重叠查询与剪枝
 
 ```plantuml
-@startdot
-digraph itree {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="区间树：用子树最大 last 剪枝，查询 [12, 18]", labelloc=t, fontsize=14];
-  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  root [label="[8, 15]\nmax = 40", fillcolor="#E8F5E9"];
-  left [label="[1, 6]\nmax = 10", fillcolor="#EEEEEE"];
-  right [label="[20, 40]\nmax = 40", fillcolor="#FFEBEE"];
-  ll [label="[3, 10]\nmax = 10", fillcolor="#E3F2FD"];
-  lr [label="[9, 12]\nmax = 12", fillcolor="#E3F2FD"];
-
-  root -> left [label="start < 8"];
-  root -> right [label="start ≥ 8"];
-  left -> ll;
-  left -> lr;
-
-  q [shape=note, style=filled, fillcolor="#FFF8E1", label="查询 [12,18]：\n[1,6] 的 max=10 < 12 → 整棵左子树剪掉\n[20,40] 的 start=20 > 18 → 右子树剪掉\n[9,12] 与 [8,15] 命中\n复杂度 O(log n + k)"];
-  right -> q [style=invis];
+@startuml
+title 区间树：用子树最大 last 剪枝，查询 [12, 18]
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "[8, 15]\nmax = 40" as root #E8F5E9
+class "[1, 6]\nmax = 10" as left #EEEEEE
+class "[20, 40]\nmax = 40" as right #FFEBEE
+class "[3, 10]\nmax = 10" as ll #E3F2FD
+class "[9, 12]\nmax = 12" as lr #E3F2FD
+
+root --> left : start < 8
+root --> right : start ≥ 8
+left --> ll
+left --> lr
+
+class "查询 [12,18]：\n[1,6] 的 max=10 < 12 → 整棵左子树剪掉\n[20,40] 的 start=20 > 18 → 右子树剪掉\n[9,12] 与 [8,15] 命中\n复杂度 O(log n + k)" as note1 #FFF8E1
+@enduml
 ```
 
 *图 3-6：查询 [12, 18] 时，[1, 6] 子树的 `max=10 < 12`，整棵剪掉；[20, 40] 的 `start=20 > 18`，右子树剪掉；最终命中 [8, 15] 与 [9, 12]。*
@@ -3425,24 +3657,24 @@ bool interval_tree_span_iter_done(struct interval_tree_span_iter *state);
 
 **内核实现 vs 传统哈希表实现的差异**
 
-| 特性 | 内核实现（拉链法 + `hlist_head`） | 传统实现（如开放地址法） |
-|---|---|---|
-| 冲突解决 | 拉链法（`hlist_head` 链表） | 开放地址法（线性探测、二次探测等） |
-| 内存分配 | 哈希表条目动态分配，`hlist_node` 嵌入 | 所有条目存储在桶数组本身 |
-| 删除操作 | 简单（`hlist_del`），O(1) | 复杂（需要处理探测链断裂），需要标记删除 |
-| 扩容 | 通常不自动扩容（桶大小在编译时确定） | 负载因子达到阈值时自动扩容 |
-| 缓存局部性 | 差（链表节点分散在内存中） | 好（连续存储，遍历桶时缓存命中率高） |
-| 缺点 | 链表节点分散，缓存不友好，需要额外内存分配 | 删除复杂，扩容开销大，负载因子过高时性能急剧下降 |
+| 特性       | 内核实现（拉链法 + `hlist_head`）        | 传统实现（如开放地址法）                         |
+| ---------- | ------------------------------------------ | ------------------------------------------------ |
+| 冲突解决   | 拉链法（`hlist_head` 链表）              | 开放地址法（线性探测、二次探测等）               |
+| 内存分配   | 哈希表条目动态分配，`hlist_node` 嵌入    | 所有条目存储在桶数组本身                         |
+| 删除操作   | 简单（`hlist_del`），O(1)                | 复杂（需要处理探测链断裂），需要标记删除         |
+| 扩容       | 通常不自动扩容（桶大小在编译时确定）       | 负载因子达到阈值时自动扩容                       |
+| 缓存局部性 | 差（链表节点分散在内存中）                 | 好（连续存储，遍历桶时缓存命中率高）             |
+| 缺点       | 链表节点分散，缓存不友好，需要额外内存分配 | 删除复杂，扩容开销大，负载因子过高时性能急剧下降 |
 
 **节点结构与关键字段**
 
 静态哈希表本身不是独立结构体，而是 `struct hlist_head` 的数组；节点是嵌入宿主的 `struct hlist_node`：
 
-| 组成 | 类型 | 作用 |
-|---|---|---|
-| 桶数组 | `struct hlist_head ht[1 << bits]` | 每个桶只存一个首指针，节省内存 |
-| 桶首指针 | `hlist_head.first` | 指向该桶第一条冲突链节点 |
-| 链节点 | `hlist_node.next` / `pprev` | 正向链 + 反向定位；字段语义见 2.2 节 |
+| 组成     | 类型                                | 作用                                 |
+| -------- | ----------------------------------- | ------------------------------------ |
+| 桶数组   | `struct hlist_head ht[1 << bits]` | 每个桶只存一个首指针，节省内存       |
+| 桶首指针 | `hlist_head.first`                | 指向该桶第一条冲突链节点             |
+| 链节点   | `hlist_node.next` / `pprev`     | 正向链 + 反向定位；字段语义见 2.2 节 |
 
 **链接图**见 4.5 节的“拉链法”图：桶数组 → 冲突链 → `NULL`。
 
@@ -3471,18 +3703,18 @@ u64 hash_64(u64 val, unsigned int bits);
 
 ### 4.3 完整 API 参考
 
-| 宏/函数 | 功能 |
-|---|---|
-| `DEFINE_HASHTABLE(name, bits)` | 静态定义哈希表 |
-| `DECLARE_HASHTABLE(name, bits)` | 声明哈希表 |
-| `hash_init(htable)` | 初始化哈希表 |
-| `hash_add(htable, node, key)` | 插入节点 |
-| `hash_del(node)` | 删除节点 |
-| `hash_for_each(htable, bkt, obj, member)` | 遍历所有桶 |
-| `hash_for_each_safe(htable, bkt, tmp, obj, member)` | 安全遍历 |
-| `hash_for_each_possible(htable, obj, member, key)` | 在指定桶中遍历 |
+| 宏/函数                                                        | 功能           |
+| -------------------------------------------------------------- | -------------- |
+| `DEFINE_HASHTABLE(name, bits)`                               | 静态定义哈希表 |
+| `DECLARE_HASHTABLE(name, bits)`                              | 声明哈希表     |
+| `hash_init(htable)`                                          | 初始化哈希表   |
+| `hash_add(htable, node, key)`                                | 插入节点       |
+| `hash_del(node)`                                             | 删除节点       |
+| `hash_for_each(htable, bkt, obj, member)`                    | 遍历所有桶     |
+| `hash_for_each_safe(htable, bkt, tmp, obj, member)`          | 安全遍历       |
+| `hash_for_each_possible(htable, obj, member, key)`           | 在指定桶中遍历 |
 | `hash_for_each_possible_safe(htable, obj, tmp, member, key)` | 安全遍历指定桶 |
-| `hash_for_each_key(htable, obj, member, key)` | 遍历指定键的桶 |
+| `hash_for_each_key(htable, obj, member, key)`                | 遍历指定键的桶 |
 
 ### 4.4 完整使用示例
 
@@ -3561,32 +3793,38 @@ void ht_dump(void)
 **图解：拉链法的插入与查找**
 
 ```plantuml
-@startdot
-digraph hash {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="拉链法哈希表：桶数组 + hlist", labelloc=t, fontsize=14];
-  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  b0 [label="bucket[0]"];
-  b1 [label="bucket[1]"];
-  b2 [label="bucket[2]"];
-  b3 [label="bucket[3]"];
-  n17 [label="key=17\nh=1"];
-  n33 [label="key=33\nh=1"];
-  n58 [label="key=58\nh=2"];
-  null0 [shape=plaintext, label="NULL"];
-  null1 [shape=plaintext, label="NULL"];
-  null2 [shape=plaintext, label="NULL"];
-
-  b0 -> null0;
-  b1 -> n17;
-  n17 -> n33;
-  n33 -> null1 [label="插入在头部"];
-  b2 -> n58;
-  n58 -> null2;
-  b3 -> null2 [style=invis];
+@startuml
+title 拉链法哈希表：桶数组 + hlist
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "bucket[0]" as b0
+class "bucket[1]" as b1
+class "bucket[2]" as b2
+class "bucket[3]" as b3
+class "key=17\nh=1" as n17
+class "key=33\nh=1" as n33
+class "key=58\nh=2" as n58
+class "NULL" as null0 #FFFFFF
+class "NULL" as null1 #FFFFFF
+class "NULL" as null2 #FFFFFF
+
+b0 --> null0
+b1 --> n17
+n17 --> n33
+n33 --> null1 : 插入在头部
+b2 --> n58
+n58 --> null2
+b2 -[hidden]- b3
+@enduml
 ```
 
 *图 4-1：`hash_add()` 把节点插入对应桶的 `hlist` 头部；查找时先算桶号，再在桶内逐个比较键。删除通过 `hlist_del()` 的 `pprev` 在 O(1) 完成。*
@@ -3597,14 +3835,14 @@ digraph hash {
 
 `hashtable.h` 的桶数组大小在编译期固定，不能扩容。`rhashtable` 解决的是**运行期动态扩容/缩容**的问题，同时保证 RCU 读者在扩容过程中仍可无锁查找。它被 netfilter（nft set）、netlink、连接跟踪等需要承载大量动态条目的子系统使用。
 
-| 特性 | `rhashtable` | 静态 `hashtable.h` |
-|---|---|---|
-| 桶数组 | 运行期分配，可增长/收缩 | 编译期固定 |
-| 读并发 | RCU 无锁 | 需外部锁/RCU |
-| 写并发 | 每桶锁 + 扩容互斥锁 | 调用者自行加锁 |
-| 扩容 | 负载 > 75% 自动扩容，逐桶 rehash | 不支持 |
+| 特性     | `rhashtable`                            | 静态 `hashtable.h`      |
+| -------- | ----------------------------------------- | ------------------------- |
+| 桶数组   | 运行期分配，可增长/收缩                   | 编译期固定                |
+| 读并发   | RCU 无锁                                  | 需外部锁/RCU              |
+| 写并发   | 每桶锁 + 扩容互斥锁                       | 调用者自行加锁            |
+| 扩容     | 负载 > 75% 自动扩容，逐桶 rehash          | 不支持                    |
 | 元素定位 | `rht_obj()` 由 `head_offset` 反推宿主 | 调用者用 `container_of` |
-| 典型场景 | nft set、netlink、conntrack | PID 表、dentry 小表 |
+| 典型场景 | nft set、netlink、conntrack               | PID 表、dentry 小表       |
 
 #### 4.6.2 核心数据结构
 
@@ -3653,41 +3891,67 @@ struct rhashtable_params {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `rhash_head.next` | `struct rhash_head __rcu *` | 桶内冲突链指针；嵌入宿主对象 |
-| `bucket_table.size` | `unsigned int` | 桶数量，必须是 2 的幂 |
-| `bucket_table.hash_rnd` | `u32` | 哈希随机种子，防止哈希碰撞攻击 |
-| `bucket_table.future_tbl` | `struct bucket_table __rcu *` | 扩容中的新表；读者见到它会重试 |
-| `bucket_table.buckets[]` | `rhash_lock_head __rcu *` | 桶数组；每个桶含锁位/链头 |
-| `rhashtable.tbl` | `struct bucket_table __rcu *` | 当前表 |
-| `rhashtable.key_len` | `unsigned int` | 键长度 |
-| `rhashtable.p` | `struct rhashtable_params` | `key_offset`/`head_offset`/`hashfn`/`obj_cmpfn` 等 |
-| `rhashtable.nelems` | `atomic_t` | 元素计数，决定扩容/缩容 |
-| `rhashtable.mutex` | `struct mutex` | 保护表切换 |
-| `rhashtable.run_work` | `struct work_struct` | 异步扩容/缩容 worker |
+| 字段                        | 类型                            | 作用                                                       |
+| --------------------------- | ------------------------------- | ---------------------------------------------------------- |
+| `rhash_head.next`         | `struct rhash_head __rcu *`   | 桶内冲突链指针；嵌入宿主对象                               |
+| `bucket_table.size`       | `unsigned int`                | 桶数量，必须是 2 的幂                                      |
+| `bucket_table.hash_rnd`   | `u32`                         | 哈希随机种子，防止哈希碰撞攻击                             |
+| `bucket_table.future_tbl` | `struct bucket_table __rcu *` | 扩容中的新表；读者见到它会重试                             |
+| `bucket_table.buckets[]`  | `rhash_lock_head __rcu *`     | 桶数组；每个桶含锁位/链头                                  |
+| `rhashtable.tbl`          | `struct bucket_table __rcu *` | 当前表                                                     |
+| `rhashtable.key_len`      | `unsigned int`                | 键长度                                                     |
+| `rhashtable.p`            | `struct rhashtable_params`    | `key_offset`/`head_offset`/`hashfn`/`obj_cmpfn` 等 |
+| `rhashtable.nelems`       | `atomic_t`                    | 元素计数，决定扩容/缩容                                    |
+| `rhashtable.mutex`        | `struct mutex`                | 保护表切换                                                 |
+| `rhashtable.run_work`     | `struct work_struct`          | 异步扩容/缩容 worker                                       |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph rht {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="rhashtable：bucket_table 的桶数组 + rhash_head 链", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  ht [label="{rhashtable|tbl|key_len|p|nelems|mutex|run_work}", fillcolor="#FFF3E0"];
-  tbl [label="{bucket_table|size|hash_rnd|future_tbl|buckets[]}"];
-  b [label="bucket[i]\nrhash_lock_head"];
-  e [label="{宿主对象|rhash_head.next|key|value}"];
-  e2 [label="{宿主对象|rhash_head.next|key|value}"];
-
-  ht -> tbl [label="tbl"];
-  tbl -> b [label="buckets[i]"];
-  b -> e [label="链头"];
-  e -> e2 [label="next"];
+@startuml
+title rhashtable：bucket_table 的桶数组 + rhash_head 链
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "rhashtable" as ht #FFF3E0 {
+  tbl
+  key_len
+  p
+  nelems
+  mutex
+  run_work
+}
+class "bucket_table" as tbl {
+  size
+  hash_rnd
+  future_tbl
+  buckets[]
+}
+class "bucket[i]\nrhash_lock_head" as b
+class "宿主对象" as e {
+  rhash_head.next
+  key
+  value
+}
+class "宿主对象" as e2 {
+  rhash_head.next
+  key
+  value
+}
+
+ht --> tbl : tbl
+tbl --> b : buckets[i]
+b --> e : 链头
+e --> e2 : next
+@enduml
 ```
 
 *结构图：`rhashtable.tbl` 指向 `bucket_table`；`buckets[i]` 是桶链头，冲突元素通过嵌入的 `rhash_head.next` 串起来；`future_tbl` 在扩容期间指向新表。*
@@ -3793,34 +4057,44 @@ struct rt_prio_array {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `bitmap[MAX_RT_PRIO+1]` | `DECLARE_BITMAP` | 第 `prio` 位为 1 表示 `queue[prio]` 非空 |
-| `queue[MAX_RT_PRIO]` | `struct list_head` | 每个优先级一条任务链；链头是 `task_struct.run_list` 的锚点 |
+| 字段                      | 类型                 | 作用                                                         |
+| ------------------------- | -------------------- | ------------------------------------------------------------ |
+| `bitmap[MAX_RT_PRIO+1]` | `DECLARE_BITMAP`   | 第 `prio` 位为 1 表示 `queue[prio]` 非空                 |
+| `queue[MAX_RT_PRIO]`    | `struct list_head` | 每个优先级一条任务链；链头是 `task_struct.run_list` 的锚点 |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph rt {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="rt_prio_array：位图索引 + 每优先级一条链表", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  arr [label="{rt_prio_array|bitmap[MAX_RT_PRIO+1]|queue[MAX_RT_PRIO]|...}", fillcolor="#FFF3E0"];
-  q99 [label="queue[99]\nlist_head"];
-  q98 [label="queue[98]\nlist_head"];
-  q0 [label="queue[0]\nlist_head"];
-  t1 [label="task_struct\nrun_list"];
-  t2 [label="task_struct\nrun_list"];
-
-  arr -> q99 [label="bit 99 = 1"];
-  arr -> q98 [label="bit 98 = 0"];
-  arr -> q0 [label="bit 0 = 1"];
-  q99 -> t1 [label="链表头"];
-  t1 -> t2 [label="run_list"];
+@startuml
+title rt_prio_array：位图索引 + 每优先级一条链表
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "rt_prio_array" as arr #FFF3E0 {
+  bitmap[MAX_RT_PRIO+1]
+  queue[MAX_RT_PRIO]
+  ...
+}
+class "queue[99]\nlist_head" as q99
+class "queue[98]\nlist_head" as q98
+class "queue[0]\nlist_head" as q0
+class "task_struct\nrun_list" as t1
+class "task_struct\nrun_list" as t2
+
+arr --> q99 : bit 99 = 1
+arr --> q98 : bit 98 = 0
+arr --> q0 : bit 0 = 1
+q99 --> t1 : 链表头
+t1 --> t2 : run_list
+@enduml
 ```
 
 *结构图：`rt_prio_array` 把位图和 100 条优先级链表放在一起；位图负责 O(1) 选最高优先级，链表负责同优先级 FIFO。*
@@ -3878,16 +4152,16 @@ stop
 
 **内核分级时间轮 vs 简单时间轮（不分级）的差异**
 
-| 特性 | 内核分级时间轮 | 简单时间轮（不分级） |
-|---|---|---|
-| 定时器容量 | 无上限（通过级联扩展到任意超时时间） | 受限于桶数组大小 |
-| 插入复杂度 | O(1) | O(1) |
-| 到期处理 | 每个 tick O(1)（摊销），级联偶尔 O(n) | 每个 tick O(1) |
-| 精度 | 恒定（1 tick） | 随超时时间增加而降低（除非增加桶大小） |
-| 内存占用 | 固定大小（`LVL_DEPTH × 64` 个桶，通常 8/9 级） | 需要大量桶来支持长超时时间 |
-| 支持超时范围 | 任意大（通过级联上级桶） | 受限于桶数组大小（如 64 个桶只能支持 64 ticks） |
-| 优点 | 内存占用固定，可支持任意超时时间，精度恒定 | 实现简单，无级联开销 |
-| 缺点 | 实现复杂，级联操作有瞬时开销（摊销 O(1)） | 范围受限，内存和精度不可兼得 |
+| 特性         | 内核分级时间轮                                    | 简单时间轮（不分级）                            |
+| ------------ | ------------------------------------------------- | ----------------------------------------------- |
+| 定时器容量   | 无上限（通过级联扩展到任意超时时间）              | 受限于桶数组大小                                |
+| 插入复杂度   | O(1)                                              | O(1)                                            |
+| 到期处理     | 每个 tick O(1)（摊销），级联偶尔 O(n)             | 每个 tick O(1)                                  |
+| 精度         | 恒定（1 tick）                                    | 随超时时间增加而降低（除非增加桶大小）          |
+| 内存占用     | 固定大小（`LVL_DEPTH × 64` 个桶，通常 8/9 级） | 需要大量桶来支持长超时时间                      |
+| 支持超时范围 | 任意大（通过级联上级桶）                          | 受限于桶数组大小（如 64 个桶只能支持 64 ticks） |
+| 优点         | 内存占用固定，可支持任意超时时间，精度恒定        | 实现简单，无级联开销                            |
+| 缺点         | 实现复杂，级联操作有瞬时开销（摊销 O(1)）         | 范围受限，内存和精度不可兼得                    |
 
 #### 5.2.2 核心数据结构
 
@@ -3931,38 +4205,62 @@ struct timer_list {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `timer_base.lock` | `raw_spinlock_t` | 保护本 CPU 的 `vectors` / `pending_map` |
-| `timer_base.running_timer` | `struct timer_list *` | 正在执行回调的定时器；删除它时需要特殊同步 |
-| `timer_base.clk` | `unsigned long` | 入队时使用的基准时钟（到期处理时比 `jiffies` 略超前） |
-| `timer_base.next_expiry` | `unsigned long` | 最早到期时间，供 idle/nohz 判断 |
-| `timer_base.pending_map` | `DECLARE_BITMAP` | `WHEEL_SIZE` 个 bit，标记哪个桶非空 |
-| `timer_base.vectors[]` | `struct hlist_head` | `WHEEL_SIZE` 个桶，按 `level * 64 + idx` 拍平存放 |
-| `timer_list.entry` | `struct hlist_node` | 挂到 `vectors[idx]` 的链节点 |
-| `timer_list.expires` | `unsigned long` | 到期 jiffies |
-| `timer_list.function` | 函数指针 | 到期回调 |
-| `timer_list.flags` | `u32` | `TIMER_MIGRATING`/`TIMER_DEFERRABLE`/`TIMER_PINNED` 等状态，以及 CPU 号与桶索引 |
+| 字段                         | 类型                    | 作用                                                                                  |
+| ---------------------------- | ----------------------- | ------------------------------------------------------------------------------------- |
+| `timer_base.lock`          | `raw_spinlock_t`      | 保护本 CPU 的 `vectors` / `pending_map`                                           |
+| `timer_base.running_timer` | `struct timer_list *` | 正在执行回调的定时器；删除它时需要特殊同步                                            |
+| `timer_base.clk`           | `unsigned long`       | 入队时使用的基准时钟（到期处理时比 `jiffies` 略超前）                               |
+| `timer_base.next_expiry`   | `unsigned long`       | 最早到期时间，供 idle/nohz 判断                                                       |
+| `timer_base.pending_map`   | `DECLARE_BITMAP`      | `WHEEL_SIZE` 个 bit，标记哪个桶非空                                                 |
+| `timer_base.vectors[]`     | `struct hlist_head`   | `WHEEL_SIZE` 个桶，按 `level * 64 + idx` 拍平存放                                 |
+| `timer_list.entry`         | `struct hlist_node`   | 挂到 `vectors[idx]` 的链节点                                                        |
+| `timer_list.expires`       | `unsigned long`       | 到期 jiffies                                                                          |
+| `timer_list.function`      | 函数指针                | 到期回调                                                                              |
+| `timer_list.flags`         | `u32`                 | `TIMER_MIGRATING`/`TIMER_DEFERRABLE`/`TIMER_PINNED` 等状态，以及 CPU 号与桶索引 |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph timer {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="timer_base / timer_list：分层时间轮的节点组织", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  base [label="{timer_base|lock|running_timer|clk|next_expiry|cpu|pending_map[WHEEL_SIZE]|vectors[WHEEL_SIZE]}", fillcolor="#FFF3E0"];
-  vec [label="vectors[level*64 + idx]\nstruct hlist_head"];
-  t1 [label="{timer_list|entry: hlist_node|expires|function|flags}"];
-  t2 [label="{timer_list|entry: hlist_node|expires|function|flags}"];
-
-  base -> vec [label="vectors[]"];
-  vec -> t1 [label="hlist 链头"];
-  t1 -> t2 [label="entry.next"];
+@startuml
+title timer_base / timer_list：分层时间轮的节点组织
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "timer_base" as base #FFF3E0 {
+  lock
+  running_timer
+  clk
+  next_expiry
+  cpu
+  pending_map[WHEEL_SIZE]
+  vectors[WHEEL_SIZE]
+}
+class "vectors[level*64 + idx]\nstruct hlist_head" as vec
+class "timer_list" as t1 {
+  entry: hlist_node
+  expires
+  function
+  flags
+}
+class "timer_list" as t2 {
+  entry: hlist_node
+  expires
+  function
+  flags
+}
+
+base --> vec : vectors[]
+vec --> t1 : hlist 链头
+t1 --> t2 : entry.next
+@enduml
 ```
 
 *结构图：`timer_base.vectors[]` 是所有层级的桶数组（`level * 64 + idx`），每个桶是 `hlist_head`；`timer_list.entry` 把定时器挂进对应桶。*
@@ -4005,11 +4303,11 @@ idx = LVL_OFFS(level) + (((expires >> (level * 3)) + 1) & 63)
 
 **复杂度分析**
 
-| 操作 | 时间复杂度 | 说明 |
-|---|---|---|
-| 插入定时器 | O(1) | 计算层级与桶号，插入 `vectors[idx]` 头部 |
-| 到期处理（每个 tick） | O(1) avg | 通常只处理 `pending_map` 中最近的桶 |
-| 级联（偶尔发生） | O(n) amortized | 高层桶中的定时器重新分发到低层，分摊到每个 tick 为 O(1) |
+| 操作                  | 时间复杂度     | 说明                                                    |
+| --------------------- | -------------- | ------------------------------------------------------- |
+| 插入定时器            | O(1)           | 计算层级与桶号，插入 `vectors[idx]` 头部              |
+| 到期处理（每个 tick） | O(1) avg       | 通常只处理 `pending_map` 中最近的桶                   |
+| 级联（偶尔发生）      | O(n) amortized | 高层桶中的定时器重新分发到低层，分摊到每个 tick 为 O(1) |
 
 **图解：按超时距离选择层级**
 
@@ -4173,49 +4471,60 @@ struct min_heap_callbacks {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `nr` | `size_t` | 当前堆中元素个数；`nr == 0` 为空 |
-| `size` | `size_t` | `data` 指向数组的容量（元素个数） |
-| `data` | `element_type *` | 堆元素数组；下标即完全二叉树编号 |
+| 字段               | 类型               | 作用                                                    |
+| ------------------ | ------------------ | ------------------------------------------------------- |
+| `nr`             | `size_t`         | 当前堆中元素个数；`nr == 0` 为空                      |
+| `size`           | `size_t`         | `data` 指向数组的容量（元素个数）                     |
+| `data`           | `element_type *` | 堆元素数组；下标即完全二叉树编号                        |
 | `preallocated[]` | `element_type[]` | 静态预分配数组；`data == preallocated` 时无需额外内存 |
 
 `min_heap_callbacks`：
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `less` | 函数指针 | 比较两个元素，决定最小堆偏序 |
-| `swp` | 函数指针 | 交换两个元素；为 `NULL` 时按元素大小自动选择 8/4/1 字节交换 |
+| 字段     | 类型     | 作用                                                          |
+| -------- | -------- | ------------------------------------------------------------- |
+| `less` | 函数指针 | 比较两个元素，决定最小堆偏序                                  |
+| `swp`  | 函数指针 | 交换两个元素；为 `NULL` 时按元素大小自动选择 8/4/1 字节交换 |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph heap {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="min_heap：结构体头 + 连续数组，数组下标即完全二叉树编号", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-
-  head [label="{min_heap|nr|size|data|preallocated[]}", fillcolor="#FFF3E0"];
-  a0 [shape=circle, label="0\n最小"];
-  a1 [shape=circle, label="1"];
-  a2 [shape=circle, label="2"];
-  a3 [shape=circle, label="3"];
-  a4 [shape=circle, label="4"];
-  a5 [shape=circle, label="5"];
-  a6 [shape=circle, label="6"];
-
-  head -> a0 [label="data"];
-  a0 -> a1;
-  a0 -> a2;
-  a1 -> a3;
-  a1 -> a4;
-  a2 -> a5;
-  a2 -> a6;
-
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="父：parent = (i - 1) / 2\n左子：2i + 1，右子：2i + 2\nnr = 当前元素数，size = 容量"];
-  a2 -> note [style=invis];
+@startuml
+title min_heap：结构体头 + 连续数组，数组下标即完全二叉树编号
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "min_heap" as head #FFF3E0 {
+  nr
+  size
+  data
+  preallocated[]
+}
+class "0\n最小" as a0
+class "1" as a1
+class "2" as a2
+class "3" as a3
+class "4" as a4
+class "5" as a5
+class "6" as a6
+
+head --> a0 : data
+a0 --> a1
+a0 --> a2
+a1 --> a3
+a1 --> a4
+a2 --> a5
+a2 --> a6
+
+class "父：parent = (i - 1) / 2\n左子：2i + 1，右子：2i + 2\nnr = 当前元素数，size = 容量" as note1 #FFF8E1
+@enduml
 ```
 
 *结构图：`min_heap` 头 + 连续数组；数组下标 0 是根，`2i+1`/`2i+2` 是左右子。*
@@ -4261,46 +4570,45 @@ while (a) {
 **图解：push 上滤与 pop 下滤**
 
 ```plantuml
-@startdot
-digraph heap {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="min_heap：数组即完全二叉树，push 上滤 / pop 下滤", labelloc=t, fontsize=14];
-  node [shape=circle, style="filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  subgraph cluster_push {
-    label="push(3)：从末尾上滤";
-    fontname="WenQuanYi Zen Hei";
-    p0 [label="5"];
-    p1 [label="8", fillcolor="#FFEBEE"];
-    p2 [label="9"];
-    p3 [label="12"];
-    p4 [label="3", fillcolor="#E8F5E9"];
-    p0 -> p1;
-    p0 -> p2;
-    p1 -> p3;
-    p1 -> p4 [style=dashed, label="swap"];
-    p4 -> p1 [style=dashed, color="#2E7D32", label="上滤"];
-    pn [shape=note, style=filled, fillcolor="#FFF8E1", label="3 与 8 交换后：\n3 成为左子，3 > 5，停止"];
-    p2 -> pn [style=invis];
-  }
-
-  subgraph cluster_pop {
-    label="pop()：5 出堆，末元素 12 移到根后下滤";
-    fontname="WenQuanYi Zen Hei";
-    q0 [label="8"];
-    q1 [label="12"];
-    q2 [label="9"];
-    q5 [label="5\n已出堆", style="dashed,filled", fillcolor="#FFEBEE"];
-    q0 -> q1 [label="与较小 child 交换"];
-    q0 -> q2;
-    q5 -> q0 [style=dashed, color="#C62828", label="pop"];
-    qn [shape=note, style=filled, fillcolor="#FFF8E1", label="12 从末尾移到根；\n子节点 8 < 9，12 与 8 交换；\n8 成为新根"];
-    q2 -> qn [style=invis];
-  }
-
-  p0 -> q0 [style=invis];
+@startuml
+title min_heap：数组即完全二叉树，push 上滤 / pop 下滤
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+package "push(3)：从末尾上滤" as pushpkg {
+  class "5" as p0
+  class "8" as p1 #FFEBEE
+  class "9" as p2
+  class "12" as p3
+  class "3" as p4 #E8F5E9
+  class "3 与 8 交换后：\n3 成为左子，3 > 5，停止" as pn #FFF8E1
+}
+package "pop()：5 出堆，末元素 12 移到根后下滤" as poppkg {
+  class "8" as q0
+  class "12" as q1
+  class "9" as q2
+  class "5\n已出堆" as q5 #FFEBEE
+  class "12 从末尾移到根；\n子节点 8 < 9，12 与 8 交换；\n8 成为新根" as qn #FFF8E1
+}
+
+p0 --> p1
+p0 --> p2
+p1 --> p3
+p1 ..> p4 : swap
+p4 -[#2E7D32]..> p1 : 上滤
+q0 --> q1 : 与较小 child 交换
+q0 --> q2
+q5 -[#C62828]..> q0 : pop
+p0 -[hidden]- q0
+@enduml
 ```
 
 *图 5-3：`push(3)` 把 3 放到数组末尾，然后与父节点 8 比较并交换；`pop()` 把末元素 12 放到根，再与较小的子节点 8 交换，恢复堆序。*
@@ -4360,26 +4668,37 @@ void bitmap_xor(unsigned long *dst, const unsigned long *src1,
 
 位图没有“节点”，其组织是连续的 `unsigned long` 数组：
 
-| 组成 | 类型 | 作用 |
-|---|---|---|
-| `word[]` | `unsigned long[]` | 每个 word 保存 `BITS_PER_LONG` 个 bit |
-| `DECLARE_BITMAP(name, bits)` | 宏 | 展开为 `unsigned long name[BITS_TO_LONGS(bits)]` |
-| 位号 `nr` | 整数 | `word[nr / BITS_PER_LONG]` 的第 `nr % BITS_PER_LONG` 位 |
-| 范围操作 | `bitmap_set/clear` | 对起始位和长度做跨 word 的掩码处理 |
+| 组成                           | 类型                 | 作用                                                        |
+| ------------------------------ | -------------------- | ----------------------------------------------------------- |
+| `word[]`                     | `unsigned long[]`  | 每个 word 保存 `BITS_PER_LONG` 个 bit                     |
+| `DECLARE_BITMAP(name, bits)` | 宏                   | 展开为 `unsigned long name[BITS_TO_LONGS(bits)]`          |
+| 位号 `nr`                    | 整数                 | `word[nr / BITS_PER_LONG]` 的第 `nr % BITS_PER_LONG` 位 |
+| 范围操作                       | `bitmap_set/clear` | 对起始位和长度做跨 word 的掩码处理                          |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph bitmap {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="bitmap：以 unsigned long 为单位的连续位数组", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-
-  bm [label="{DECLARE_BITMAP(name, bits)|word[0]：bit 0..63|word[1]：bit 64..127|word[2]：bit 128..191|…}", fillcolor="#FFF3E0"];
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="bit 编号 n：\n所在 word = n / BITS_PER_LONG\nword 内位号 = n % BITS_PER_LONG\n容器：cpumask、nodemask、页标志、ID 分配位图"];
-  bm -> note [style=invis];
+@startuml
+title bitmap：以 unsigned long 为单位的连续位数组
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "DECLARE_BITMAP(name, bits)" as bm #FFF3E0 {
+  word[0]：bit 0..63
+  word[1]：bit 64..127
+  word[2]：bit 128..191
+  …
+}
+class "bit 编号 n：\n所在 word = n / BITS_PER_LONG\nword 内位号 = n % BITS_PER_LONG\n容器：cpumask、nodemask、页标志、ID 分配位图" as note1 #FFF8E1
+@enduml
 ```
 
 *结构图：bitmap 是一段连续 word；位号决定 word 下标和 word 内偏移，没有指针链接。*
@@ -4412,44 +4731,44 @@ stop
 
 #### 6.1.3 完整 API 参考
 
-| 函数/宏 | 功能 |
-|---|---|
-| `DECLARE_BITMAP(name, bits)` | 声明位图 |
-| `bitmap_zero(dst, nbits)` | 全部清零 |
-| `bitmap_fill(dst, nbits)` | 全部置 1 |
-| `bitmap_copy(dst, src, nbits)` | 复制位图 |
-| `bitmap_set(dst, start, nbits)` | 从 start 开始置 nbits 个 1 |
-| `bitmap_clear(dst, start, nbits)` | 从 start 开始清零 nbits 个 |
-| `bitmap_shift_right(dst, src, shift, nbits)` | 右移 |
-| `bitmap_shift_left(dst, src, shift, nbits)` | 左移 |
-| `bitmap_and(dst, src1, src2, nbits)` | 与运算 |
-| `bitmap_or(dst, src1, src2, nbits)` | 或运算 |
-| `bitmap_xor(dst, src1, src2, nbits)` | 异或运算 |
-| `bitmap_andnot(dst, src1, src2, nbits)` | A & ~B |
-| `bitmap_complement(dst, src, nbits)` | 取反 |
-| `bitmap_weight(src, nbits)` | 统计置位个数 |
-| `bitmap_empty(src, nbits)` | 判断是否全部清零 |
-| `bitmap_full(src, nbits)` | 判断是否全部置 1 |
-| `bitmap_equal(a, b, nbits)` | 判断是否相等 |
-| `bitmap_intersects(a, b, nbits)` | 判断是否有交集 |
-| `bitmap_subset(a, b, nbits)` | 判断 a 是否为 b 的子集 |
-| `bitmap_find_free_region(bitmap, nbits, order)` | 查找空闲区域 |
-| `bitmap_allocate_region(bitmap, pos, order)` | 分配区域 |
-| `bitmap_release_region(bitmap, pos, order)` | 释放区域 |
-| `set_bit(nr, addr)` | 原子置位 |
-| `clear_bit(nr, addr)` | 原子清位 |
-| `change_bit(nr, addr)` | 原子翻转 |
-| `test_bit(nr, addr)` | 测试位 |
-| `test_and_set_bit(nr, addr)` | 原子置位并返回旧值 |
-| `test_and_clear_bit(nr, addr)` | 原子清位并返回旧值 |
-| `find_first_bit(addr, size)` | 找到第一个置位位 |
-| `find_first_zero_bit(addr, size)` | 找到第一个清零位 |
-| `find_next_bit(addr, size, offset)` | 找到下一个置位位 |
-| `find_next_zero_bit(addr, size, offset)` | 找到下一个清零位 |
-| `find_last_bit(addr, size)` | 找到最后一个置位位 |
-| `for_each_set_bit(bit, addr, size)` | 遍历所有置位位 |
-| `for_each_clear_bit(bit, addr, size)` | 遍历所有清零位 |
-| `for_each_set_bit_from(bit, addr, size)` | 从指定位置开始遍历 |
+| 函数/宏                                           | 功能                       |
+| ------------------------------------------------- | -------------------------- |
+| `DECLARE_BITMAP(name, bits)`                    | 声明位图                   |
+| `bitmap_zero(dst, nbits)`                       | 全部清零                   |
+| `bitmap_fill(dst, nbits)`                       | 全部置 1                   |
+| `bitmap_copy(dst, src, nbits)`                  | 复制位图                   |
+| `bitmap_set(dst, start, nbits)`                 | 从 start 开始置 nbits 个 1 |
+| `bitmap_clear(dst, start, nbits)`               | 从 start 开始清零 nbits 个 |
+| `bitmap_shift_right(dst, src, shift, nbits)`    | 右移                       |
+| `bitmap_shift_left(dst, src, shift, nbits)`     | 左移                       |
+| `bitmap_and(dst, src1, src2, nbits)`            | 与运算                     |
+| `bitmap_or(dst, src1, src2, nbits)`             | 或运算                     |
+| `bitmap_xor(dst, src1, src2, nbits)`            | 异或运算                   |
+| `bitmap_andnot(dst, src1, src2, nbits)`         | A & ~B                     |
+| `bitmap_complement(dst, src, nbits)`            | 取反                       |
+| `bitmap_weight(src, nbits)`                     | 统计置位个数               |
+| `bitmap_empty(src, nbits)`                      | 判断是否全部清零           |
+| `bitmap_full(src, nbits)`                       | 判断是否全部置 1           |
+| `bitmap_equal(a, b, nbits)`                     | 判断是否相等               |
+| `bitmap_intersects(a, b, nbits)`                | 判断是否有交集             |
+| `bitmap_subset(a, b, nbits)`                    | 判断 a 是否为 b 的子集     |
+| `bitmap_find_free_region(bitmap, nbits, order)` | 查找空闲区域               |
+| `bitmap_allocate_region(bitmap, pos, order)`    | 分配区域                   |
+| `bitmap_release_region(bitmap, pos, order)`     | 释放区域                   |
+| `set_bit(nr, addr)`                             | 原子置位                   |
+| `clear_bit(nr, addr)`                           | 原子清位                   |
+| `change_bit(nr, addr)`                          | 原子翻转                   |
+| `test_bit(nr, addr)`                            | 测试位                     |
+| `test_and_set_bit(nr, addr)`                    | 原子置位并返回旧值         |
+| `test_and_clear_bit(nr, addr)`                  | 原子清位并返回旧值         |
+| `find_first_bit(addr, size)`                    | 找到第一个置位位           |
+| `find_first_zero_bit(addr, size)`               | 找到第一个清零位           |
+| `find_next_bit(addr, size, offset)`             | 找到下一个置位位           |
+| `find_next_zero_bit(addr, size, offset)`        | 找到下一个清零位           |
+| `find_last_bit(addr, size)`                     | 找到最后一个置位位         |
+| `for_each_set_bit(bit, addr, size)`             | 遍历所有置位位             |
+| `for_each_clear_bit(bit, addr, size)`           | 遍历所有清零位             |
+| `for_each_set_bit_from(bit, addr, size)`        | 从指定位置开始遍历         |
 
 #### 6.1.4 完整使用示例
 
@@ -4532,16 +4851,16 @@ void bitmap_demo(void)
 
 **sbitmap vs 传统位图的差异**
 
-| 特性 | sbitmap | 传统位图 (`DECLARE_BITMAP`) |
-|---|---|---|
+| 特性       | sbitmap                                                  | 传统位图 (`DECLARE_BITMAP`)  |
+| ---------- | -------------------------------------------------------- | ------------------------------ |
 | 缓存行对齐 | 每个 word 独占缓存行（`____cacheline_aligned_in_smp`） | 连续存储，多核竞争时频繁伪共享 |
-| 分配策略 | Per-CPU `alloc_hint`，分散到不同 word 起始搜索 | 全局搜索，每次从 0 开始 |
-| 清除机制 | 延迟清除（`->cleared` + `sbitmap_deferred_clear`） | 直接清除（`clear_bit`） |
-| 并发性能 | 高并发下线性扩展性好 | 高并发下因伪共享急剧下降 |
-| 内存开销 | 高（每个 word 独占缓存行，align 到 64/128 字节） | 极低（紧凑存储） |
-| 适用场景 | 多核 I/O 标签分配（blk-mq）、高并发资源分配 | 单线程或低并发位图操作 |
-| 优点 | 多核可扩展性极好，支持批量分配和等待队列 | 简单、内存高效、API 丰富 |
-| 缺点 | 内存占用大，实现复杂 | 高并发下性能瓶颈明显 |
+| 分配策略   | Per-CPU `alloc_hint`，分散到不同 word 起始搜索         | 全局搜索，每次从 0 开始        |
+| 清除机制   | 延迟清除（`->cleared` + `sbitmap_deferred_clear`）   | 直接清除（`clear_bit`）      |
+| 并发性能   | 高并发下线性扩展性好                                     | 高并发下因伪共享急剧下降       |
+| 内存开销   | 高（每个 word 独占缓存行，align 到 64/128 字节）         | 极低（紧凑存储）               |
+| 适用场景   | 多核 I/O 标签分配（blk-mq）、高并发资源分配              | 单线程或低并发位图操作         |
+| 优点       | 多核可扩展性极好，支持批量分配和等待队列                 | 简单、内存高效、API 丰富       |
+| 缺点       | 内存占用大，实现复杂                                     | 高并发下性能瓶颈明显           |
 
 #### 6.2.2 核心数据结构
 
@@ -4579,40 +4898,67 @@ struct sbitmap_queue {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `sbitmap.depth` | `unsigned int` | 总位数 |
-| `sbitmap.shift` | `unsigned int` | 每个 word 的位数 = `2^shift` |
-| `sbitmap.map_nr` | `unsigned int` | word 数量 |
-| `sbitmap.map` | `struct sbitmap_word *` | word 数组；每个 word 独占缓存行 |
-| `sbitmap.alloc_hint` | `unsigned int __percpu *` | 每个 CPU 的搜索起点，分散竞争 |
-| `sbitmap_word.word` | `unsigned long` | 已分配位图（1 = 已用） |
-| `sbitmap_word.cleared` | `unsigned long` | 延迟清除位图（1 = 已释放待清） |
-| `sbitmap_word.swap_lock` | `raw_spinlock_t` | 保护 `word`/`cleared` 的批量交换 |
-| `sbitmap_queue.ws` | `struct sbq_wait_state *` | 多个等待队列，分散唤醒锁竞争 |
-| `sbitmap_queue.wake_batch` | `unsigned int` | 每次唤醒的批大小 |
+| 字段                         | 类型                        | 作用                                 |
+| ---------------------------- | --------------------------- | ------------------------------------ |
+| `sbitmap.depth`            | `unsigned int`            | 总位数                               |
+| `sbitmap.shift`            | `unsigned int`            | 每个 word 的位数 = `2^shift`       |
+| `sbitmap.map_nr`           | `unsigned int`            | word 数量                            |
+| `sbitmap.map`              | `struct sbitmap_word *`   | word 数组；每个 word 独占缓存行      |
+| `sbitmap.alloc_hint`       | `unsigned int __percpu *` | 每个 CPU 的搜索起点，分散竞争        |
+| `sbitmap_word.word`        | `unsigned long`           | 已分配位图（1 = 已用）               |
+| `sbitmap_word.cleared`     | `unsigned long`           | 延迟清除位图（1 = 已释放待清）       |
+| `sbitmap_word.swap_lock`   | `raw_spinlock_t`          | 保护 `word`/`cleared` 的批量交换 |
+| `sbitmap_queue.ws`         | `struct sbq_wait_state *` | 多个等待队列，分散唤醒锁竞争         |
+| `sbitmap_queue.wake_batch` | `unsigned int`            | 每次唤醒的批大小                     |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph sbitmap {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="sbitmap：每个 sbitmap_word 独占缓存行，alloc_hint 按 CPU 分散", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  sb [label="{sbitmap|depth|shift|map_nr|map|alloc_hint}", fillcolor="#FFF3E0"];
-  w0 [label="{sbitmap_word|word|cleared|swap_lock|Cache Line 0}"];
-  w1 [label="{sbitmap_word|word|cleared|swap_lock|Cache Line 1}"];
-  w2 [label="{sbitmap_word|word|cleared|swap_lock|Cache Line 2}"];
-  hint [label="Per-CPU alloc_hint\nCPU0 / CPU1 / …"];
-
-  sb -> w0 [label="map[0]"];
-  sb -> w1 [label="map[1]"];
-  sb -> w2 [label="map[2]"];
-  sb -> hint [style=dashed, label="alloc_hint"];
+@startuml
+title sbitmap：每个 sbitmap_word 独占缓存行，alloc_hint 按 CPU 分散
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "sbitmap" as sb #FFF3E0 {
+  depth
+  shift
+  map_nr
+  map
+  alloc_hint
+}
+class "sbitmap_word" as w0 {
+  word
+  cleared
+  swap_lock
+  Cache Line 0
+}
+class "sbitmap_word" as w1 {
+  word
+  cleared
+  swap_lock
+  Cache Line 1
+}
+class "sbitmap_word" as w2 {
+  word
+  cleared
+  swap_lock
+  Cache Line 2
+}
+class "Per-CPU alloc_hint\nCPU0 / CPU1 / …" as hint
+
+sb --> w0 : map[0]
+sb --> w1 : map[1]
+sb --> w2 : map[2]
+sb ..> hint : alloc_hint
+@enduml
 ```
 
 *结构图：`sbitmap.map[]` 的每个 `sbitmap_word` 独立占一条缓存行，避免伪共享；`alloc_hint` 是 Per-CPU 的搜索提示。*
@@ -4655,6 +5001,7 @@ sbitmap 布局（每个 word 独占缓存行）：
 ```
 
 这种设计的好处：
+
 1. **释放操作（`sbitmap_put`）是轻量级的**：只需一个 `set_bit` 到 `cleared`，无需 CAS 循环
 2. **批量清除减少原子操作**：多个释放累积后，一次 `xchg` + `atomic_long_andnot` 完成批量清除
 3. **分配时顺带清除**：`sbitmap_find_bit_in_word` 在发现 word 满时自动调用 `sbitmap_deferred_clear`
@@ -4699,36 +5046,36 @@ end note
 
 **sbitmap 核心 API**
 
-| 函数 | 功能 |
-|---|---|
-| `sbitmap_init_node(sb, depth, shift, flags, node, round_robin, alloc_hint)` | 初始化 sbitmap |
-| `sbitmap_free(sb)` | 释放内存 |
-| `sbitmap_resize(sb, depth)` | 调整大小（不重新分配） |
-| `sbitmap_get(sb)` | 分配一个空闲位 |
-| `sbitmap_put(sb, bitnr)` | 释放位（延迟清除） |
-| `sbitmap_test_bit(sb, bitnr)` | 测试位是否已分配 |
-| `sbitmap_any_bit_set(sb)` | 检查是否有任何位被设置 |
-| `sbitmap_weight(sb)` | 统计已分配且未清除的位数 |
-| `sbitmap_for_each_set(sb, fn, data)` | 遍历所有已设置位 |
-| `sbitmap_show(sb, m)` | 打印调试信息 |
+| 函数                                                                          | 功能                     |
+| ----------------------------------------------------------------------------- | ------------------------ |
+| `sbitmap_init_node(sb, depth, shift, flags, node, round_robin, alloc_hint)` | 初始化 sbitmap           |
+| `sbitmap_free(sb)`                                                          | 释放内存                 |
+| `sbitmap_resize(sb, depth)`                                                 | 调整大小（不重新分配）   |
+| `sbitmap_get(sb)`                                                           | 分配一个空闲位           |
+| `sbitmap_put(sb, bitnr)`                                                    | 释放位（延迟清除）       |
+| `sbitmap_test_bit(sb, bitnr)`                                               | 测试位是否已分配         |
+| `sbitmap_any_bit_set(sb)`                                                   | 检查是否有任何位被设置   |
+| `sbitmap_weight(sb)`                                                        | 统计已分配且未清除的位数 |
+| `sbitmap_for_each_set(sb, fn, data)`                                        | 遍历所有已设置位         |
+| `sbitmap_show(sb, m)`                                                       | 打印调试信息             |
 
 **sbitmap_queue 核心 API**
 
-| 函数 | 功能 |
-|---|---|
+| 函数                                                                     | 功能                       |
+| ------------------------------------------------------------------------ | -------------------------- |
 | `sbitmap_queue_init_node(sbq, depth, shift, round_robin, flags, node)` | 初始化带等待队列的 sbitmap |
-| `sbitmap_queue_free(sbq)` | 释放内存 |
-| `sbitmap_queue_resize(sbq, depth)` | 调整大小 |
-| `__sbitmap_queue_get(sbq)` | 分配位（需已禁用抢占） |
-| `__sbitmap_queue_get_batch(sbq, nr_tags, offset)` | 批量分配多个连续位 |
-| `sbitmap_queue_get_shallow(sbq, shallow_depth)` | 浅分配（限制最大使用量） |
-| `sbitmap_queue_clear(sbq, nr, cpu)` | 释放位并唤醒等待者 |
-| `sbitmap_queue_wake_up(sbq, nr)` | 手动触发唤醒 |
-| `sbitmap_queue_wake_all(sbq)` | 唤醒所有等待者 |
-| `sbitmap_prepare_to_wait(sbq, ws, sbq_wait, state)` | 准备等待 |
-| `sbitmap_finish_wait(sbq, ws, sbq_wait)` | 结束等待 |
-| `sbitmap_queue_min_shallow_depth(sbq, depth)` | 设置最小浅分配深度 |
-| `sbitmap_queue_show(sbq, m)` | 打印调试信息 |
+| `sbitmap_queue_free(sbq)`                                              | 释放内存                   |
+| `sbitmap_queue_resize(sbq, depth)`                                     | 调整大小                   |
+| `__sbitmap_queue_get(sbq)`                                             | 分配位（需已禁用抢占）     |
+| `__sbitmap_queue_get_batch(sbq, nr_tags, offset)`                      | 批量分配多个连续位         |
+| `sbitmap_queue_get_shallow(sbq, shallow_depth)`                        | 浅分配（限制最大使用量）   |
+| `sbitmap_queue_clear(sbq, nr, cpu)`                                    | 释放位并唤醒等待者         |
+| `sbitmap_queue_wake_up(sbq, nr)`                                       | 手动触发唤醒               |
+| `sbitmap_queue_wake_all(sbq)`                                          | 唤醒所有等待者             |
+| `sbitmap_prepare_to_wait(sbq, ws, sbq_wait, state)`                    | 准备等待                   |
+| `sbitmap_finish_wait(sbq, ws, sbq_wait)`                               | 结束等待                   |
+| `sbitmap_queue_min_shallow_depth(sbq, depth)`                          | 设置最小浅分配深度         |
+| `sbitmap_queue_show(sbq, m)`                                           | 打印调试信息               |
 
 #### 6.2.5 分配算法详解
 
@@ -5080,11 +5427,11 @@ void sbitmap_queue_clear_batch(struct sbitmap_queue *sbq, int offset,
 
 **关键内存屏障配对关系**
 
-| 操作 | 屏障 | 配对操作 | 保证 |
-|------|------|----------|------|
-| `sbitmap_queue_clear` | `smp_mb__before_atomic()` | `__sbitmap_get_word` 中的 `test_and_set_bit_lock` (acquire) | 确保释放者对关联对象的写入在清除位之前完成，避免分配者看到未初始化的对象 |
-| `sbitmap_queue_clear` | `smp_mb__after_atomic()` | `set_current_state()` 中的屏障 | 确保 `cleared` 位的设置在检查 `waitqueue_active` 之前全局可见，避免丢失唤醒 |
-| `sbitmap_queue_wake_up` | `atomic_try_cmpxchg` 隐含的完整屏障 | `sbitmap_prepare_to_wait` 中的 `prepare_to_wait_exclusive` | 确保 `completion_cnt` 的更新和 `waitqueue_active` 的检查正确排序 |
+| 操作                      | 屏障                                  | 配对操作                                                        | 保证                                                                            |
+| ------------------------- | ------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `sbitmap_queue_clear`   | `smp_mb__before_atomic()`           | `__sbitmap_get_word` 中的 `test_and_set_bit_lock` (acquire) | 确保释放者对关联对象的写入在清除位之前完成，避免分配者看到未初始化的对象        |
+| `sbitmap_queue_clear`   | `smp_mb__after_atomic()`            | `set_current_state()` 中的屏障                                | 确保 `cleared` 位的设置在检查 `waitqueue_active` 之前全局可见，避免丢失唤醒 |
+| `sbitmap_queue_wake_up` | `atomic_try_cmpxchg` 隐含的完整屏障 | `sbitmap_prepare_to_wait` 中的 `prepare_to_wait_exclusive`  | 确保 `completion_cnt` 的更新和 `waitqueue_active` 的检查正确排序            |
 
 ---
 
@@ -5121,34 +5468,53 @@ struct key_vector {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `key` | `t_key` | 该节点覆盖的键前缀（IP 地址的网络字节序片段） |
-| `pos` | `unsigned char` | 当前节点从第几位开始比较 |
-| `bits` | `unsigned char` | 本层消耗的位数；`0` 表示叶节点，`>0` 表示内部节点 |
-| `slen` | `unsigned char` | 前缀长度，用于最长前缀匹配 |
-| `leaf` | `struct hlist_head` | `bits == 0` 时有效：挂 `fib_alias` 路由条目 |
-| `tnode[]` | `struct key_vector __rcu *[]` | `bits > 0` 时有效：`2^bits` 个子节点指针 |
+| 字段        | 类型                            | 作用                                                  |
+| ----------- | ------------------------------- | ----------------------------------------------------- |
+| `key`     | `t_key`                       | 该节点覆盖的键前缀（IP 地址的网络字节序片段）         |
+| `pos`     | `unsigned char`               | 当前节点从第几位开始比较                              |
+| `bits`    | `unsigned char`               | 本层消耗的位数；`0` 表示叶节点，`>0` 表示内部节点 |
+| `slen`    | `unsigned char`               | 前缀长度，用于最长前缀匹配                            |
+| `leaf`    | `struct hlist_head`           | `bits == 0` 时有效：挂 `fib_alias` 路由条目       |
+| `tnode[]` | `struct key_vector __rcu *[]` | `bits > 0` 时有效：`2^bits` 个子节点指针          |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph trie {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="key_vector：叶子看 leaf 链表，内部节点看 tnode 数组", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  root [label="{key_vector|key|pos|bits|slen|{leaf: hlist_head | tnode: key_vector[]}}", fillcolor="#FFF3E0"];
-  child [label="{key_vector|key|pos|bits|slen|…}"];
-  leaf [label="fib_alias\nhlist_node", fillcolor="#E8F5E9"];
-  leaf2 [label="fib_alias\nhlist_node", fillcolor="#E8F5E9"];
-
-  root -> child [label="tnode[i]"];
-  child -> leaf [label="leaf.first"];
-  leaf -> leaf2 [label="next"];
+@startuml
+title key_vector：叶子看 leaf 链表，内部节点看 tnode 数组
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "key_vector" as root #FFF3E0 {
+  key
+  pos
+  bits
+  slen
+  leaf: hlist_head
+  tnode: key_vector[]
+}
+class "key_vector" as child {
+  key
+  pos
+  bits
+  slen
+  …
+}
+class "fib_alias\nhlist_node" as leaf #E8F5E9
+class "fib_alias\nhlist_node" as leaf2 #E8F5E9
+
+root --> child : tnode[i]
+child --> leaf : leaf.first
+leaf --> leaf2 : next
+@enduml
 ```
 
 *结构图：`trie.kv` 是根 `key_vector`；内部节点通过柔性数组 `tnode[]` 指向子节点，叶节点通过 `leaf` 链表挂路由条目。*
@@ -5197,27 +5563,33 @@ void fib_trie_seq_show(struct seq_file *seq, struct trie *trie);
 **图解：最长前缀匹配**
 
 ```plantuml
-@startdot
-digraph trie {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="LC-Trie 最长前缀匹配：192.168.1.55", labelloc=t, fontsize=14];
-  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  root [label="根\nbits 0..7"];
-  a [label="192\nbits 8..15"];
-  b [label="168\nbits 16..23"];
-  c [label="1\nbits 24..31"];
-  leaf24 [label="路由 192.168.1.0/24", fillcolor="#E8F5E9"];
-  leaf32 [label="路由 192.168.1.55/32", fillcolor="#E3F2FD"];
-
-  root -> a;
-  a -> b;
-  b -> c;
-  c -> leaf24 [label="先命中 /24"];
-  c -> leaf32 [label="继续匹配到 /32"];
-  leaf24 -> leaf32 [style=dashed, label="更长前缀优先"];
+@startuml
+title LC-Trie 最长前缀匹配：192.168.1.55
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "根\nbits 0..7" as root
+class "192\nbits 8..15" as a
+class "168\nbits 16..23" as b
+class "1\nbits 24..31" as c
+class "路由 192.168.1.0/24" as leaf24 #E8F5E9
+class "路由 192.168.1.55/32" as leaf32 #E3F2FD
+
+root --> a
+a --> b
+b --> c
+c --> leaf24 : 先命中 /24
+c --> leaf32 : 继续匹配到 /32
+leaf24 ..> leaf32 : 更长前缀优先
+@enduml
 ```
 
 *图 6-3：路由查找沿前缀逐层下降；如果 `/24` 和 `/32` 同时存在，先命中较短前缀，但继续下降可得到更长前缀，最终返回最长匹配。*
@@ -5282,38 +5654,58 @@ struct assoc_array_shortcut {
 
 **节点结构与关键字段**
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `assoc_array.root` | `struct assoc_array_ptr *` | 根指针；低 2 位编码叶/节点/shortcut |
-| `assoc_array.nr_leaves_on_tree` | `unsigned long` | 叶对象总数 |
-| `assoc_array_node.back_pointer` | `struct assoc_array_ptr *` | 指回父节点/shortcut |
-| `assoc_array_node.parent_slot` | `u8` | 本节点在父节点中的 slot 下标 |
-| `assoc_array_node.slots[16]` | `struct assoc_array_ptr *` | 16 个子项：空、叶、节点或 shortcut |
-| `assoc_array_node.nr_leaves_on_branch` | `unsigned long` | 本子树叶子数，用于 GC/统计 |
-| `assoc_array_shortcut.skip_to_level` | `int` | 跳过多少层；压缩公共前缀 |
-| `assoc_array_shortcut.next_node` | `struct assoc_array_ptr *` | shortcut 指向的下一节点 |
-| `assoc_array_shortcut.index_key[]` | `unsigned long[]` | 被跳过的键片段，查找时校验 |
+| 字段                                     | 类型                         | 作用                                |
+| ---------------------------------------- | ---------------------------- | ----------------------------------- |
+| `assoc_array.root`                     | `struct assoc_array_ptr *` | 根指针；低 2 位编码叶/节点/shortcut |
+| `assoc_array.nr_leaves_on_tree`        | `unsigned long`            | 叶对象总数                          |
+| `assoc_array_node.back_pointer`        | `struct assoc_array_ptr *` | 指回父节点/shortcut                 |
+| `assoc_array_node.parent_slot`         | `u8`                       | 本节点在父节点中的 slot 下标        |
+| `assoc_array_node.slots[16]`           | `struct assoc_array_ptr *` | 16 个子项：空、叶、节点或 shortcut  |
+| `assoc_array_node.nr_leaves_on_branch` | `unsigned long`            | 本子树叶子数，用于 GC/统计          |
+| `assoc_array_shortcut.skip_to_level`   | `int`                      | 跳过多少层；压缩公共前缀            |
+| `assoc_array_shortcut.next_node`       | `struct assoc_array_ptr *` | shortcut 指向的下一节点             |
+| `assoc_array_shortcut.index_key[]`     | `unsigned long[]`          | 被跳过的键片段，查找时校验          |
 
 **链接图**
 
 ```plantuml
-@startdot
-digraph assoc {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="assoc_array 节点：16 路 node、shortcut、leaf 三类指针", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  array [label="{assoc_array|root|nr_leaves_on_tree}", fillcolor="#FFF3E0"];
-  nd [label="{assoc_array_node|back_pointer|parent_slot|slots[16]|nr_leaves_on_branch}"];
-  sc [label="{assoc_array_shortcut|back_pointer|parent_slot|skip_to_level|next_node|index_key[]}", fillcolor="#FFF3E0"];
-  leaf [label="leaf 对象\n（keyring 中为 struct key）", fillcolor="#E8F5E9"];
-
-  array -> nd [label="root（低 2 位编码类型）"];
-  nd -> leaf [label="slot[i]（类型 0）"];
-  nd -> sc [label="slot[j]（类型 1，subtype 1）"];
-  sc -> nd [label="next_node"];
+@startuml
+title assoc_array 节点：16 路 node、shortcut、leaf 三类指针
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "assoc_array" as array #FFF3E0 {
+  root
+  nr_leaves_on_tree
+}
+class "assoc_array_node" as nd {
+  back_pointer
+  parent_slot
+  slots[16]
+  nr_leaves_on_branch
+}
+class "assoc_array_shortcut" as sc #FFF3E0 {
+  back_pointer
+  parent_slot
+  skip_to_level
+  next_node
+  index_key[]
+}
+class "leaf 对象\n（keyring 中为 struct key）" as leaf #E8F5E9
+
+array --> nd : root（低 2 位编码类型）
+nd --> leaf : slot[i]（类型 0）
+nd --> sc : slot[j]（类型 1，subtype 1）
+sc --> nd : next_node
+@enduml
 ```
 
 *结构图：`assoc_array` 根指针低 2 位区分类型；16 路 node 的 slot 可指向叶对象、下一层 node 或 shortcut；shortcut 用 `skip_to_level` 跳过无分叉的层。*
@@ -5337,41 +5729,44 @@ void assoc_array_cancel_edit(struct assoc_array_edit *edit);
 **图解：插入导致节点分裂与 shortcut 生成**
 
 ```plantuml
-@startdot
-digraph assoc {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="assoc_array：16 路节点、shortcut 压缩公共前缀", labelloc=t, fontsize=14];
-  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  subgraph cluster_before {
-    label="插入前：两个 key 共享前缀，只有叶节点";
-    fontname="WenQuanYi Zen Hei";
-    r1 [label="root"];
-    l1 [label="叶：key 0x1234…"];
-    l2 [label="叶：key 0x1235…"];
-    r1 -> l1;
-    r1 -> l2;
-  }
-
-  subgraph cluster_after {
-    label="插入第三个 key 后：公共前缀用 shortcut 跳过";
-    fontname="WenQuanYi Zen Hei";
-    r2 [label="root"];
-    sc [label="shortcut\nskip_to_level = 3", fillcolor="#FFF3E0"];
-    nd [label="{节点|slot 0..15}"];
-    a1 [label="叶 0x1234…"];
-    a2 [label="叶 0x1235…"];
-    a3 [label="叶 0x1236…"];
-    r2 -> sc;
-    sc -> nd;
-    nd -> a1;
-    nd -> a2;
-    nd -> a3;
-  }
-
-  r1 -> r2 [style=invis];
+@startuml
+title assoc_array：16 路节点、shortcut 压缩公共前缀
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+package "插入前：两个 key 共享前缀，只有叶节点" as before {
+  class "root" as r1
+  class "叶：key 0x1234…" as l1
+  class "叶：key 0x1235…" as l2
+}
+package "插入第三个 key 后：公共前缀用 shortcut 跳过" as after {
+  class "root" as r2
+  class "shortcut\nskip_to_level = 3" as sc #FFF3E0
+  class "节点" as nd {
+    slot 0..15
+  }
+  class "叶 0x1234…" as a1
+  class "叶 0x1235…" as a2
+  class "叶 0x1236…" as a3
+}
+
+r1 --> l1
+r1 --> l2
+r2 --> sc
+sc --> nd
+nd --> a1
+nd --> a2
+nd --> a3
+r1 -[hidden]- r2
+@enduml
 ```
 
 *图 6-4：两个 key 共享长前缀时，先由叶节点直接挂在根上；插入第三个 key 后，公共前缀用 shortcut 跳过，分叉层创建 16 路节点，三个叶对象落到不同 slot。*
@@ -5417,27 +5812,41 @@ struct idr {
 };
 ```
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `idr_rt` | `struct radix_tree_root`（即 `struct xarray`） | 保存 `ID → 指针` 的多级树；树的 `IDR_FREE` 标记记录某棵子树是否还有空 slot，加速 ID 分配 |
-| `idr_base` | `unsigned int` | ID 偏移；内部索引为 `id - idr_base`，使 ID 可以从非 0 的编号开始 |
-| `idr_next` | `unsigned int` | `idr_alloc_cyclic()` 的游标；每次成功后指向下一个 ID，回绕后从 `idr_base` 继续扫描 |
+| 字段         | 类型                                               | 作用                                                                                          |
+| ------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `idr_rt`   | `struct radix_tree_root`（即 `struct xarray`） | 保存 `ID → 指针` 的多级树；树的 `IDR_FREE` 标记记录某棵子树是否还有空 slot，加速 ID 分配 |
+| `idr_base` | `unsigned int`                                   | ID 偏移；内部索引为 `id - idr_base`，使 ID 可以从非 0 的编号开始                            |
+| `idr_next` | `unsigned int`                                   | `idr_alloc_cyclic()` 的游标；每次成功后指向下一个 ID，回绕后从 `idr_base` 继续扫描        |
 
 ```plantuml
-@startdot
-digraph idr {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="IDR：在 XArray 的整数索引空间上分配 ID", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  idr [label="{idr|idr_rt|idr_base|idr_next}", fillcolor="#FFF3E0"];
-  xa [label="{xarray|xa_lock|xa_flags|xa_head}"];
-  entry [label="内部索引 = id - idr_base\n→ 对象指针", fillcolor="#E8F5E9"];
-
-  idr -> xa [label="idr_rt（radix_tree_root\n是 xarray 的兼容别名）"];
-  xa -> entry [label="xa_store(index, ptr)"];
+@startuml
+title IDR：在 XArray 的整数索引空间上分配 ID
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "idr" as idr #FFF3E0 {
+  idr_rt
+  idr_base
+  idr_next
+}
+class "xarray" as xa {
+  xa_lock
+  xa_flags
+  xa_head
+}
+class "内部索引 = id - idr_base\n→ 对象指针" as entry #E8F5E9
+
+idr --> xa : idr_rt（radix_tree_root\n是 xarray 的兼容别名）
+xa --> entry : xa_store(index, ptr)
+@enduml
 ```
 
 *结构图：`idr` 内嵌 `xarray`（旧名 `radix_tree_root`）；`xa_head` 指向多级 `xa_node` 树，叶 slot 中存放对象指针。*
@@ -5565,17 +5974,17 @@ XArray 是 Linux 内核中用于替代传统基数树（radix tree）和 IDR 的
 
 **XArray vs 传统基数树（Radix Tree）的差异**
 
-| 特性 | XArray | 传统基数树 |
-|---|---|---|
-| API 设计 | 统一、简洁（`xa_load`/`xa_store`/`xa_erase`） | 分散（`radix_tree_insert`/`radix_tree_delete`/`radix_tree_lookup`） |
-| 标记操作 | 集成在 API 中（`xa_set_mark`/`xa_clear_mark`/`xa_get_mark`） | 单独的函数（`radix_tree_tag_set`/`radix_tree_tag_clear`） |
-| 内部实现 | 基于相同的多级树结构，但优化了节点编码 | 直接暴露节点结构 |
-| 条目类型 | 内部编码（使用指针低位标记特殊条目） | 需要调用者自行处理空条目 |
-| 迭代器 | 多种迭代器（`xa_for_each`/`xa_for_each_range`/`xa_for_each_marked`） | 有限的迭代支持 |
-| 锁管理 | 统一的锁原语（`xa_lock`/`xa_unlock`） | 调用者需自行管理锁 |
-| 兼容性 | 向前兼容，可替代 IDR 和 radix tree | 被逐步淘汰 |
-| 优点 | API 统一简洁，RCU 集成更好，标记操作更直观 | 历史悠久，文档和工具链支持成熟 |
-| 缺点 | 相对较新（4.20+），部分旧代码不兼容 | API 分散，使用复杂，维护成本高 |
+| 特性     | XArray                                                                     | 传统基数树                                                                |
+| -------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| API 设计 | 统一、简洁（`xa_load`/`xa_store`/`xa_erase`）                        | 分散（`radix_tree_insert`/`radix_tree_delete`/`radix_tree_lookup`） |
+| 标记操作 | 集成在 API 中（`xa_set_mark`/`xa_clear_mark`/`xa_get_mark`）         | 单独的函数（`radix_tree_tag_set`/`radix_tree_tag_clear`）             |
+| 内部实现 | 基于相同的多级树结构，但优化了节点编码                                     | 直接暴露节点结构                                                          |
+| 条目类型 | 内部编码（使用指针低位标记特殊条目）                                       | 需要调用者自行处理空条目                                                  |
+| 迭代器   | 多种迭代器（`xa_for_each`/`xa_for_each_range`/`xa_for_each_marked`） | 有限的迭代支持                                                            |
+| 锁管理   | 统一的锁原语（`xa_lock`/`xa_unlock`）                                  | 调用者需自行管理锁                                                        |
+| 兼容性   | 向前兼容，可替代 IDR 和 radix tree                                         | 被逐步淘汰                                                                |
+| 优点     | API 统一简洁，RCU 集成更好，标记操作更直观                                 | 历史悠久，文档和工具链支持成熟                                            |
+| 缺点     | 相对较新（4.20+），部分旧代码不兼容                                        | API 分散，使用复杂，维护成本高                                            |
 
 #### 7.2.2 核心数据结构
 
@@ -5588,11 +5997,11 @@ struct xarray {
 };
 ```
 
-| 字段 | 类型 | 作用 |
-|---|---|---|
-| `xa_lock` | `spinlock_t` | 写路径锁；读路径可只持 RCU 读锁，实现无锁查找 |
-| `xa_flags` | `gfp_t` | 节点分配标志，同时携带根标记（如 `XA_FLAGS_ALLOC`、`ROOT_IS_IDR`） |
-| `xa_head` | `void __rcu *` | 根条目：`NULL` 表示空树；低位非 0 时表示直接存放的条目或特殊条目；否则指向根 `xa_node` |
+| 字段         | 类型             | 作用                                                                                       |
+| ------------ | ---------------- | ------------------------------------------------------------------------------------------ |
+| `xa_lock`  | `spinlock_t`   | 写路径锁；读路径可只持 RCU 读锁，实现无锁查找                                              |
+| `xa_flags` | `gfp_t`        | 节点分配标志，同时携带根标记（如 `XA_FLAGS_ALLOC`、`ROOT_IS_IDR`）                     |
+| `xa_head`  | `void __rcu *` | 根条目：`NULL` 表示空树；低位非 0 时表示直接存放的条目或特殊条目；否则指向根 `xa_node` |
 
 树节点 `xa_node` 的定义（同上文件）：
 
@@ -5616,32 +6025,51 @@ struct xa_node {
 };
 ```
 
-| 字段 | 作用 |
-|---|---|
-| `shift` | 当前节点覆盖的索引位宽；查找时用 `(index >> shift) & (XA_CHUNK_SIZE - 1)` 选 slot |
-| `offset` | 本节点在父节点 `slots[]` 中的位置，用于回溯和标记向上传播 |
-| `count` / `nr_values` | 子树条目总数 / 实际值条目数；为 0 时可回收节点，也用于快速判断空子树 |
-| `parent` / `array` | 父节点指针和所属 XArray，支持从叶向根传播标记、以及 RCU 替换时定位根 |
-| `slots[]` | 子节点指针或条目；低位编码区分内部节点、普通指针、`XA_ZERO_ENTRY`、`XA_RETRY_ENTRY` |
-| `tags[][]` | 每个 slot 的标记位图，`xa_set_mark()` 会沿 `parent` 链向上置位，`xa_find()` 据此整棵跳过 |
+| 字段                      | 作用                                                                                           |
+| ------------------------- | ---------------------------------------------------------------------------------------------- |
+| `shift`                 | 当前节点覆盖的索引位宽；查找时用 `(index >> shift) & (XA_CHUNK_SIZE - 1)` 选 slot            |
+| `offset`                | 本节点在父节点 `slots[]` 中的位置，用于回溯和标记向上传播                                    |
+| `count` / `nr_values` | 子树条目总数 / 实际值条目数；为 0 时可回收节点，也用于快速判断空子树                           |
+| `parent` / `array`    | 父节点指针和所属 XArray，支持从叶向根传播标记、以及 RCU 替换时定位根                           |
+| `slots[]`               | 子节点指针或条目；低位编码区分内部节点、普通指针、`XA_ZERO_ENTRY`、`XA_RETRY_ENTRY`        |
+| `tags[][]`              | 每个 slot 的标记位图，`xa_set_mark()` 会沿 `parent` 链向上置位，`xa_find()` 据此整棵跳过 |
 
 ```plantuml
-@startdot
-digraph xarray {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="xa_node：多级节点，slots 存条目，tags 存标记", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  xa [label="{xarray|xa_lock|xa_flags|xa_head}", fillcolor="#FFF3E0"];
-  nd [label="{xa_node|shift|offset|count|nr_values|parent|array|slots[64]|tags[3][1]}"];
-  entry [label="条目指针\n（低位编码类型）", fillcolor="#E8F5E9"];
-  child [label="下一级 xa_node"];
-
-  xa -> nd [label="xa_head"];
-  nd -> child [label="slots[i]"];
-  nd -> entry [label="slots[j]"];
+@startuml
+title xa_node：多级节点，slots 存条目，tags 存标记
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "xarray" as xa #FFF3E0 {
+  xa_lock
+  xa_flags
+  xa_head
+}
+class "xa_node" as nd {
+  shift
+  offset
+  count
+  nr_values
+  parent
+  array
+  slots[64]
+  tags[3][1]
+}
+class "条目指针\n（低位编码类型）" as entry #E8F5E9
+class "下一级 xa_node" as child
+
+xa --> nd : xa_head
+nd --> child : slots[i]
+nd --> entry : slots[j]
+@enduml
 ```
 
 *结构图：`xa_head` 指向根 `xa_node`；每层 `slots[]` 按 6 位索引下降，叶 slot 直接存条目；`tags` 与 `slots` 平行，标记沿 `parent` 向上汇总。*
@@ -5715,28 +6143,28 @@ void *xa_find(struct xarray *xa, unsigned long *index,
 
 #### 7.2.7 完整 API 参考
 
-| 函数/宏 | 功能 |
-|---|---|
-| `xa_init(xa)` / `xa_init_flags(xa, flags)` | 初始化 |
-| `xa_load(xa, index)` | 加载条目 |
-| `xa_store(xa, index, entry, gfp)` | 存储条目 |
-| `xa_erase(xa, index)` | 删除条目 |
-| `xa_cmpxchg(xa, index, old, entry, gfp)` | 条件更新 |
-| `xa_insert(xa, index, entry, gfp)` | 不覆盖插入 |
-| `xa_alloc(xa, id, entry, limit, gfp)` | 分配 ID 并存储 |
-| `xa_alloc_cyclic(xa, id, entry, limit, gfp)` | 循环分配 ID |
-| `xa_set_mark(xa, index, mark)` | 设置标记 |
-| `xa_clear_mark(xa, index, mark)` | 清除标记 |
-| `xa_get_mark(xa, index, mark)` | 测试标记 |
-| `xa_find(xa, index, max, filter)` | 查找带标记的条目 |
-| `xa_find_after(xa, index, max, filter)` | 查找下一个 |
-| `xa_extract(xa, dst, start, max, n, filter)` | 批量提取 |
-| `xa_for_each(xa, index, entry)` | 遍历所有条目 |
-| `xa_for_each_range(xa, index, entry, start, last)` | 遍历指定范围 |
-| `xa_for_each_marked(xa, index, entry, filter)` | 遍历带标记的条目 |
-| `xa_destroy(xa)` | 销毁所有条目 |
-| `xa_lock(xa)` / `xa_unlock(xa)` | 加锁/解锁 |
-| `xa_lock_irqsave(xa, flags)` | 中断安全加锁 |
+| 函数/宏                                              | 功能             |
+| ---------------------------------------------------- | ---------------- |
+| `xa_init(xa)` / `xa_init_flags(xa, flags)`       | 初始化           |
+| `xa_load(xa, index)`                               | 加载条目         |
+| `xa_store(xa, index, entry, gfp)`                  | 存储条目         |
+| `xa_erase(xa, index)`                              | 删除条目         |
+| `xa_cmpxchg(xa, index, old, entry, gfp)`           | 条件更新         |
+| `xa_insert(xa, index, entry, gfp)`                 | 不覆盖插入       |
+| `xa_alloc(xa, id, entry, limit, gfp)`              | 分配 ID 并存储   |
+| `xa_alloc_cyclic(xa, id, entry, limit, gfp)`       | 循环分配 ID      |
+| `xa_set_mark(xa, index, mark)`                     | 设置标记         |
+| `xa_clear_mark(xa, index, mark)`                   | 清除标记         |
+| `xa_get_mark(xa, index, mark)`                     | 测试标记         |
+| `xa_find(xa, index, max, filter)`                  | 查找带标记的条目 |
+| `xa_find_after(xa, index, max, filter)`            | 查找下一个       |
+| `xa_extract(xa, dst, start, max, n, filter)`       | 批量提取         |
+| `xa_for_each(xa, index, entry)`                    | 遍历所有条目     |
+| `xa_for_each_range(xa, index, entry, start, last)` | 遍历指定范围     |
+| `xa_for_each_marked(xa, index, entry, filter)`     | 遍历带标记的条目 |
+| `xa_destroy(xa)`                                   | 销毁所有条目     |
+| `xa_lock(xa)` / `xa_unlock(xa)`                  | 加锁/解锁        |
+| `xa_lock_irqsave(xa, flags)`                       | 中断安全加锁     |
 
 #### 7.2.8 内部实现
 
@@ -5750,29 +6178,42 @@ XArray 内部使用多级树结构：
 **图解：索引路径与内部条目**
 
 ```plantuml
-@startdot
-digraph xarray {
-  graph [rankdir=TB, fontname="WenQuanYi Zen Hei", bgcolor="white", label="XArray：多级节点 + 内部条目编码", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  root [label="{xa_head|shift = 12}"];
-  mid [label="{内部节点|shift = 6|slots[0..63]}"];
-  leaf [label="{内部节点|shift = 0|slots[0..63]}"];
-  e1 [label="index 0x123\n→ 指针", fillcolor="#E8F5E9"];
-  e2 [label="index 0x124\n→ XA_ZERO_ENTRY", fillcolor="#FFF3E0"];
-  e3 [label="空槽\nNULL", style="rounded,dashed", fillcolor="white"];
-
-  root -> mid [label="bits[17:12]"];
-  mid -> leaf [label="bits[11:6]"];
-  leaf -> e1 [label="bits[5:0] = 0x23"];
-  leaf -> e2 [label="0x24"];
-  leaf -> e3 [style=dashed];
-
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="条目低位编码类型：\n00 普通指针\n10 内部条目（如 ZERO/NULL/RETRY）\n读路径 RCU 无锁；\n标记位随路径逐级传播"];
-  leaf -> note [style=invis];
+@startuml
+title XArray：多级节点 + 内部条目编码
+top to bottom direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "xa_head" as root {
+  shift = 12
+}
+class "内部节点" as mid {
+  shift = 6
+  slots[0..63]
+}
+class "内部节点" as leaf {
+  shift = 0
+  slots[0..63]
+}
+class "index 0x123\n→ 指针" as e1 #E8F5E9
+class "index 0x124\n→ XA_ZERO_ENTRY" as e2 #FFF3E0
+class "空槽\nNULL" as e3 #FFFFFF
+
+root --> mid : bits[17:12]
+mid --> leaf : bits[11:6]
+leaf --> e1 : bits[5:0] = 0x23
+leaf --> e2 : 0x24
+leaf ..> e3
+
+class "条目低位编码类型：\n00 普通指针\n10 内部条目（如 ZERO/NULL/RETRY）\n读路径 RCU 无锁；\n标记位随路径逐级传播" as note1 #FFF8E1
+@enduml
 ```
 
 *图 7-2：XArray 按每 6 位一层下降；叶/内部节点中的条目低位编码类型（普通指针、`XA_ZERO_ENTRY`、`XA_RETRY_ENTRY` 等）。标记位（marks）随路径逐级向上传播，`xa_find()` 可据此快速跳过整棵子树。*
@@ -5865,15 +6306,15 @@ eBPF Maps 是内核提供的通用键值存储结构，允许用户空间和 eBP
 
 #### 7.3.2 支持的 Map 类型
 
-| Map 类型 | 底层实现 | 特点 |
-|---|---|---|
-| `BPF_MAP_TYPE_HASH` | 哈希表 | 通用键值存储 |
-| `BPF_MAP_TYPE_ARRAY` | 数组 | 固定大小，访问快 |
-| `BPF_MAP_TYPE_LRU_HASH` | LRU + 哈希表 | 限制大小，自动淘汰 |
-| `BPF_MAP_TYPE_PERCPU_HASH` | Per-CPU 哈希表 | 减少锁竞争 |
-| `BPF_MAP_TYPE_STACK` | 栈 | LIFO 操作 |
-| `BPF_MAP_TYPE_QUEUE` | FIFO 队列 | 先进先出 |
-| `BPF_MAP_TYPE_RINGBUF` | 环形缓冲区 | 高性能数据传递 |
+| Map 类型                     | 底层实现       | 特点               |
+| ---------------------------- | -------------- | ------------------ |
+| `BPF_MAP_TYPE_HASH`        | 哈希表         | 通用键值存储       |
+| `BPF_MAP_TYPE_ARRAY`       | 数组           | 固定大小，访问快   |
+| `BPF_MAP_TYPE_LRU_HASH`    | LRU + 哈希表   | 限制大小，自动淘汰 |
+| `BPF_MAP_TYPE_PERCPU_HASH` | Per-CPU 哈希表 | 减少锁竞争         |
+| `BPF_MAP_TYPE_STACK`       | 栈             | LIFO 操作          |
+| `BPF_MAP_TYPE_QUEUE`       | FIFO 队列      | 先进先出           |
+| `BPF_MAP_TYPE_RINGBUF`     | 环形缓冲区     | 高性能数据传递     |
 
 #### 7.3.3 内核侧核心数据结构
 
@@ -5924,37 +6365,66 @@ struct bpf_array {
 };
 ```
 
-| 结构体 | 关键字段 | 作用 |
-|---|---|---|
-| `bpf_map` | `ops` | 把不同 Map 类型的操作统一到函数表，`bpf_map_lookup_elem()` 等 helper 最终调用它 |
-| `bpf_map` | `key_size` / `value_size` / `max_entries` | 在创建时固定元素布局和容量，HASH 用它计算 `elem_size`，ARRAY 用它划分 value 区 |
-| `bpf_map` | `refcnt` / `usercnt` | 分别跟踪内核对象引用和用户 fd 引用，最后一个引用释放时才销毁 Map |
-| `bpf_htab` | `buckets` / `n_buckets` | 哈希桶数组；桶内用 `hlist_nulls_head` 串元素，桶锁保护并发更新 |
-| `bpf_htab` | `elems` / `elem_size` | 预分配元素池；非预分配模式下元素来自 `bpf_mem_alloc` |
-| `htab_elem` | `hash_node` / `hash` | `hash_node` 把元素挂进桶链，`hash` 避免查找时重复计算 |
-| `htab_elem` | `key[]` | 键和值连续存放（`value = key + key_size`），一次分配即可存放整个元素 |
-| `bpf_array` | `index_mask` | 下标 `key & index_mask` 直接定位 value，省去取模 |
-| `bpf_array` | `value` / `ptrs` / `pptrs` | 柔性数组：普通数组、指针数组、Per-CPU 指针数组三种布局复用同一结构 |
+| 结构体        | 关键字段                                        | 作用                                                                              |
+| ------------- | ----------------------------------------------- | --------------------------------------------------------------------------------- |
+| `bpf_map`   | `ops`                                         | 把不同 Map 类型的操作统一到函数表，`bpf_map_lookup_elem()` 等 helper 最终调用它 |
+| `bpf_map`   | `key_size` / `value_size` / `max_entries` | 在创建时固定元素布局和容量，HASH 用它计算 `elem_size`，ARRAY 用它划分 value 区  |
+| `bpf_map`   | `refcnt` / `usercnt`                        | 分别跟踪内核对象引用和用户 fd 引用，最后一个引用释放时才销毁 Map                  |
+| `bpf_htab`  | `buckets` / `n_buckets`                     | 哈希桶数组；桶内用 `hlist_nulls_head` 串元素，桶锁保护并发更新                  |
+| `bpf_htab`  | `elems` / `elem_size`                       | 预分配元素池；非预分配模式下元素来自 `bpf_mem_alloc`                            |
+| `htab_elem` | `hash_node` / `hash`                        | `hash_node` 把元素挂进桶链，`hash` 避免查找时重复计算                         |
+| `htab_elem` | `key[]`                                       | 键和值连续存放（`value = key + key_size`），一次分配即可存放整个元素            |
+| `bpf_array` | `index_mask`                                  | 下标 `key & index_mask` 直接定位 value，省去取模                                |
+| `bpf_array` | `value` / `ptrs` / `pptrs`                | 柔性数组：普通数组、指针数组、Per-CPU 指针数组三种布局复用同一结构                |
 
 ```plantuml
-@startdot
-digraph bpf {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="eBPF Map：bpf_map 是公共头，HASH/ARRAY 各有自己的节点布局", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  map [label="{bpf_map|ops|map_type|key_size|value_size|max_entries|refcnt}", fillcolor="#FFF3E0"];
-  htab [label="{bpf_htab|map|buckets|n_buckets|elem_size|count}"];
-  bucket [label="bucket\nhlist_nulls_head + rqspinlock_t"];
-  elem [label="{htab_elem|hash_node|hash|key[]|value[]}"];
-  array [label="{bpf_array|map|elem_size|index_mask|value[] / ptrs[]}"];
-
-  map -> htab [label="HASH"];
-  htab -> bucket [label="buckets[]"];
-  bucket -> elem [label="链头"];
-  map -> array [label="ARRAY"];
+@startuml
+title eBPF Map：bpf_map 是公共头，HASH/ARRAY 各有自己的节点布局
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "bpf_map" as map #FFF3E0 {
+  ops
+  map_type
+  key_size
+  value_size
+  max_entries
+  refcnt
+}
+class "bpf_htab" as htab {
+  map
+  buckets
+  n_buckets
+  elem_size
+  count
+}
+class "bucket\nhlist_nulls_head + rqspinlock_t" as bucket
+class "htab_elem" as elem {
+  hash_node
+  hash
+  key[]
+  value[]
+}
+class "bpf_array" as array {
+  map
+  elem_size
+  index_mask
+  value[] / ptrs[]
+}
+
+map --> htab : HASH
+htab --> bucket : buckets[]
+bucket --> elem : 链头
+map --> array : ARRAY
+@enduml
 ```
 
 *结构图：`bpf_map` 是公共头；HASH Map 通过 `bpf_htab.buckets[]` 指向桶链，`htab_elem.hash_node` 串成 `hlist_nulls`；ARRAY Map 则把 value 直接放在 `bpf_array` 后面的柔性数组中。*
@@ -6149,15 +6619,15 @@ kfifo 是内核中实现的无锁环形缓冲区（Ring Buffer），用于单生
 
 **内核实现 vs 传统环形缓冲区的差异**
 
-| 特性 | 内核 kfifo | 传统环形缓冲区 |
-|---|---|---|
-| 满/空判断 | `(in - out) == size` 利用无符号溢出 | 通常使用额外标志位或预留一个空位 |
-| 指针移动 | `in & (size - 1)` 位运算代替取模 | 通常使用 `in % size` 取模运算 |
-| 缓冲区大小 | 必须是 2 的幂次（强制约束） | 任意大小 |
-| 并发安全 | 单生产者/单消费者无需加锁 | 通常需要加锁或使用 CAS |
-| 无符号溢出 | 利用溢出特性，`in` 永远递增 | 通常对 `size` 取模，手动处理回绕 |
-| 优点 | 无锁高性能，无分支的指针运算，简洁优雅 | 缓冲区大小灵活，通用性强 |
-| 缺点 | 大小必须为 2 的幂次（浪费少量空间） | 取模运算性能较差，满/空判断复杂 |
+| 特性       | 内核 kfifo                             | 传统环形缓冲区                     |
+| ---------- | -------------------------------------- | ---------------------------------- |
+| 满/空判断  | `(in - out) == size` 利用无符号溢出  | 通常使用额外标志位或预留一个空位   |
+| 指针移动   | `in & (size - 1)` 位运算代替取模     | 通常使用 `in % size` 取模运算    |
+| 缓冲区大小 | 必须是 2 的幂次（强制约束）            | 任意大小                           |
+| 并发安全   | 单生产者/单消费者无需加锁              | 通常需要加锁或使用 CAS             |
+| 无符号溢出 | 利用溢出特性，`in` 永远递增          | 通常对 `size` 取模，手动处理回绕 |
+| 优点       | 无锁高性能，无分支的指针运算，简洁优雅 | 缓冲区大小灵活，通用性强           |
+| 缺点       | 大小必须为 2 的幂次（浪费少量空间）    | 取模运算性能较差，满/空判断复杂    |
 
 #### 8.1.2 核心数据结构
 
@@ -6186,31 +6656,48 @@ struct {
 
 动态分配的 `struct kfifo` 是 `__STRUCT_KFIFO_PTR(unsigned char, 0, void)` 的兼容类型：`data` 指向 `kfifo_alloc()` 分配的缓冲区，`buf[]` 为空。
 
-| 字段 | 作用 |
-|---|---|
-| `in` | 生产者游标：指向下一次写入位置；只由生产者递增，回绕由无符号溢出自然完成 |
-| `out` | 消费者游标：指向下一次读取位置；只由消费者递增 |
-| `mask` | `size - 1`；实际下标为 `counter & mask`，把取模换成位与 |
+| 字段      | 作用                                                                                    |
+| --------- | --------------------------------------------------------------------------------------- |
+| `in`    | 生产者游标：指向下一次写入位置；只由生产者递增，回绕由无符号溢出自然完成                |
+| `out`   | 消费者游标：指向下一次读取位置；只由消费者递增                                          |
+| `mask`  | `size - 1`；实际下标为 `counter & mask`，把取模换成位与                             |
 | `esize` | 元素大小；`kfifo_in()` 等按元素个数增减 `in/out`，字节操作时按 `len / esize` 换算 |
-| `data` | 缓冲区指针；内联模式下指向 `buf[]`，动态模式下指向 `kfifo_alloc()` 分配的内存 |
+| `data`  | 缓冲区指针；内联模式下指向 `buf[]`，动态模式下指向 `kfifo_alloc()` 分配的内存       |
 
 已用元素数为 `in - out`，可用空间为 `size - (in - out)`；空是 `in == out`，满是 `in - out == size`。
 
 ```plantuml
-@startdot
-digraph kfifo {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="kfifo 结构体与环形 buffer", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  fifo [label="{__kfifo|in|out|mask|esize|data}", fillcolor="#FFF3E0"];
-  buf [label="{data[0..mask]|slot0|slot1|…|slotN}"];
-  fifo -> buf [label="data"];
-
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="in：下一次写入的单调计数\nout：下一次读取的单调计数\nmask = size - 1，esize = 元素大小\n实际下标 = counter & mask\n已用 = in - out，空：in == out，满：in - out == size\nDEFINE_KFIFO() 把 __kfifo 与 buf[size] 包成类型化结构"];
-  buf -> note [style=invis];
+@startuml
+title kfifo 结构体与环形 buffer
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "__kfifo" as fifo #FFF3E0 {
+  in
+  out
+  mask
+  esize
+  data
+}
+class "data[0..mask]" as buf {
+  slot0
+  slot1
+  …
+  slotN
+}
+
+fifo --> buf : data
+
+class "in：下一次写入的单调计数\nout：下一次读取的单调计数\nmask = size - 1，esize = 元素大小\n实际下标 = counter & mask\n已用 = in - out，空：in == out，满：in - out == size\nDEFINE_KFIFO() 把 __kfifo 与 buf[size] 包成类型化结构" as note1 #FFF8E1
+@enduml
 ```
 
 *结构图：`__kfifo` 只保存 `in/out/mask/esize/data` 五个字段；`data` 指向环形缓冲区，索引通过 `counter & mask` 回绕，不存在头尾指针或哨兵节点。*
@@ -6241,25 +6728,25 @@ unsigned int kfifo_avail(const struct kfifo *fifo);
 
 #### 8.1.4 完整 API 参考
 
-| 函数/宏 | 功能 |
-|---|---|
-| `kfifo_alloc(fifo, size, gfp)` | 分配并初始化 kfifo |
-| `kfifo_init(fifo, buffer, size)` | 使用现有缓冲区初始化 |
-| `kfifo_free(fifo)` | 释放 kfifo 缓冲区 |
-| `kfifo_in(fifo, buf, len)` | 入队 |
-| `kfifo_out(fifo, buf, len)` | 出队 |
-| `kfifo_out_peek(fifo, buf, len)` | 查看（不出队） |
-| `kfifo_in_spinlocked(fifo, buf, len, lock)` | 加锁入队 |
-| `kfifo_out_spinlocked(fifo, buf, len, lock)` | 加锁出队 |
-| `kfifo_skip(fifo, len)` | 跳过 len 字节数据 |
-| `kfifo_avail(fifo)` | 获取剩余可写空间 |
-| `kfifo_len(fifo)` | 获取已用数据长度 |
-| `kfifo_is_empty(fifo)` | 判断是否为空 |
-| `kfifo_is_full(fifo)` | 判断是否为满 |
-| `kfifo_size(fifo)` | 获取缓冲区总大小 |
-| `kfifo_reset(fifo)` | 重置（丢弃所有数据） |
-| `kfifo_to_user(fifo, to, len, copied)` | 出队到用户空间 |
-| `kfifo_from_user(fifo, from, len, copied)` | 从用户空间入队 |
+| 函数/宏                                        | 功能                 |
+| ---------------------------------------------- | -------------------- |
+| `kfifo_alloc(fifo, size, gfp)`               | 分配并初始化 kfifo   |
+| `kfifo_init(fifo, buffer, size)`             | 使用现有缓冲区初始化 |
+| `kfifo_free(fifo)`                           | 释放 kfifo 缓冲区    |
+| `kfifo_in(fifo, buf, len)`                   | 入队                 |
+| `kfifo_out(fifo, buf, len)`                  | 出队                 |
+| `kfifo_out_peek(fifo, buf, len)`             | 查看（不出队）       |
+| `kfifo_in_spinlocked(fifo, buf, len, lock)`  | 加锁入队             |
+| `kfifo_out_spinlocked(fifo, buf, len, lock)` | 加锁出队             |
+| `kfifo_skip(fifo, len)`                      | 跳过 len 字节数据    |
+| `kfifo_avail(fifo)`                          | 获取剩余可写空间     |
+| `kfifo_len(fifo)`                            | 获取已用数据长度     |
+| `kfifo_is_empty(fifo)`                       | 判断是否为空         |
+| `kfifo_is_full(fifo)`                        | 判断是否为满         |
+| `kfifo_size(fifo)`                           | 获取缓冲区总大小     |
+| `kfifo_reset(fifo)`                          | 重置（丢弃所有数据） |
+| `kfifo_to_user(fifo, to, len, copied)`       | 出队到用户空间       |
+| `kfifo_from_user(fifo, from, len, copied)`   | 从用户空间入队       |
 
 #### 8.1.5 无锁原理
 
@@ -6277,32 +6764,42 @@ size - (in - out) // 剩余空间
 **图解：环形缓冲区的 in/out**
 
 ```plantuml
-@startdot
-digraph kfifo {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="kfifo：2 的幂次环形缓冲区，in/out 单调递增", labelloc=t, fontsize=14];
-  node [shape=box, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  s0 [label="slot0\n(data)"];
-  s1 [label="slot1\n(data)"];
-  s2 [label="slot2\n(data)"];
-  s3 [label="slot3"];
-  s4 [label="slot4"];
-  s5 [label="slot5\n(data)"];
-  s6 [label="slot6"];
-  s7 [label="slot7"];
-
-  s0 -> s1 -> s2 -> s3 -> s4 -> s5 -> s6 -> s7 -> s0 [style=invis];
-
-  in [shape=plaintext, label="in = 6"];
-  out [shape=plaintext, label="out = 2"];
-  in -> s6 [label="下一次写入"];
-  out -> s2 [label="下一次读取"];
-
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="已用长度 = in - out\n索引 = in & (size - 1)\n满：in - out == size\n空：in == out\nsize 必须是 2 的幂"];
-  s3 -> note [style=invis];
+@startuml
+title kfifo：2 的幂次环形缓冲区，in/out 单调递增
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "slot0\n(data)" as s0
+class "slot1\n(data)" as s1
+class "slot2\n(data)" as s2
+class "slot3" as s3
+class "slot4" as s4
+class "slot5\n(data)" as s5
+class "slot6" as s6
+class "slot7" as s7
+class "in = 6" as in1 #FFFFFF
+class "out = 2" as out1 #FFFFFF
+
+in1 --> s6 : 下一次写入
+out1 --> s2 : 下一次读取
+s0 -[hidden]- s1
+s1 -[hidden]- s2
+s2 -[hidden]- s3
+s3 -[hidden]- s4
+s4 -[hidden]- s5
+s5 -[hidden]- s6
+s6 -[hidden]- s7
+
+class "已用长度 = in - out\n索引 = in & (size - 1)\n满：in - out == size\n空：in == out\nsize 必须是 2 的幂" as note1 #FFF8E1
+@enduml
 ```
 
 *图 8-1：`in` 和 `out` 单调递增，实际索引用 `& (size - 1)` 回绕；已用长度直接由 `in - out` 得到，满/空判断不需要额外标志位。*
@@ -6432,34 +6929,62 @@ struct worker {
 };
 ```
 
-| 结构体/字段 | 作用 |
-|---|---|
-| `work_struct.data` | 位打包字段：`WORK_STRUCT_PENDING_BIT` 表示已入队，`WORK_STRUCT_PWQ_BIT` 表示其余位是 `pool_workqueue` 指针，否则存放 pool id；`test_and_set_bit()` 用它实现"同一工作项只能入队一次" |
-| `work_struct.entry` | 挂入 `worker_pool.worklist`（或 `pool_workqueue` 的延迟链）的节点，一个工作项同时只能出现在一条队列上 |
-| `work_struct.func` | worker 线程取出后调用的回调，参数是 `work_struct *` 本身，宿主用 `container_of()` 找回 |
-| `worker_pool.lock` | 保护 `worklist`、`nr_running` 和 worker 状态转移的自旋锁 |
-| `worker_pool.worklist` | 待执行工作项队列；worker 从头部取，`queue_work()` 从尾部/头部插入 |
-| `worker_pool.nr_running` | 已取出但尚未执行完的工作项数，用于判断是否需要唤醒新 worker |
-| `worker_pool.workers` / `idle_list` / `nr_idle` | 管理 worker 线程池：空闲线程挂在 `idle_list`，需要时唤醒，长时间空闲则回收 |
-| `worker.current_work` / `pool` | 当前正在执行的工作项及其所属 pool；`current_func` 用于 stall 检测和调试输出 |
+| 结构体/字段                                           | 作用                                                                                                                                                                                        |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `work_struct.data`                                  | 位打包字段：`WORK_STRUCT_PENDING_BIT` 表示已入队，`WORK_STRUCT_PWQ_BIT` 表示其余位是 `pool_workqueue` 指针，否则存放 pool id；`test_and_set_bit()` 用它实现"同一工作项只能入队一次" |
+| `work_struct.entry`                                 | 挂入 `worker_pool.worklist`（或 `pool_workqueue` 的延迟链）的节点，一个工作项同时只能出现在一条队列上                                                                                   |
+| `work_struct.func`                                  | worker 线程取出后调用的回调，参数是 `work_struct *` 本身，宿主用 `container_of()` 找回                                                                                                  |
+| `worker_pool.lock`                                  | 保护 `worklist`、`nr_running` 和 worker 状态转移的自旋锁                                                                                                                                |
+| `worker_pool.worklist`                              | 待执行工作项队列；worker 从头部取，`queue_work()` 从尾部/头部插入                                                                                                                         |
+| `worker_pool.nr_running`                            | 已取出但尚未执行完的工作项数，用于判断是否需要唤醒新 worker                                                                                                                                 |
+| `worker_pool.workers` / `idle_list` / `nr_idle` | 管理 worker 线程池：空闲线程挂在 `idle_list`，需要时唤醒，长时间空闲则回收                                                                                                                |
+| `worker.current_work` / `pool`                    | 当前正在执行的工作项及其所属 pool；`current_func` 用于 stall 检测和调试输出                                                                                                               |
 
 ```plantuml
-@startdot
-digraph wq {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="workqueue：worker_pool 的 worklist 与 work_struct 节点", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  pool [label="{worker_pool|lock|cpu / node|nr_running|worklist|nr_workers|workers|idle_list|nr_idle}", fillcolor="#FFF3E0"];
-  w1 [label="{work_struct|data|entry|func}"];
-  w2 [label="{work_struct|data|entry|func}"];
-  worker [label="{worker|current_work|current_func|pool|task}"];
-
-  pool -> w1 [label="worklist"];
-  w1 -> w2 [label="entry"];
-  worker -> w1 [label="current_work", style=dashed];
+@startuml
+title workqueue：worker_pool 的 worklist 与 work_struct 节点
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "worker_pool" as pool #FFF3E0 {
+  lock
+  cpu / node
+  nr_running
+  worklist
+  nr_workers
+  workers
+  idle_list
+  nr_idle
+}
+class "work_struct" as w1 {
+  data
+  entry
+  func
+}
+class "work_struct" as w2 {
+  data
+  entry
+  func
+}
+class "worker" as worker {
+  current_work
+  current_func
+  pool
+  task
+}
+
+pool --> w1 : worklist
+w1 --> w2 : entry
+worker ..> w1 : current_work
+@enduml
 ```
 
 *结构图：`worker_pool.worklist` 是 `work_struct.entry` 组成的双向链表；`worker` 通过 `current_work` 指向正在执行的工作项，执行期间该工作项已从 `worklist` 摘下。*
@@ -6524,15 +7049,15 @@ end note
 
 **内核实现 vs 传统伙伴系统的差异**
 
-| 特性 | 内核伙伴系统 | 传统伙伴系统 |
-|---|---|---|
-| 迁移类型 | 按 `MIGRATE_TYPES` 分区管理（可移动/不可移动/可回收） | 无分区，所有页框统一管理 |
-| Per-CPU 缓存 | 使用 `pcp`（per-CPU pages）缓存单页，减少锁竞争 | 通常无 per-CPU 优化 |
-| 避免碎片 | 通过迁移类型将不同寿命的页分开，减少不可移动页导致的碎片 | 碎片问题严重，长期运行后无法分配大块连续内存 |
-| 内存回收 | 集成 kswapd 和 direct reclaim，内存不足时回收 | 通常只返回分配失败 |
-| 页迁移 | 支持 `MIGRATE_MOVABLE` 页的迁移（内存规整 compact） | 不支持 |
-| 优点 | 碎片控制能力强，支持内存规整，per-CPU 缓存提高性能 | 实现简单，易于理解 |
-| 缺点 | 实现复杂，内存管理策略高度耦合 | 碎片问题严重，不适合长期运行 |
+| 特性         | 内核伙伴系统                                             | 传统伙伴系统                                 |
+| ------------ | -------------------------------------------------------- | -------------------------------------------- |
+| 迁移类型     | 按 `MIGRATE_TYPES` 分区管理（可移动/不可移动/可回收）  | 无分区，所有页框统一管理                     |
+| Per-CPU 缓存 | 使用 `pcp`（per-CPU pages）缓存单页，减少锁竞争        | 通常无 per-CPU 优化                          |
+| 避免碎片     | 通过迁移类型将不同寿命的页分开，减少不可移动页导致的碎片 | 碎片问题严重，长期运行后无法分配大块连续内存 |
+| 内存回收     | 集成 kswapd 和 direct reclaim，内存不足时回收            | 通常只返回分配失败                           |
+| 页迁移       | 支持 `MIGRATE_MOVABLE` 页的迁移（内存规整 compact）    | 不支持                                       |
+| 优点         | 碎片控制能力强，支持内存规整，per-CPU 缓存提高性能       | 实现简单，易于理解                           |
+| 缺点         | 实现复杂，内存管理策略高度耦合                           | 碎片问题严重，不适合长期运行                 |
 
 ### 9.2 核心数据结构
 
@@ -6578,36 +7103,54 @@ struct page {
 };
 ```
 
-| 结构体/字段 | 作用 |
-|---|---|
+| 结构体/字段               | 作用                                                                                                                |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `free_area.free_list[]` | 按迁移类型分链；每一条链上的页块 order 相同，`MIGRATE_MOVABLE`/`UNMOVABLE`/`RECLAIMABLE` 等分开管理以抑制碎片 |
-| `free_area.nr_free` | 该 order 的空闲页块总数（跨所有迁移类型）；分配/释放/合并时同步增减 |
-| `zone.free_area[]` | 下标即 order；分配从请求 order 向上找，释放时向下合并 |
-| `page.buddy_list` | 页块空闲时充当 `free_list` 节点；与 `lru` 共用同一联合体，`list_del()` 摘链即表示该块被分配 |
-| `page.private` | `PageBuddy` 置位时保存页块的 order，合并时用它校验伙伴阶数（`buddy_order()` 即读此字段） |
-| `page.flags` | `PageBuddy` 表示页块位于伙伴系统；释放时用它判断伙伴是否空闲 |
-| `NR_PAGE_ORDERS` | `free_area[]` 的数组长度，决定伙伴系统可管理的最大块（默认 order 10，即 1024 页） |
+| `free_area.nr_free`     | 该 order 的空闲页块总数（跨所有迁移类型）；分配/释放/合并时同步增减                                                 |
+| `zone.free_area[]`      | 下标即 order；分配从请求 order 向上找，释放时向下合并                                                               |
+| `page.buddy_list`       | 页块空闲时充当 `free_list` 节点；与 `lru` 共用同一联合体，`list_del()` 摘链即表示该块被分配                   |
+| `page.private`          | `PageBuddy` 置位时保存页块的 order，合并时用它校验伙伴阶数（`buddy_order()` 即读此字段）                        |
+| `page.flags`            | `PageBuddy` 表示页块位于伙伴系统；释放时用它判断伙伴是否空闲                                                      |
+| `NR_PAGE_ORDERS`        | `free_area[]` 的数组长度，决定伙伴系统可管理的最大块（默认 order 10，即 1024 页）                                 |
 
 ```plantuml
-@startdot
-digraph buddy {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="伙伴系统：zone → free_area[order] → 按迁移类型分链的页块", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  zone [label="{zone|free_area[NR_PAGE_ORDERS]|…}", fillcolor="#FFF3E0"];
-  fa2 [label="{free_area[2]|free_list[MIGRATE_TYPES]|nr_free}"];
-  fa1 [label="{free_area[1]|free_list[MIGRATE_TYPES]|nr_free}"];
-  fa0 [label="{free_area[0]|free_list[MIGRATE_TYPES]|nr_free}"];
-  block [shape=box, label="页块（2^order 页）\npage->private = order\npage->buddy_list 挂入 free_list\npage->flags 中 PageBuddy 置位"];
-
-  zone -> fa2 [label="order=2"];
-  zone -> fa1 [label="order=1"];
-  zone -> fa0 [label="order=0"];
-  fa2 -> block [label="free_list[migratetype]"];
-  block -> block [style=dashed, label="buddy = pfn ^ (1<<order)"];
+@startuml
+title 伙伴系统：zone → free_area[order] → 按迁移类型分链的页块
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "zone" as zone #FFF3E0 {
+  free_area[NR_PAGE_ORDERS]
+  …
+}
+class "free_area[2]" as fa2 {
+  free_list[MIGRATE_TYPES]
+  nr_free
+}
+class "free_area[1]" as fa1 {
+  free_list[MIGRATE_TYPES]
+  nr_free
+}
+class "free_area[0]" as fa0 {
+  free_list[MIGRATE_TYPES]
+  nr_free
+}
+class "页块（2^order 页）\npage->private = order\npage->buddy_list 挂入 free_list\npage->flags 中 PageBuddy 置位" as block
+
+zone --> fa2 : order=2
+zone --> fa1 : order=1
+zone --> fa0 : order=0
+fa2 --> block : free_list[migratetype]
+block --> block : buddy = pfn ^ (1<<order)
+@enduml
 ```
 
 *结构图：`zone.free_area[order]` 是数组，每项再按迁移类型分成多条 `free_list`；空闲页块用 `page->buddy_list`（与 `lru` 共用联合体）串链，`page->private` 记录 order，`PageBuddy` 标志表示块处于空闲状态。*
@@ -6800,23 +7343,23 @@ enum migratetype {
 
 ### 9.8 完整 API 参考
 
-| 函数/宏 | 功能 |
-|---|---|
-| `alloc_pages(gfp_mask, order)` | 分配 2^order 个连续页框 |
-| `alloc_page(gfp_mask)` | 分配单个页框（order=0） |
-| `__get_free_pages(gfp_mask, order)` | 分配并返回虚拟地址 |
-| `__get_free_page(gfp_mask)` | 分配单个页框并返回虚拟地址 |
-| `get_zeroed_page(gfp_mask)` | 分配清零的页框 |
-| `__free_pages(page, order)` | 释放页框 |
-| `__free_page(page)` | 释放单个页框 |
-| `free_pages(addr, order)` | 按虚拟地址释放 |
-| `free_page(addr)` | 按虚拟地址释放单个页框 |
+| 函数/宏                               | 功能                                |
+| ------------------------------------- | ----------------------------------- |
+| `alloc_pages(gfp_mask, order)`      | 分配 2^order 个连续页框             |
+| `alloc_page(gfp_mask)`              | 分配单个页框（order=0）             |
+| `__get_free_pages(gfp_mask, order)` | 分配并返回虚拟地址                  |
+| `__get_free_page(gfp_mask)`         | 分配单个页框并返回虚拟地址          |
+| `get_zeroed_page(gfp_mask)`         | 分配清零的页框                      |
+| `__free_pages(page, order)`         | 释放页框                            |
+| `__free_page(page)`                 | 释放单个页框                        |
+| `free_pages(addr, order)`           | 按虚拟地址释放                      |
+| `free_page(addr)`                   | 按虚拟地址释放单个页框              |
 | `alloc_pages_exact(size, gfp_mask)` | 分配指定大小的连续页（非 2 的幂次） |
-| `free_pages_exact(addr, size)` | 释放 `alloc_pages_exact` 分配的页 |
-| `__get_dma_pages(gfp_mask, order)` | 分配 DMA 兼容的页框 |
-| `PageBuddy(page)` | 判断页框是否在伙伴系统空闲链表中 |
-| `set_page_order(page, order)` | 设置页框的伙伴阶数 |
-| `split_page(page, order)` | 手动拆分大页块 |
+| `free_pages_exact(addr, size)`      | 释放 `alloc_pages_exact` 分配的页 |
+| `__get_dma_pages(gfp_mask, order)`  | 分配 DMA 兼容的页框                 |
+| `PageBuddy(page)`                   | 判断页框是否在伙伴系统空闲链表中    |
+| `set_page_order(page, order)`       | 设置页框的伙伴阶数                  |
+| `split_page(page, order)`           | 手动拆分大页块                      |
 
 ### 9.9 完整使用示例
 
@@ -6909,32 +7452,45 @@ typedef struct refcount_struct {
 } refcount_t;
 ```
 
-| 结构体/字段 | 作用 |
-|---|---|
-| `kref.refcount` | 唯一的计数成员；`kref_get()`/`kref_put()` 分别转调 `refcount_inc()`/`refcount_dec_and_test()` |
+| 结构体/字段         | 作用                                                                                                              |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `kref.refcount`   | 唯一的计数成员；`kref_get()`/`kref_put()` 分别转调 `refcount_inc()`/`refcount_dec_and_test()`             |
 | `refcount_t.refs` | 底层 `atomic_t` 计数；正常范围 `1 … REFCOUNT_MAX`，溢出/下溢/0 上递增会饱和到 `REFCOUNT_SATURATED` 并 WARN |
-| 宿主对象 | 把 `kref` 作为成员嵌入，`release()` 中用 `container_of()` 从 `kref *` 找回宿主并释放 |
+| 宿主对象            | 把 `kref` 作为成员嵌入，`release()` 中用 `container_of()` 从 `kref *` 找回宿主并释放                      |
 
 `kref` 本身不带指针、不带锁，也不带析构数据；它只要求调用者约定"计数归零时调用 `release`"。
 
 ```plantuml
-@startdot
-digraph ref {
-  graph [rankdir=LR, fontname="WenQuanYi Zen Hei", bgcolor="white", label="kref / refcount_t：对象内嵌计数", labelloc=t, fontsize=14];
-  node [shape=record, style="rounded,filled", fillcolor="#F5F5F5", fontname="WenQuanYi Zen Hei"];
-  edge [fontname="WenQuanYi Zen Hei"];
-
-  obj [label="{宿主对象|…|kref refcount|…}", fillcolor="#FFF3E0"];
-  kref [label="{kref|refcount_t refcount}"];
-  ref [label="{refcount_t|atomic_t refs}"];
-
-  obj -> kref [label="内嵌"];
-  kref -> ref [label="refs"];
-
-  note [shape=note, style=filled, fillcolor="#FFF8E1", label="kref_init() → 1\nkref_get() → refcount_inc()\nkref_put() → refcount_dec_and_test()\n0 时回调 release()"];
-  ref -> note [style=invis];
+@startuml
+title kref / refcount_t：对象内嵌计数
+left to right direction
+skinparam defaultFontName WenQuanYi Zen Hei
+skinparam defaultFontSize 12
+skinparam ArrowColor #444444
+skinparam class {
+  BackgroundColor #F5F5F5
+  BorderColor #666666
+  RoundCorner 8
 }
-@enddot
+hide empty members
+
+class "宿主对象" as obj #FFF3E0 {
+  …
+  kref refcount
+  …
+}
+class "kref" as kref {
+  refcount_t refcount
+}
+class "refcount_t" as ref {
+  atomic_t refs
+}
+
+obj --> kref : 内嵌
+kref --> ref : refs
+
+class "kref_init() → 1\nkref_get() → refcount_inc()\nkref_put() → refcount_dec_and_test()\n0 时回调 release()" as note1 #FFF8E1
+@enduml
 ```
 
 *结构图：宿主对象内嵌 `kref`，`kref` 内嵌 `refcount_t`，最内层只有一个 `atomic_t refs`；计数与对象在同一块内存中，没有额外的引用节点或全局表。*
@@ -6984,17 +7540,17 @@ end note
 
 ### 10.4 完整 API 参考
 
-| 函数 | 功能 |
-|---|---|
-| `kref_init(kref)` | 初始化引用计数为 1 |
-| `kref_read(kref)` | 读取当前引用计数 |
-| `kref_get(kref)` | 递增引用计数（必须确保对象存活） |
-| `kref_get_unless_zero(kref)` | 安全递增（计数为 0 则不操作） |
-| `kref_put(kref, release)` | 递减，若为 0 则调用 release |
-| `kref_put_mutex(kref, release, mutex)` | 在 mutex 保护下 put |
-| `kref_put_lock(kref, release, lock)` | 在 spinlock 保护下 put |
-| `kref_sub(kref, count, release)` | 一次性递减多个计数 |
-| `kref_mutex_init(kref, release, mutex)` | 初始化并关联 mutex |
+| 函数                                      | 功能                             |
+| ----------------------------------------- | -------------------------------- |
+| `kref_init(kref)`                       | 初始化引用计数为 1               |
+| `kref_read(kref)`                       | 读取当前引用计数                 |
+| `kref_get(kref)`                        | 递增引用计数（必须确保对象存活） |
+| `kref_get_unless_zero(kref)`            | 安全递增（计数为 0 则不操作）    |
+| `kref_put(kref, release)`               | 递减，若为 0 则调用 release      |
+| `kref_put_mutex(kref, release, mutex)`  | 在 mutex 保护下 put              |
+| `kref_put_lock(kref, release, lock)`    | 在 spinlock 保护下 put           |
+| `kref_sub(kref, count, release)`        | 一次性递减多个计数               |
+| `kref_mutex_init(kref, release, mutex)` | 初始化并关联 mutex               |
 
 ### 10.5 完整使用示例
 
@@ -7143,11 +7699,11 @@ end note
 
 #### 10.7.4 kref、refcount_t 与 percpu_ref 的分工
 
-| 机制 | 计数位置 | 释放语义 | 典型场景 |
-|---|---|---|---|
-| `kref` | 对象内 `refcount_t` | `kref_put()` 到 0 自动调用 `release` | 设备、文件、socket 等对象生命周期 |
-| `refcount_t` | 对象内 `atomic_t` | 只提供计数，释放由调用者处理 | 需要自定义释放逻辑或与锁配合的场景 |
-| `percpu_ref` | Per-CPU 计数 + 汇总 | `percpu_ref_kill()` 切换到 atomic 模式并阻止新引用，确认旧读者退出后释放 | 读多写少的热路径（block cgroup、aio 等） |
+| 机制           | 计数位置              | 释放语义                                                                   | 典型场景                                 |
+| -------------- | --------------------- | -------------------------------------------------------------------------- | ---------------------------------------- |
+| `kref`       | 对象内 `refcount_t` | `kref_put()` 到 0 自动调用 `release`                                   | 设备、文件、socket 等对象生命周期        |
+| `refcount_t` | 对象内 `atomic_t`   | 只提供计数，释放由调用者处理                                               | 需要自定义释放逻辑或与锁配合的场景       |
+| `percpu_ref` | Per-CPU 计数 + 汇总   | `percpu_ref_kill()` 切换到 atomic 模式并阻止新引用，确认旧读者退出后释放 | 读多写少的热路径（block cgroup、aio 等） |
 
 `kref` 的每个操作最终都落到 `refcount_t` 上，因此同样具备溢出/下溢保护；区别只在于 `kref` 多了 `release` 回调约定。
 
@@ -7159,20 +7715,20 @@ end note
 
 内核设计数据结构和算法时，始终在**时间**和**空间**之间做权衡：
 
-| 数据结构 | 查找 | 插入/删除 | 空间开销 | 适用场景 |
-|---|---|---|---|---|
-| 双向链表 | O(n) | O(1) | 2 指针/节点 | 动态变化频繁的集合 |
-| `llist` | O(n) | O(1)（仅头部） | 1 指针/节点 | NMI/中断上下文无锁压栈 |
-| `plist` | O(n) | O(k)（k 为不同优先级数） | 2 条链表/节点 | 按优先级排列的等待队列 |
-| 哈希表 | O(1) avg | O(1) | 桶数组 + 链表 | 快速精确查找 |
-| `rhashtable` | O(1) avg | O(1) avg | 桶数组 + 链表，可扩容 | 动态规模、RCU 读 |
-| 红黑树 | O(log n) | O(log n) | 3 指针/节点 | 需要有序性 |
-| 区间树 | O(log n + k) | O(log n) | rbtree + max | 区间重叠查询 |
-| 基数树/XArray | O(k) | O(k) | 多级节点 | 稀疏整数索引 |
-| 16 路 Trie（`assoc_array`） | O(键长/4) | O(键长/4) | 16 指针/节点 | 任意长度键、RCU 读 |
-| 位图 | O(1) | O(1) | 1 bit/元素 | 大量"有/无"状态 |
-| 二叉堆（`min_heap`） | O(1) 取最小 | O(log n) | 1 数组 | 反复取最小值 |
-| 伙伴系统 | O(log n) | O(log n) | 链表数组 | 连续内存管理 |
+| 数据结构                      | 查找         | 插入/删除                | 空间开销              | 适用场景               |
+| ----------------------------- | ------------ | ------------------------ | --------------------- | ---------------------- |
+| 双向链表                      | O(n)         | O(1)                     | 2 指针/节点           | 动态变化频繁的集合     |
+| `llist`                     | O(n)         | O(1)（仅头部）           | 1 指针/节点           | NMI/中断上下文无锁压栈 |
+| `plist`                     | O(n)         | O(k)（k 为不同优先级数） | 2 条链表/节点         | 按优先级排列的等待队列 |
+| 哈希表                        | O(1) avg     | O(1)                     | 桶数组 + 链表         | 快速精确查找           |
+| `rhashtable`                | O(1) avg     | O(1) avg                 | 桶数组 + 链表，可扩容 | 动态规模、RCU 读       |
+| 红黑树                        | O(log n)     | O(log n)                 | 3 指针/节点           | 需要有序性             |
+| 区间树                        | O(log n + k) | O(log n)                 | rbtree + max          | 区间重叠查询           |
+| 基数树/XArray                 | O(k)         | O(k)                     | 多级节点              | 稀疏整数索引           |
+| 16 路 Trie（`assoc_array`） | O(键长/4)    | O(键长/4)                | 16 指针/节点          | 任意长度键、RCU 读     |
+| 位图                          | O(1)         | O(1)                     | 1 bit/元素            | 大量"有/无"状态        |
+| 二叉堆（`min_heap`）        | O(1) 取最小  | O(log n)                 | 1 数组                | 反复取最小值           |
+| 伙伴系统                      | O(log n)     | O(log n)                 | 链表数组              | 连续内存管理           |
 
 ### 11.2 演进趋势
 
@@ -7204,37 +7760,37 @@ Linux 内核数据结构在不断演进，核心趋势是**向范围查询优化
 
 ## 12. 附录：关键文件索引
 
-| 数据结构/算法 | 头文件 | 实现文件 |
-|---|---|---|
-| 双向链表 (list_head) | `include/linux/list.h` | 内联实现 |
-| 哈希链表 (hlist_head) | `include/linux/list.h` | 内联实现 |
-| 无锁链表 (llist) | `include/linux/llist.h` | `lib/llist.c` |
-| Nulls 哈希链表 (hlist_nulls) | `include/linux/list_nulls.h`、`rculist_nulls.h` | 内联实现 |
-| 位锁哈希链表 (hlist_bl) | `include/linux/list_bl.h` | 内联实现 |
-| 优先级链表 (plist) | `include/linux/plist.h` | `lib/plist.c` |
-| 引用计数链表 (klist) | `include/linux/klist.h` | `lib/klist.c` |
-| 哈希表 | `include/linux/hashtable.h` | 内联实现 |
-| 可扩容哈希表 (rhashtable) | `include/linux/rhashtable.h` | `lib/rhashtable.c` |
-| 红黑树 (rb_node) | `include/linux/rbtree.h` | `lib/rbtree.c` |
-| 区间树 (interval_tree) | `include/linux/interval_tree.h` | `lib/interval_tree.c` |
-| 基数树 (历史) | `include/linux/radix-tree.h` | `lib/radix-tree.c` |
-| XArray | `include/linux/xarray.h` | `lib/xarray.c` |
-| Maple Tree | `include/linux/maple_tree.h` | `lib/maple_tree.c` |
-| 关联数组 (assoc_array) | `include/linux/assoc_array.h` | `lib/assoc_array.c` |
-| 二叉堆 (min_heap) | `include/linux/min_heap.h` | `lib/min_heap.c` |
-| 伙伴系统 | `include/linux/mmzone.h` | `mm/page_alloc.c` |
-| 位图 | `include/linux/bitmap.h` | `lib/bitmap.c` |
-| sbitmap | `include/linux/sbitmap.h` | `lib/sbitmap.c` |
-| 引用计数 (kref) | `include/linux/kref.h` | `lib/kref.c` |
-| 加固引用计数 (refcount_t) | `include/linux/refcount.h` | `lib/refcount.c` |
-| IDR | `include/linux/idr.h` | `lib/idr.c` |
-| kfifo | `include/linux/kfifo.h` | `lib/kfifo.c` |
-| 工作队列 | `include/linux/workqueue.h` | `kernel/workqueue.c` |
-| eBPF Maps | `include/linux/bpf.h` | `kernel/bpf/` |
-| 时间轮定时器 | `include/linux/timer.h` | `kernel/time/timer.c` |
-| 实时调度队列 | `kernel/sched/sched.h` | `kernel/sched/rt.c` |
-| 路由 Trie | `include/net/fib_trie.h` | `net/ipv4/fib_trie.c` |
-| RCU 链表 | `include/linux/rculist.h` | 内联实现 |
+| 数据结构/算法                | 头文件                                              | 实现文件                |
+| ---------------------------- | --------------------------------------------------- | ----------------------- |
+| 双向链表 (list_head)         | `include/linux/list.h`                            | 内联实现                |
+| 哈希链表 (hlist_head)        | `include/linux/list.h`                            | 内联实现                |
+| 无锁链表 (llist)             | `include/linux/llist.h`                           | `lib/llist.c`         |
+| Nulls 哈希链表 (hlist_nulls) | `include/linux/list_nulls.h`、`rculist_nulls.h` | 内联实现                |
+| 位锁哈希链表 (hlist_bl)      | `include/linux/list_bl.h`                         | 内联实现                |
+| 优先级链表 (plist)           | `include/linux/plist.h`                           | `lib/plist.c`         |
+| 引用计数链表 (klist)         | `include/linux/klist.h`                           | `lib/klist.c`         |
+| 哈希表                       | `include/linux/hashtable.h`                       | 内联实现                |
+| 可扩容哈希表 (rhashtable)    | `include/linux/rhashtable.h`                      | `lib/rhashtable.c`    |
+| 红黑树 (rb_node)             | `include/linux/rbtree.h`                          | `lib/rbtree.c`        |
+| 区间树 (interval_tree)       | `include/linux/interval_tree.h`                   | `lib/interval_tree.c` |
+| 基数树 (历史)                | `include/linux/radix-tree.h`                      | `lib/radix-tree.c`    |
+| XArray                       | `include/linux/xarray.h`                          | `lib/xarray.c`        |
+| Maple Tree                   | `include/linux/maple_tree.h`                      | `lib/maple_tree.c`    |
+| 关联数组 (assoc_array)       | `include/linux/assoc_array.h`                     | `lib/assoc_array.c`   |
+| 二叉堆 (min_heap)            | `include/linux/min_heap.h`                        | `lib/min_heap.c`      |
+| 伙伴系统                     | `include/linux/mmzone.h`                          | `mm/page_alloc.c`     |
+| 位图                         | `include/linux/bitmap.h`                          | `lib/bitmap.c`        |
+| sbitmap                      | `include/linux/sbitmap.h`                         | `lib/sbitmap.c`       |
+| 引用计数 (kref)              | `include/linux/kref.h`                            | `lib/kref.c`          |
+| 加固引用计数 (refcount_t)    | `include/linux/refcount.h`                        | `lib/refcount.c`      |
+| IDR                          | `include/linux/idr.h`                             | `lib/idr.c`           |
+| kfifo                        | `include/linux/kfifo.h`                           | `lib/kfifo.c`         |
+| 工作队列                     | `include/linux/workqueue.h`                       | `kernel/workqueue.c`  |
+| eBPF Maps                    | `include/linux/bpf.h`                             | `kernel/bpf/`         |
+| 时间轮定时器                 | `include/linux/timer.h`                           | `kernel/time/timer.c` |
+| 实时调度队列                 | `kernel/sched/sched.h`                            | `kernel/sched/rt.c`   |
+| 路由 Trie                    | `include/net/fib_trie.h`                          | `net/ipv4/fib_trie.c` |
+| RCU 链表                     | `include/linux/rculist.h`                         | 内联实现                |
 
 ---
 
